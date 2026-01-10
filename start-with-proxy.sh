@@ -54,9 +54,13 @@ start_proxy
 cd "$SCRIPT_DIR"
 MODE="${1:-web}"
 
+# Export simple API key for web login (must be set before npm starts)
+export AUTOMAKER_API_KEY="${AUTOMAKER_API_KEY:-dev}"
+
 echo ""
 echo "Starting AutoMaker in $MODE mode..."
 echo "Using CLIProxyAPI at http://127.0.0.1:$PORT"
+echo "Web login key: $AUTOMAKER_API_KEY"
 echo ""
 
 case "$MODE" in
