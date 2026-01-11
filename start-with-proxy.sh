@@ -65,7 +65,9 @@ echo ""
 
 case "$MODE" in
     web)
-        npm run dev:web
+        # Web mode requires running both the backend server and frontend
+        # dev:full starts them concurrently using concurrently package
+        npm run dev:full
         ;;
     electron)
         npm run dev:electron
