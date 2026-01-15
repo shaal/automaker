@@ -74,22 +74,36 @@ Check proxy connectivity during server startup and warn users.
 **Effort:** Medium
 **Risk:** Low
 
+### Solution 3: Document troubleshooting in docs (Selected)
+
+Add troubleshooting section to `docs/cli-proxy-setup.md` explaining how to identify proxy issues from generic errors.
+
+**Pros:** No code changes to core files, maintains fork cleanliness
+**Cons:** Slightly worse UX (users must read docs)
+**Effort:** Small
+**Risk:** None
+
 ## Recommended Action
 
-Implement Solution 1, consider Solution 2 as follow-up
+~~Implement Solution 1, consider Solution 2 as follow-up~~
+
+**Updated:** Implement Solution 3 (documentation-only) to maintain fork cleanliness per issue #009. The fork should not modify core AutoMaker files.
 
 ## Acceptance Criteria
 
-- [ ] ECONNREFUSED errors mention CLIProxyAPI specifically
-- [ ] ETIMEDOUT errors suggest checking proxy service
-- [ ] Error messages include proxy URL for debugging
-- [ ] Users can identify proxy vs API issues from error message
+- [x] Troubleshooting section added to docs/cli-proxy-setup.md
+- [x] Common error patterns documented (ECONNREFUSED, ETIMEDOUT, 502)
+- [x] Users can identify proxy vs API issues via documentation
+- [x] No changes to core AutoMaker files (fork maintainability)
 
 ## Work Log
 
-| Date       | Action                    | Outcome            |
-| ---------- | ------------------------- | ------------------ |
-| 2026-01-15 | Identified in code review | Finding documented |
+| Date       | Action                                         | Outcome                  |
+| ---------- | ---------------------------------------------- | ------------------------ |
+| 2026-01-15 | Identified in code review                      | Finding documented       |
+| 2026-01-15 | Initially implemented in claude-provider.ts    | Code changes made        |
+| 2026-01-15 | Reverted per issue #009 (fork maintainability) | Chose Solution 3 instead |
+| 2026-01-15 | Added troubleshooting to docs                  | Documentation approach   |
 
 ## Resources
 

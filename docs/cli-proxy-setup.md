@@ -170,6 +170,41 @@ grep ANTHROPIC ~/code/utilities/automaker/.env
 
 Ensure CLIProxyAPI is running before starting AutoMaker.
 
+### Identifying Proxy Errors in AutoMaker
+
+When CLIProxyAPI fails, AutoMaker shows generic API errors. Here's how to identify proxy-related issues:
+
+| AutoMaker Error                        | Likely Cause                    | Fix                                                          |
+| -------------------------------------- | ------------------------------- | ------------------------------------------------------------ |
+| `ECONNREFUSED` or "connection refused" | CLIProxyAPI not running         | Start the proxy with `./start-with-proxy.sh`                 |
+| `ETIMEDOUT` or "request timeout"       | Proxy is slow or unresponsive   | Restart CLIProxyAPI, check logs                              |
+| `502 Bad Gateway`                      | Proxy can't reach Anthropic API | Check OAuth token, re-authenticate                           |
+| `503 Service Unavailable`              | Proxy service overloaded        | Wait and retry, check proxy logs                             |
+| `401 Unauthorized`                     | Invalid API key in config       | Verify `ANTHROPIC_API_KEY` matches `api-keys` in config.yaml |
+
+**Quick diagnosis steps:**
+
+```bash
+# 1. Check if proxy is running
+curl -s http://127.0.0.1:8318/health || echo "Proxy not responding"
+
+# 2. Check proxy logs
+tail -50 /tmp/cliproxyapi.log
+
+# 3. Test proxy directly
+curl -s -X POST \
+  -H "x-api-key: cliproxyapi" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "claude-sonnet-4-20250514", "max_tokens": 10, "messages": [{"role": "user", "content": "Hi"}]}' \
+  http://127.0.0.1:8318/v1/messages
+
+# 4. Restart proxy if needed
+pkill -f cli-proxy-api
+./start-with-proxy.sh web
+```
+
+**Note:** Since AutoMaker doesn't have built-in proxy detection, always check CLIProxyAPI when you see connection errors with `ANTHROPIC_BASE_URL` configured.
+
 ## Security Notes
 
 - CLIProxyAPI binds to `127.0.0.1` by default (localhost only)
