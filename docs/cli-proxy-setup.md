@@ -9,7 +9,7 @@ CLIProxyAPI is a proxy server that provides Claude-compatible API endpoints usin
 ```
 ┌─────────────┐      ┌──────────────┐      ┌─────────────────┐
 │  AutoMaker  │ ───▶ │ CLIProxyAPI  │ ───▶ │ Anthropic API   │
-│  (port 3007)│      │ (port 8317)  │      │ (via OAuth)     │
+│  (port 3007)│      │ (port 8318)  │      │ (via OAuth)     │
 └─────────────┘      └──────────────┘      └─────────────────┘
                             │
                             ▼
@@ -55,7 +55,7 @@ Create or edit `~/.cli-proxy-api/config.yaml`:
 ```yaml
 # CLIProxyAPI Configuration
 host: '127.0.0.1' # localhost only for security
-port: 8317
+port: 8318
 
 # Authentication directory (where OAuth tokens are stored)
 auth-dir: '~/.cli-proxy-api'
@@ -79,7 +79,7 @@ Create `.env` in the AutoMaker root directory:
 # AutoMaker Configuration for CLIProxyAPI
 
 # Point to CLIProxyAPI server
-ANTHROPIC_BASE_URL=http://127.0.0.1:8317
+ANTHROPIC_BASE_URL=http://127.0.0.1:8318
 
 # API key configured in CLIProxyAPI config.yaml
 ANTHROPIC_API_KEY=cliproxyapi
@@ -125,7 +125,7 @@ curl -s -X POST \
   -H "Content-Type: application/json" \
   -H "x-api-key: cliproxyapi" \
   -d '{"model": "claude-sonnet-4-20250514", "max_tokens": 50, "messages": [{"role": "user", "content": "Hello"}]}' \
-  http://127.0.0.1:8317/v1/messages
+  http://127.0.0.1:8318/v1/messages
 ```
 
 You should receive a response from Claude.
@@ -137,7 +137,7 @@ You should receive a response from Claude.
 Check if the port is already in use:
 
 ```bash
-ss -tlnp | grep 8317
+ss -tlnp | grep 8318
 ```
 
 Check the logs:

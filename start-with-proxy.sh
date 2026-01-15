@@ -14,6 +14,22 @@ CLI_PROXY_DIR="$HOME/code/utilities/CLIProxyAPI"
 CLI_PROXY_CONFIG="$HOME/.cli-proxy-api/config.yaml"
 PORT=8318
 
+# Track if we started the proxy (to know if we should clean it up)
+PROXY_PID=""
+PROXY_STARTED_BY_US=false
+
+# Cleanup function - kills proxy if we started it
+cleanup() {
+    if [ "$PROXY_STARTED_BY_US" = true ] && [ -n "$PROXY_PID" ]; then
+        echo ""
+        echo "Shutting down CLIProxyAPI (PID: $PROXY_PID)..."
+        kill "$PROXY_PID" 2>/dev/null || true
+    fi
+}
+
+# Set trap to cleanup on exit, interrupt, or termination
+trap cleanup EXIT INT TERM
+
 # Check if CLIProxyAPI is running (cross-platform: macOS and Linux)
 check_proxy() {
     # macOS: use lsof
@@ -34,12 +50,14 @@ start_proxy() {
         echo "Starting CLIProxyAPI..."
         cd "$CLI_PROXY_DIR"
         nohup ./cli-proxy-api --config "$CLI_PROXY_CONFIG" > /tmp/cliproxyapi.log 2>&1 &
+        PROXY_PID=$!
+        PROXY_STARTED_BY_US=true
 
         # Wait for it to start
         for i in {1..10}; do
             sleep 1
             if check_proxy; then
-                echo "CLIProxyAPI started successfully on port $PORT"
+                echo "CLIProxyAPI started successfully on port $PORT (PID: $PROXY_PID)"
                 return 0
             fi
         done

@@ -46,6 +46,71 @@ function buildEnv(): Record<string, string | undefined> {
   return env;
 }
 
+/**
+ * Check if we're using a proxy (custom ANTHROPIC_BASE_URL)
+ */
+function isUsingProxy(): boolean {
+  const baseUrl = process.env.ANTHROPIC_BASE_URL;
+  return !!baseUrl && !baseUrl.includes('api.anthropic.com');
+}
+
+/**
+ * Enhance error messages with proxy-specific context when using CLIProxyAPI
+ * This helps users identify whether issues are with the proxy or the API itself
+ */
+function enhanceProxyError(error: Error): string {
+  if (!isUsingProxy()) {
+    return error.message;
+  }
+
+  const baseUrl = process.env.ANTHROPIC_BASE_URL;
+  const errorMsg = error.message || '';
+
+  // Connection refused - proxy not running
+  if (errorMsg.includes('ECONNREFUSED') || errorMsg.includes('connect ECONNREFUSED')) {
+    return (
+      `Cannot connect to CLIProxyAPI at ${baseUrl}. ` +
+      `Is CLIProxyAPI running? Try: ./start-with-proxy.sh or start the proxy manually.`
+    );
+  }
+
+  // Connection timeout - proxy unresponsive
+  if (errorMsg.includes('ETIMEDOUT') || errorMsg.includes('ESOCKETTIMEDOUT')) {
+    return (
+      `CLIProxyAPI at ${baseUrl} is not responding. ` +
+      `The proxy service may be overloaded or unresponsive. Check proxy logs.`
+    );
+  }
+
+  // Bad gateway - proxy can't reach Anthropic
+  if (errorMsg.includes('502') || errorMsg.includes('Bad Gateway')) {
+    return (
+      `CLIProxyAPI received your request but cannot reach Anthropic API. ` +
+      `Check proxy configuration and OAuth authentication (./cli-proxy-api --claude-login).`
+    );
+  }
+
+  // Service unavailable - proxy overloaded
+  if (errorMsg.includes('503') || errorMsg.includes('Service Unavailable')) {
+    return (
+      `CLIProxyAPI at ${baseUrl} is temporarily unavailable. ` +
+      `The proxy may be restarting or overloaded.`
+    );
+  }
+
+  // Authentication issues from proxy
+  if (errorMsg.includes('401') || errorMsg.includes('Unauthorized')) {
+    return (
+      `CLIProxyAPI authentication failed. ` +
+      `Check your api-keys configuration in ~/.cli-proxy-api/config.yaml ` +
+      `and ensure ANTHROPIC_API_KEY matches an allowed key.`
+    );
+  }
+
+  // Generic proxy error with context
+  return `Proxy error (${baseUrl}): ${errorMsg}`;
+}
+
 export class ClaudeProvider extends BaseProvider {
   getName(): string {
     return 'claude';
@@ -140,18 +205,29 @@ export class ClaudeProvider extends BaseProvider {
       const errorInfo = classifyError(error);
       const userMessage = getUserFriendlyErrorMessage(error);
 
+      // Check if this is a proxy-related error and enhance the message
+      const proxyEnhancedMessage = isUsingProxy() ? enhanceProxyError(error as Error) : userMessage;
+
       logger.error('executeQuery() error during execution:', {
         type: errorInfo.type,
         message: errorInfo.message,
         isRateLimit: errorInfo.isRateLimit,
         retryAfter: errorInfo.retryAfter,
+        usingProxy: isUsingProxy(),
+        proxyUrl: process.env.ANTHROPIC_BASE_URL,
         stack: (error as Error).stack,
       });
 
-      // Build enhanced error message with additional guidance for rate limits
-      const message = errorInfo.isRateLimit
-        ? `${userMessage}\n\nTip: If you're running multiple features in auto-mode, consider reducing concurrency (maxConcurrency setting) to avoid hitting rate limits.`
-        : userMessage;
+      // Build enhanced error message with additional guidance
+      let message: string;
+      if (errorInfo.isRateLimit) {
+        message = `${userMessage}\n\nTip: If you're running multiple features in auto-mode, consider reducing concurrency (maxConcurrency setting) to avoid hitting rate limits.`;
+      } else if (isUsingProxy() && proxyEnhancedMessage !== userMessage) {
+        // Use proxy-specific message if it was enhanced
+        message = proxyEnhancedMessage;
+      } else {
+        message = userMessage;
+      }
 
       const enhancedError = new Error(message);
       (enhancedError as any).originalError = error;
