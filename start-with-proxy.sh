@@ -12,11 +12,18 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLI_PROXY_DIR="$HOME/code/utilities/CLIProxyAPI"
 CLI_PROXY_CONFIG="$HOME/.cli-proxy-api/config.yaml"
-PORT=8317
+PORT=8318
 
-# Check if CLIProxyAPI is running
+# Check if CLIProxyAPI is running (cross-platform: macOS and Linux)
 check_proxy() {
-    ss -tlnp 2>/dev/null | grep -q ":$PORT" || netstat -tlnp 2>/dev/null | grep -q ":$PORT"
+    # macOS: use lsof
+    if command -v lsof &>/dev/null; then
+        lsof -i ":$PORT" -sTCP:LISTEN &>/dev/null && return 0
+    fi
+    # Linux: use ss or netstat
+    ss -tlnp 2>/dev/null | grep -q ":$PORT" && return 0
+    netstat -tlnp 2>/dev/null | grep -q ":$PORT" && return 0
+    return 1
 }
 
 # Start CLIProxyAPI if needed
@@ -56,6 +63,11 @@ MODE="${1:-web}"
 
 # Export simple API key for web login (must be set before npm starts)
 export AUTOMAKER_API_KEY="${AUTOMAKER_API_KEY:-dev}"
+
+# Configure Claude SDK to use CLIProxyAPI
+export ANTHROPIC_BASE_URL="http://127.0.0.1:$PORT"
+# Use proxy-managed key - the proxy handles actual authentication via Claude Code subscription
+export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-proxy-managed}"
 
 echo ""
 echo "Starting AutoMaker in $MODE mode..."
