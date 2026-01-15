@@ -12,19 +12,22 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 import { AlertCircle } from 'lucide-react';
 import { modelSupportsThinking } from '@/lib/utils';
-import { Feature, ModelAlias, ThinkingLevel, AIProfile, PlanningMode } from '@/store/app-store';
-import { ProfileSelect, TestingTabContent, PrioritySelect, PlanningModeSelect } from '../shared';
+import { Feature, ModelAlias, ThinkingLevel, PlanningMode } from '@/store/app-store';
+import { TestingTabContent, PrioritySelect, PlanningModeSelect, WorkModeSelector } from '../shared';
+import type { WorkMode } from '../shared';
 import { PhaseModelSelector } from '@/components/views/settings-view/model-defaults/phase-model-selector';
-import { isCursorModel, PROVIDER_PREFIXES, type PhaseModelEntry } from '@automaker/types';
+import { isCursorModel, isClaudeModel, type PhaseModelEntry } from '@automaker/types';
 import { cn } from '@/lib/utils';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
 interface MassEditDialogProps {
   open: boolean;
   onClose: () => void;
   selectedFeatures: Feature[];
-  onApply: (updates: Partial<Feature>) => Promise<void>;
-  showProfilesOnly: boolean;
-  aiProfiles: AIProfile[];
+  onApply: (updates: Partial<Feature>, workMode: WorkMode) => Promise<void>;
+  branchSuggestions: string[];
+  branchCardCounts?: Record<string, number>;
+  currentBranch?: string;
 }
 
 interface ApplyState {
@@ -34,6 +37,7 @@ interface ApplyState {
   requirePlanApproval: boolean;
   priority: boolean;
   skipTests: boolean;
+  branchName: boolean;
 }
 
 function getMixedValues(features: Feature[]): Record<string, boolean> {
@@ -48,6 +52,7 @@ function getMixedValues(features: Feature[]): Record<string, boolean> {
     ),
     priority: !features.every((f) => f.priority === first.priority),
     skipTests: !features.every((f) => f.skipTests === first.skipTests),
+    branchName: !features.every((f) => f.branchName === first.branchName),
   };
 }
 
@@ -103,8 +108,9 @@ export function MassEditDialog({
   onClose,
   selectedFeatures,
   onApply,
-  showProfilesOnly,
-  aiProfiles,
+  branchSuggestions,
+  branchCardCounts,
+  currentBranch,
 }: MassEditDialogProps) {
   const [isApplying, setIsApplying] = useState(false);
 
@@ -116,6 +122,7 @@ export function MassEditDialog({
     requirePlanApproval: false,
     priority: false,
     skipTests: false,
+    branchName: false,
   });
 
   // Field values
@@ -125,6 +132,18 @@ export function MassEditDialog({
   const [requirePlanApproval, setRequirePlanApproval] = useState(false);
   const [priority, setPriority] = useState(2);
   const [skipTests, setSkipTests] = useState(false);
+
+  // Work mode and branch name state
+  const [workMode, setWorkMode] = useState<WorkMode>(() => {
+    // Derive initial work mode from first selected feature's branchName
+    if (selectedFeatures.length > 0 && selectedFeatures[0].branchName) {
+      return 'custom';
+    }
+    return 'current';
+  });
+  const [branchName, setBranchName] = useState(() => {
+    return getInitialValue(selectedFeatures, 'branchName', '') as string;
+  });
 
   // Calculate mixed values
   const mixedValues = useMemo(() => getMixedValues(selectedFeatures), [selectedFeatures]);
@@ -139,6 +158,7 @@ export function MassEditDialog({
         requirePlanApproval: false,
         priority: false,
         skipTests: false,
+        branchName: false,
       });
       setModel(getInitialValue(selectedFeatures, 'model', 'sonnet') as ModelAlias);
       setThinkingLevel(getInitialValue(selectedFeatures, 'thinkingLevel', 'none') as ThinkingLevel);
@@ -146,28 +166,12 @@ export function MassEditDialog({
       setRequirePlanApproval(getInitialValue(selectedFeatures, 'requirePlanApproval', false));
       setPriority(getInitialValue(selectedFeatures, 'priority', 2));
       setSkipTests(getInitialValue(selectedFeatures, 'skipTests', false));
+      // Reset work mode and branch name
+      const initialBranchName = getInitialValue(selectedFeatures, 'branchName', '') as string;
+      setBranchName(initialBranchName);
+      setWorkMode(initialBranchName ? 'custom' : 'current');
     }
   }, [open, selectedFeatures]);
-
-  const handleModelSelect = (newModel: string) => {
-    const isCursor = isCursorModel(newModel);
-    setModel(newModel as ModelAlias);
-    if (isCursor || !modelSupportsThinking(newModel)) {
-      setThinkingLevel('none');
-    }
-  };
-
-  const handleProfileSelect = (profile: AIProfile) => {
-    if (profile.provider === 'cursor') {
-      const cursorModel = `${PROVIDER_PREFIXES.cursor}${profile.cursorModel || 'auto'}`;
-      setModel(cursorModel as ModelAlias);
-      setThinkingLevel('none');
-    } else {
-      setModel((profile.model || 'sonnet') as ModelAlias);
-      setThinkingLevel(profile.thinkingLevel || 'none');
-    }
-    setApplyState((prev) => ({ ...prev, model: true, thinkingLevel: true }));
-  };
 
   const handleApply = async () => {
     const updates: Partial<Feature> = {};
@@ -178,6 +182,12 @@ export function MassEditDialog({
     if (applyState.requirePlanApproval) updates.requirePlanApproval = requirePlanApproval;
     if (applyState.priority) updates.priority = priority;
     if (applyState.skipTests) updates.skipTests = skipTests;
+    if (applyState.branchName) {
+      // For 'current' mode, use empty string (work on current branch)
+      // For 'auto' mode, use empty string (will be auto-generated)
+      // For 'custom' mode, use the specified branch name
+      updates.branchName = workMode === 'custom' ? branchName : '';
+    }
 
     if (Object.keys(updates).length === 0) {
       onClose();
@@ -186,7 +196,7 @@ export function MassEditDialog({
 
     setIsApplying(true);
     try {
-      await onApply(updates);
+      await onApply(updates, workMode);
       onClose();
     } finally {
       setIsApplying(false);
@@ -196,6 +206,7 @@ export function MassEditDialog({
   const hasAnyApply = Object.values(applyState).some(Boolean);
   const isCurrentModelCursor = isCursorModel(model);
   const modelAllowsThinking = !isCurrentModelCursor && modelSupportsThinking(model);
+  const modelSupportsPlanningMode = isClaudeModel(model);
 
   return (
     <Dialog open={open} onOpenChange={(open) => !open && onClose()}>
@@ -208,29 +219,11 @@ export function MassEditDialog({
         </DialogHeader>
 
         <div className="py-4 pr-4 space-y-4 max-h-[60vh] overflow-y-auto">
-          {/* Quick Select Profile Section */}
-          {aiProfiles.length > 0 && (
-            <div className="space-y-2">
-              <Label className="text-sm font-medium">Quick Select Profile</Label>
-              <p className="text-xs text-muted-foreground mb-2">
-                Selecting a profile will automatically enable model settings
-              </p>
-              <ProfileSelect
-                profiles={aiProfiles}
-                selectedModel={model}
-                selectedThinkingLevel={thinkingLevel}
-                selectedCursorModel={isCurrentModelCursor ? model : undefined}
-                onSelect={handleProfileSelect}
-                testIdPrefix="mass-edit-profile"
-              />
-            </div>
-          )}
-
           {/* Model Selector */}
           <div className="space-y-2">
             <Label className="text-sm font-medium">AI Model</Label>
             <p className="text-xs text-muted-foreground mb-2">
-              Or select a specific model configuration
+              Select a specific model configuration
             </p>
             <PhaseModelSelector
               value={{ model, thinkingLevel }}
@@ -252,30 +245,64 @@ export function MassEditDialog({
           <div className="border-t border-border" />
 
           {/* Planning Mode */}
-          <FieldWrapper
-            label="Planning Mode"
-            isMixed={mixedValues.planningMode || mixedValues.requirePlanApproval}
-            willApply={applyState.planningMode || applyState.requirePlanApproval}
-            onApplyChange={(apply) =>
-              setApplyState((prev) => ({
-                ...prev,
-                planningMode: apply,
-                requirePlanApproval: apply,
-              }))
-            }
-          >
-            <PlanningModeSelect
-              mode={planningMode}
-              onModeChange={(newMode) => {
-                setPlanningMode(newMode);
-                // Auto-suggest approval based on mode, but user can override
-                setRequirePlanApproval(newMode === 'spec' || newMode === 'full');
-              }}
-              requireApproval={requirePlanApproval}
-              onRequireApprovalChange={setRequirePlanApproval}
-              testIdPrefix="mass-edit-planning"
-            />
-          </FieldWrapper>
+          {modelSupportsPlanningMode ? (
+            <FieldWrapper
+              label="Planning Mode"
+              isMixed={mixedValues.planningMode || mixedValues.requirePlanApproval}
+              willApply={applyState.planningMode || applyState.requirePlanApproval}
+              onApplyChange={(apply) =>
+                setApplyState((prev) => ({
+                  ...prev,
+                  planningMode: apply,
+                  requirePlanApproval: apply,
+                }))
+              }
+            >
+              <PlanningModeSelect
+                mode={planningMode}
+                onModeChange={(newMode) => {
+                  setPlanningMode(newMode);
+                  // Auto-suggest approval based on mode, but user can override
+                  setRequirePlanApproval(newMode === 'spec' || newMode === 'full');
+                }}
+                requireApproval={requirePlanApproval}
+                onRequireApprovalChange={setRequirePlanApproval}
+                testIdPrefix="mass-edit-planning"
+              />
+            </FieldWrapper>
+          ) : (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div
+                    className={cn(
+                      'p-3 rounded-lg border transition-colors border-border bg-muted/20 opacity-50 cursor-not-allowed'
+                    )}
+                  >
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <Checkbox checked={false} disabled className="opacity-50" />
+                        <Label className="text-sm font-medium text-muted-foreground">
+                          Planning Mode
+                        </Label>
+                      </div>
+                    </div>
+                    <div className="opacity-50 pointer-events-none">
+                      <PlanningModeSelect
+                        mode="skip"
+                        onModeChange={() => {}}
+                        testIdPrefix="mass-edit-planning"
+                        disabled
+                      />
+                    </div>
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>Planning modes are only available for Claude Provider</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
 
           {/* Priority */}
           <FieldWrapper
@@ -302,6 +329,25 @@ export function MassEditDialog({
               skipTests={skipTests}
               onSkipTestsChange={setSkipTests}
               testIdPrefix="mass-edit"
+            />
+          </FieldWrapper>
+
+          {/* Branch / Work Mode */}
+          <FieldWrapper
+            label="Branch / Work Mode"
+            isMixed={mixedValues.branchName}
+            willApply={applyState.branchName}
+            onApplyChange={(apply) => setApplyState((prev) => ({ ...prev, branchName: apply }))}
+          >
+            <WorkModeSelector
+              workMode={workMode}
+              onWorkModeChange={setWorkMode}
+              branchName={branchName}
+              onBranchNameChange={setBranchName}
+              branchSuggestions={branchSuggestions}
+              branchCardCounts={branchCardCounts}
+              currentBranch={currentBranch}
+              testIdPrefix="mass-edit-work-mode"
             />
           </FieldWrapper>
         </div>

@@ -5,6 +5,7 @@ import { router } from './utils/router';
 import { SplashScreen } from './components/splash-screen';
 import { useSettingsSync } from './hooks/use-settings-sync';
 import { useCursorStatusInit } from './hooks/use-cursor-status-init';
+import { useProviderAuthInit } from './hooks/use-provider-auth-init';
 import './styles/global.css';
 import './styles/theme-imports';
 
@@ -24,8 +25,11 @@ export default function App() {
   useEffect(() => {
     if (import.meta.env.DEV) {
       const clearPerfEntries = () => {
-        performance.clearMarks();
-        performance.clearMeasures();
+        // Check if window.performance is available before calling its methods
+        if (window.performance) {
+          window.performance.clearMarks();
+          window.performance.clearMeasures();
+        }
       };
       const interval = setInterval(clearPerfEntries, 5000);
       return () => clearInterval(interval);
@@ -44,6 +48,9 @@ export default function App() {
 
   // Initialize Cursor CLI status at startup
   useCursorStatusInit();
+
+  // Initialize Provider auth status at startup (for Claude/Codex usage display)
+  useProviderAuthInit();
 
   const handleSplashComplete = useCallback(() => {
     sessionStorage.setItem('automaker-splash-shown', 'true');

@@ -75,27 +75,43 @@ export async function handleLoginScreenIfPresent(page: Page): Promise<boolean> {
     .locator('[data-testid="login-api-key-input"], input[type="password"][placeholder*="API key"]')
     .first();
   const appContent = page.locator(
-    '[data-testid="welcome-view"], [data-testid="board-view"], [data-testid="context-view"], [data-testid="agent-view"]'
+    '[data-testid="welcome-view"], [data-testid="dashboard-view"], [data-testid="board-view"], [data-testid="context-view"], [data-testid="agent-view"]'
   );
+  const loggedOutPage = page.getByRole('heading', { name: /logged out/i });
+  const goToLoginButton = page.locator('button:has-text("Go to login")');
 
   const maxWaitMs = 15000;
 
-  // Race between login screen, a delayed redirect to /login, and actual content
-  const loginVisible = await Promise.race([
+  // Race between login screen, logged-out page, a delayed redirect to /login, and actual content
+  const result = await Promise.race([
     page
       .waitForURL((url) => url.pathname.includes('/login'), { timeout: maxWaitMs })
-      .then(() => true)
-      .catch(() => false),
+      .then(() => 'login-redirect' as const)
+      .catch(() => null),
     loginInput
       .waitFor({ state: 'visible', timeout: maxWaitMs })
-      .then(() => true)
-      .catch(() => false),
+      .then(() => 'login-input' as const)
+      .catch(() => null),
+    loggedOutPage
+      .waitFor({ state: 'visible', timeout: maxWaitMs })
+      .then(() => 'logged-out' as const)
+      .catch(() => null),
     appContent
       .first()
       .waitFor({ state: 'visible', timeout: maxWaitMs })
-      .then(() => false)
-      .catch(() => false),
+      .then(() => 'app-content' as const)
+      .catch(() => null),
   ]);
+
+  // Handle logged-out page - click "Go to login" button and then login
+  if (result === 'logged-out') {
+    await goToLoginButton.click();
+    await page.waitForLoadState('load');
+    // Now handle the login screen
+    return handleLoginScreenIfPresent(page);
+  }
+
+  const loginVisible = result === 'login-redirect' || result === 'login-input';
 
   if (loginVisible) {
     const apiKey = process.env.AUTOMAKER_API_KEY || 'test-api-key-for-e2e-tests';

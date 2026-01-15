@@ -16,6 +16,14 @@ services:
       # This shares your 'cursor-agent login' OAuth session with the container
       # - ~/.cursor:/home/automaker/.cursor
 
+      # OpenCode CLI - mount your ~/.local/share/opencode directory
+      # This shares your 'opencode auth login' session with the container
+      # - ~/.local/share/opencode:/home/automaker/.local/share/opencode
+      # - ~/.config/opencode:/home/automaker/.config/opencode
+
+      # Playwright browser cache - persists installed browsers across container restarts
+      # Run 'npx playwright install --with-deps chromium' once, and it will persist
+      # - playwright-cache:/home/automaker/.cache/ms-playwright
     environment:
       # Set root directory for all projects and file operations
       # Users can only create/open projects within this directory
@@ -27,3 +35,8 @@ services:
       # Extract your Cursor token with: ./scripts/get-cursor-token.sh
       # Then set it here or in your .env file:
       # - CURSOR_API_KEY=${CURSOR_API_KEY:-}
+
+volumes:
+  # Playwright cache volume (persists Chromium installs)
+  # playwright-cache:
+  #   name: automaker-playwright-cache

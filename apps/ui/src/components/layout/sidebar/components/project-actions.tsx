@@ -40,7 +40,7 @@ export function ProjectActions({
         data-testid="new-project-button"
       >
         <Plus className="w-4 h-4 shrink-0 transition-transform duration-200 group-hover:rotate-90 group-hover:text-brand-500" />
-        <span className="ml-2 text-sm font-medium hidden lg:block whitespace-nowrap">New</span>
+        <span className="ml-2 text-sm font-medium block whitespace-nowrap">New</span>
       </button>
       <button
         onClick={handleOpenFolder}
@@ -59,7 +59,7 @@ export function ProjectActions({
         data-testid="open-project-button"
       >
         <FolderOpen className="w-4 h-4 shrink-0 transition-transform duration-200 group-hover:scale-110" />
-        <span className="hidden lg:flex items-center justify-center min-w-5 h-5 px-1.5 text-[10px] font-mono rounded-md bg-muted/80 text-muted-foreground ml-2">
+        <span className="flex items-center justify-center min-w-5 h-5 px-1.5 text-[10px] font-mono rounded-md bg-muted/80 text-muted-foreground ml-2">
           {formatShortcut(shortcuts.openProject, true)}
         </span>
       </button>

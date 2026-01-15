@@ -304,22 +304,22 @@ export function AgentOutputModal({
   return (
     <Dialog open={open} onOpenChange={onClose}>
       <DialogContent
-        className="w-[60vw] max-w-[60vw] max-h-[80vh] flex flex-col"
+        className="w-full h-full max-w-full max-h-full sm:w-[60vw] sm:max-w-[60vw] sm:max-h-[80vh] sm:h-auto sm:rounded-xl rounded-none flex flex-col"
         data-testid="agent-output-modal"
       >
         <DialogHeader className="shrink-0">
-          <div className="flex items-center justify-between pr-8">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pr-8">
             <DialogTitle className="flex items-center gap-2">
               {featureStatus !== 'verified' && featureStatus !== 'waiting_approval' && (
                 <Loader2 className="w-5 h-5 text-primary animate-spin" />
               )}
               Agent Output
             </DialogTitle>
-            <div className="flex items-center gap-1 bg-muted rounded-lg p-1">
+            <div className="flex items-center gap-1 bg-muted rounded-lg p-1 overflow-x-auto">
               {summary && (
                 <button
                   onClick={() => setViewMode('summary')}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all whitespace-nowrap ${
                     effectiveViewMode === 'summary'
                       ? 'bg-primary/20 text-primary shadow-sm'
                       : 'text-muted-foreground hover:text-foreground hover:bg-accent'
@@ -332,7 +332,7 @@ export function AgentOutputModal({
               )}
               <button
                 onClick={() => setViewMode('parsed')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all whitespace-nowrap ${
                   effectiveViewMode === 'parsed'
                     ? 'bg-primary/20 text-primary shadow-sm'
                     : 'text-muted-foreground hover:text-foreground hover:bg-accent'
@@ -344,7 +344,7 @@ export function AgentOutputModal({
               </button>
               <button
                 onClick={() => setViewMode('changes')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all whitespace-nowrap ${
                   effectiveViewMode === 'changes'
                     ? 'bg-primary/20 text-primary shadow-sm'
                     : 'text-muted-foreground hover:text-foreground hover:bg-accent'
@@ -356,7 +356,7 @@ export function AgentOutputModal({
               </button>
               <button
                 onClick={() => setViewMode('raw')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all whitespace-nowrap ${
                   effectiveViewMode === 'raw'
                     ? 'bg-primary/20 text-primary shadow-sm'
                     : 'text-muted-foreground hover:text-foreground hover:bg-accent'
@@ -380,11 +380,11 @@ export function AgentOutputModal({
         <TaskProgressPanel
           featureId={featureId}
           projectPath={projectPath}
-          className="flex-shrink-0 mx-1"
+          className="flex-shrink-0 mx-3 my-2"
         />
 
         {effectiveViewMode === 'changes' ? (
-          <div className="flex-1 min-h-[400px] max-h-[60vh] overflow-y-auto scrollbar-visible">
+          <div className="flex-1 min-h-0 sm:min-h-[200px] sm:max-h-[60vh] overflow-y-auto scrollbar-visible">
             {projectPath ? (
               <GitDiffPanel
                 projectPath={projectPath}
@@ -401,7 +401,7 @@ export function AgentOutputModal({
             )}
           </div>
         ) : effectiveViewMode === 'summary' && summary ? (
-          <div className="flex-1 overflow-y-auto bg-zinc-950 rounded-lg p-4 min-h-[400px] max-h-[60vh] scrollbar-visible">
+          <div className="flex-1 min-h-0 sm:min-h-[200px] sm:max-h-[60vh] overflow-y-auto bg-card border border-border/50 rounded-lg p-4 scrollbar-visible">
             <Markdown>{summary}</Markdown>
           </div>
         ) : (
@@ -409,7 +409,7 @@ export function AgentOutputModal({
             <div
               ref={scrollRef}
               onScroll={handleScroll}
-              className="flex-1 overflow-y-auto bg-zinc-950 rounded-lg p-4 font-mono text-xs min-h-[400px] max-h-[60vh] scrollbar-visible"
+              className="flex-1 min-h-0 sm:min-h-[200px] sm:max-h-[60vh] overflow-y-auto bg-zinc-950 rounded-lg p-4 font-mono text-xs scrollbar-visible"
             >
               {isLoading && !output ? (
                 <div className="flex items-center justify-center h-full text-muted-foreground">

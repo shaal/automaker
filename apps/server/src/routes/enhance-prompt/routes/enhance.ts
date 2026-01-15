@@ -1,22 +1,16 @@
 /**
  * POST /enhance-prompt endpoint - Enhance user input text
  *
- * Uses Claude AI or Cursor to enhance text based on the specified enhancement mode.
- * Supports modes: improve, technical, simplify, acceptance
+ * Uses the provider abstraction to enhance text based on the specified
+ * enhancement mode. Works with any configured provider (Claude, Cursor, etc.).
+ * Supports modes: improve, technical, simplify, acceptance, ux-reviewer
  */
 
 import type { Request, Response } from 'express';
-import { query } from '@anthropic-ai/claude-agent-sdk';
 import { createLogger } from '@automaker/utils';
 import { resolveModelString } from '@automaker/model-resolver';
-import {
-  CLAUDE_MODEL_MAP,
-  isCursorModel,
-  stripProviderPrefix,
-  ThinkingLevel,
-  getThinkingTokenBudget,
-} from '@automaker/types';
-import { ProviderFactory } from '../../../providers/provider-factory.js';
+import { CLAUDE_MODEL_MAP, type ThinkingLevel } from '@automaker/types';
+import { simpleQuery } from '../../../providers/simple-query-service.js';
 import type { SettingsService } from '../../../services/settings-service.js';
 import { getPromptCustomization } from '../../../lib/settings-helpers.js';
 import {
@@ -37,7 +31,7 @@ interface EnhanceRequestBody {
   enhancementMode: string;
   /** Optional model override */
   model?: string;
-  /** Optional thinking level for Claude models (ignored for Cursor models) */
+  /** Optional thinking level for Claude models */
   thinkingLevel?: ThinkingLevel;
 }
 
@@ -55,76 +49,6 @@ interface EnhanceSuccessResponse {
 interface EnhanceErrorResponse {
   success: false;
   error: string;
-}
-
-/**
- * Extract text content from Claude SDK response messages
- *
- * @param stream - The async iterable from the query function
- * @returns The extracted text content
- */
-async function extractTextFromStream(
-  stream: AsyncIterable<{
-    type: string;
-    subtype?: string;
-    result?: string;
-    message?: {
-      content?: Array<{ type: string; text?: string }>;
-    };
-  }>
-): Promise<string> {
-  let responseText = '';
-
-  for await (const msg of stream) {
-    if (msg.type === 'assistant' && msg.message?.content) {
-      for (const block of msg.message.content) {
-        if (block.type === 'text' && block.text) {
-          responseText += block.text;
-        }
-      }
-    } else if (msg.type === 'result' && msg.subtype === 'success') {
-      responseText = msg.result || responseText;
-    }
-  }
-
-  return responseText;
-}
-
-/**
- * Execute enhancement using Cursor provider
- *
- * @param prompt - The enhancement prompt
- * @param model - The Cursor model to use
- * @returns The enhanced text
- */
-async function executeWithCursor(prompt: string, model: string): Promise<string> {
-  const provider = ProviderFactory.getProviderForModel(model);
-  // Strip provider prefix - providers expect bare model IDs
-  const bareModel = stripProviderPrefix(model);
-
-  let responseText = '';
-
-  for await (const msg of provider.executeQuery({
-    prompt,
-    model: bareModel,
-    cwd: process.cwd(), // Enhancement doesn't need a specific working directory
-    readOnly: true, // Prompt enhancement only generates text, doesn't write files
-  })) {
-    if (msg.type === 'assistant' && msg.message?.content) {
-      for (const block of msg.message.content) {
-        if (block.type === 'text' && block.text) {
-          responseText += block.text;
-        }
-      }
-    } else if (msg.type === 'result' && msg.subtype === 'success' && msg.result) {
-      // Use result if it's a final accumulated message
-      if (msg.result.length > responseText.length) {
-        responseText = msg.result;
-      }
-    }
-  }
-
-  return responseText;
 }
 
 /**
@@ -188,13 +112,13 @@ export function createEnhanceHandler(
         technical: prompts.enhancement.technicalSystemPrompt,
         simplify: prompts.enhancement.simplifySystemPrompt,
         acceptance: prompts.enhancement.acceptanceSystemPrompt,
+        'ux-reviewer': prompts.enhancement.uxReviewerSystemPrompt,
       };
       const systemPrompt = systemPromptMap[validMode];
 
       logger.debug(`Using ${validMode} system prompt (length: ${systemPrompt.length} chars)`);
 
       // Build the user prompt with few-shot examples
-      // This helps the model understand this is text transformation, not a coding task
       const userPrompt = buildUserPrompt(validMode, trimmedText, true);
 
       // Resolve the model - use the passed model, default to sonnet for quality
@@ -202,40 +126,20 @@ export function createEnhanceHandler(
 
       logger.debug(`Using model: ${resolvedModel}`);
 
-      let enhancedText: string;
+      // Use simpleQuery - provider abstraction handles routing to correct provider
+      // The system prompt is combined with user prompt since some providers
+      // don't have a separate system prompt concept
+      const result = await simpleQuery({
+        prompt: `${systemPrompt}\n\n${userPrompt}`,
+        model: resolvedModel,
+        cwd: process.cwd(), // Enhancement doesn't need a specific working directory
+        maxTurns: 1,
+        allowedTools: [],
+        thinkingLevel,
+        readOnly: true, // Prompt enhancement only generates text, doesn't write files
+      });
 
-      // Route to appropriate provider based on model
-      if (isCursorModel(resolvedModel)) {
-        // Use Cursor provider for Cursor models
-        logger.info(`Using Cursor provider for model: ${resolvedModel}`);
-
-        // Cursor doesn't have a separate system prompt concept, so combine them
-        const combinedPrompt = `${systemPrompt}\n\n${userPrompt}`;
-        enhancedText = await executeWithCursor(combinedPrompt, resolvedModel);
-      } else {
-        // Use Claude SDK for Claude models
-        logger.info(`Using Claude provider for model: ${resolvedModel}`);
-
-        // Convert thinkingLevel to maxThinkingTokens for SDK
-        const maxThinkingTokens = getThinkingTokenBudget(thinkingLevel);
-        const queryOptions: Parameters<typeof query>[0]['options'] = {
-          model: resolvedModel,
-          systemPrompt,
-          maxTurns: 1,
-          allowedTools: [],
-          permissionMode: 'acceptEdits',
-        };
-        if (maxThinkingTokens) {
-          queryOptions.maxThinkingTokens = maxThinkingTokens;
-        }
-
-        const stream = query({
-          prompt: userPrompt,
-          options: queryOptions,
-        });
-
-        enhancedText = await extractTextFromStream(stream);
-      }
+      const enhancedText = result.text;
 
       if (!enhancedText || enhancedText.trim().length === 0) {
         logger.warn('Received empty response from AI');

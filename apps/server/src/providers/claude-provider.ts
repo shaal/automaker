@@ -23,6 +23,7 @@ import type {
 const ALLOWED_ENV_VARS = [
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_BASE_URL', // Allow custom API endpoint (e.g., CLIProxyAPI)
+  'ANTHROPIC_AUTH_TOKEN',
   'PATH',
   'HOME',
   'SHELL',
@@ -100,6 +101,8 @@ export class ClaudeProvider extends BaseProvider {
       ...(maxThinkingTokens && { maxThinkingTokens }),
       // Subagents configuration for specialized task delegation
       ...(options.agents && { agents: options.agents }),
+      // Pass through outputFormat for structured JSON outputs
+      ...(options.outputFormat && { outputFormat: options.outputFormat }),
     };
 
     // Build prompt payload

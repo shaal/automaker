@@ -9,6 +9,17 @@ import { checkGitHubRemote } from './check-github-remote.js';
 import { createLogger } from '@automaker/utils';
 
 const logger = createLogger('ListIssues');
+const OPEN_ISSUES_LIMIT = 100;
+const CLOSED_ISSUES_LIMIT = 50;
+const ISSUE_LIST_FIELDS = 'number,title,state,author,createdAt,labels,url,body,assignees';
+const ISSUE_STATE_OPEN = 'open';
+const ISSUE_STATE_CLOSED = 'closed';
+const GH_ISSUE_LIST_COMMAND = 'gh issue list';
+const GH_STATE_FLAG = '--state';
+const GH_JSON_FLAG = '--json';
+const GH_LIMIT_FLAG = '--limit';
+const LINKED_PRS_BATCH_SIZE = 20;
+const LINKED_PRS_TIMELINE_ITEMS = 10;
 
 export interface GitHubLabel {
   name: string;
@@ -69,34 +80,68 @@ async function fetchLinkedPRs(
 
   // Build GraphQL query for batch fetching linked PRs
   // We fetch up to 20 issues at a time to avoid query limits
-  const batchSize = 20;
-  for (let i = 0; i < issueNumbers.length; i += batchSize) {
-    const batch = issueNumbers.slice(i, i + batchSize);
+  for (let i = 0; i < issueNumbers.length; i += LINKED_PRS_BATCH_SIZE) {
+    const batch = issueNumbers.slice(i, i + LINKED_PRS_BATCH_SIZE);
 
     const issueQueries = batch
       .map(
         (num, idx) => `
-        issue${idx}: issue(number: ${num}) {
-          number
-          timelineItems(first: 10, itemTypes: [CROSS_REFERENCED_EVENT, CONNECTED_EVENT]) {
-            nodes {
-              ... on CrossReferencedEvent {
-                source {
-                  ... on PullRequest {
-                    number
-                    title
-                    state
-                    url
+        issue${idx}: issueOrPullRequest(number: ${num}) {
+          ... on Issue {
+            number
+            timelineItems(
+              first: ${LINKED_PRS_TIMELINE_ITEMS}
+              itemTypes: [CROSS_REFERENCED_EVENT, CONNECTED_EVENT]
+            ) {
+              nodes {
+                ... on CrossReferencedEvent {
+                  source {
+                    ... on PullRequest {
+                      number
+                      title
+                      state
+                      url
+                    }
+                  }
+                }
+                ... on ConnectedEvent {
+                  subject {
+                    ... on PullRequest {
+                      number
+                      title
+                      state
+                      url
+                    }
                   }
                 }
               }
-              ... on ConnectedEvent {
-                subject {
-                  ... on PullRequest {
-                    number
-                    title
-                    state
-                    url
+            }
+          }
+          ... on PullRequest {
+            number
+            timelineItems(
+              first: ${LINKED_PRS_TIMELINE_ITEMS}
+              itemTypes: [CROSS_REFERENCED_EVENT, CONNECTED_EVENT]
+            ) {
+              nodes {
+                ... on CrossReferencedEvent {
+                  source {
+                    ... on PullRequest {
+                      number
+                      title
+                      state
+                      url
+                    }
+                  }
+                }
+                ... on ConnectedEvent {
+                  subject {
+                    ... on PullRequest {
+                      number
+                      title
+                      state
+                      url
+                    }
                   }
                 }
               }
@@ -213,16 +258,35 @@ export function createListIssuesHandler() {
       }
 
       // Fetch open and closed issues in parallel (now including assignees)
+      const repoQualifier =
+        remoteStatus.owner && remoteStatus.repo ? `${remoteStatus.owner}/${remoteStatus.repo}` : '';
+      const repoFlag = repoQualifier ? `-R ${repoQualifier}` : '';
       const [openResult, closedResult] = await Promise.all([
         execAsync(
-          'gh issue list --state open --json number,title,state,author,createdAt,labels,url,body,assignees --limit 100',
+          [
+            GH_ISSUE_LIST_COMMAND,
+            repoFlag,
+            `${GH_STATE_FLAG} ${ISSUE_STATE_OPEN}`,
+            `${GH_JSON_FLAG} ${ISSUE_LIST_FIELDS}`,
+            `${GH_LIMIT_FLAG} ${OPEN_ISSUES_LIMIT}`,
+          ]
+            .filter(Boolean)
+            .join(' '),
           {
             cwd: projectPath,
             env: execEnv,
           }
         ),
         execAsync(
-          'gh issue list --state closed --json number,title,state,author,createdAt,labels,url,body,assignees --limit 50',
+          [
+            GH_ISSUE_LIST_COMMAND,
+            repoFlag,
+            `${GH_STATE_FLAG} ${ISSUE_STATE_CLOSED}`,
+            `${GH_JSON_FLAG} ${ISSUE_LIST_FIELDS}`,
+            `${GH_LIMIT_FLAG} ${CLOSED_ISSUES_LIMIT}`,
+          ]
+            .filter(Boolean)
+            .join(' '),
           {
             cwd: projectPath,
             env: execEnv,

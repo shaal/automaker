@@ -123,8 +123,17 @@ test.describe('Feature Manual Review Flow', () => {
     await waitForNetworkIdle(page);
     await expect(page.locator('[data-testid="board-view"]')).toBeVisible({ timeout: 10000 });
 
-    // Verify we're on the correct project
-    await expect(page.getByText(projectName).first()).toBeVisible({ timeout: 10000 });
+    // Expand sidebar if collapsed to see project name
+    const expandSidebarButton = page.locator('button:has-text("Expand sidebar")');
+    if (await expandSidebarButton.isVisible()) {
+      await expandSidebarButton.click();
+      await page.waitForTimeout(300);
+    }
+
+    // Verify we're on the correct project (project name appears in sidebar button)
+    await expect(page.getByRole('button', { name: new RegExp(projectName) })).toBeVisible({
+      timeout: 10000,
+    });
 
     // Create the feature via HTTP API (writes to disk)
     const feature = {

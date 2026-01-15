@@ -59,9 +59,22 @@ FROM node:22-slim AS server
 ARG GIT_COMMIT_SHA=unknown
 LABEL automaker.git.commit.sha="${GIT_COMMIT_SHA}"
 
+# Build arguments for user ID matching (allows matching host user for mounted volumes)
+# Override at build time: docker build --build-arg UID=$(id -u) --build-arg GID=$(id -g) ...
+ARG UID=1001
+ARG GID=1001
+
 # Install git, curl, bash (for terminal), gosu (for user switching), and GitHub CLI (pinned version, multi-arch)
+# Also install Playwright/Chromium system dependencies (aligns with playwright install-deps on Debian/Ubuntu)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl bash gosu ca-certificates openssh-client \
+    # Playwright/Chromium dependencies
+    libglib2.0-0 libnss3 libnspr4 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 \
+    libcups2 libdrm2 libxkbcommon0 libatspi2.0-0 libxcomposite1 libxdamage1 \
+    libxfixes3 libxrandr2 libgbm1 libasound2 libpango-1.0-0 libcairo2 \
+    libx11-6 libx11-xcb1 libxcb1 libxext6 libxrender1 libxss1 libxtst6 \
+    libxshmfence1 libgtk-3-0 libexpat1 libfontconfig1 fonts-liberation \
+    xdg-utils libpangocairo-1.0-0 libpangoft2-1.0-0 libu2f-udev libvulkan1 \
     && GH_VERSION="2.63.2" \
     && ARCH=$(uname -m) \
     && case "$ARCH" in \
@@ -79,8 +92,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN npm install -g @anthropic-ai/claude-code
 
 # Create non-root user with home directory BEFORE installing Cursor CLI
-RUN groupadd -g 1001 automaker && \
-    useradd -u 1001 -g automaker -m -d /home/automaker -s /bin/bash automaker && \
+# Uses UID/GID build args to match host user for mounted volume permissions
+# Use -o flag to allow non-unique IDs (GID 1000 may already exist as 'node' group)
+RUN groupadd -o -g ${GID} automaker && \
+    useradd -o -u ${UID} -g automaker -m -d /home/automaker -s /bin/bash automaker && \
     mkdir -p /home/automaker/.local/bin && \
     mkdir -p /home/automaker/.cursor && \
     chown -R automaker:automaker /home/automaker && \
@@ -95,6 +110,12 @@ RUN curl https://cursor.com/install -fsS | bash && \
     ls -la /home/automaker/.local/bin/ && \
     echo "=== PATH is: $PATH ===" && \
     (which cursor-agent && cursor-agent --version) || echo "cursor-agent installed (may need auth setup)"
+
+# Install OpenCode CLI (for multi-provider AI model access)
+RUN curl -fsSL https://opencode.ai/install | bash && \
+    echo "=== Checking OpenCode CLI installation ===" && \
+    ls -la /home/automaker/.local/bin/ && \
+    (which opencode && opencode --version) || echo "opencode installed (may need auth setup)"
 USER root
 
 # Add PATH to profile so it's available in all interactive shells (for login shells)

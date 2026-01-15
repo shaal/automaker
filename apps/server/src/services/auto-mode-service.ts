@@ -10,15 +10,18 @@
  */
 
 import { ProviderFactory } from '../providers/provider-factory.js';
+import { simpleQuery } from '../providers/simple-query-service.js';
 import type {
   ExecuteOptions,
   Feature,
   ModelProvider,
   PipelineStep,
+  FeatureStatusWithPipeline,
+  PipelineConfig,
   ThinkingLevel,
   PlanningMode,
 } from '@automaker/types';
-import { DEFAULT_PHASE_MODELS, stripProviderPrefix } from '@automaker/types';
+import { DEFAULT_PHASE_MODELS, isClaudeModel, stripProviderPrefix } from '@automaker/types';
 import {
   buildPromptWithImages,
   classifyError,
@@ -31,7 +34,13 @@ import {
 const logger = createLogger('AutoMode');
 import { resolveModelString, resolvePhaseModel, DEFAULT_MODELS } from '@automaker/model-resolver';
 import { resolveDependencies, areDependenciesSatisfied } from '@automaker/dependency-resolver';
-import { getFeatureDir, getAutomakerDir, getFeaturesDir } from '@automaker/platform';
+import {
+  getFeatureDir,
+  getAutomakerDir,
+  getFeaturesDir,
+  getExecutionStatePath,
+  ensureAutomakerDir,
+} from '@automaker/platform';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
@@ -75,6 +84,26 @@ interface PlanSpec {
   tasksTotal?: number;
   currentTaskId?: string;
   tasks?: ParsedTask[];
+}
+
+/**
+ * Information about pipeline status when resuming a feature.
+ * Used to determine how to handle features stuck in pipeline execution.
+ *
+ * @property {boolean} isPipeline - Whether the feature is in a pipeline step
+ * @property {string | null} stepId - ID of the current pipeline step (e.g., 'step_123')
+ * @property {number} stepIndex - Index of the step in the sorted pipeline steps (-1 if not found)
+ * @property {number} totalSteps - Total number of steps in the pipeline
+ * @property {PipelineStep | null} step - The pipeline step configuration, or null if step not found
+ * @property {PipelineConfig | null} config - The full pipeline configuration, or null if no pipeline
+ */
+interface PipelineStatusInfo {
+  isPipeline: boolean;
+  stepId: string | null;
+  stepIndex: number;
+  totalSteps: number;
+  step: PipelineStep | null;
+  config: PipelineConfig | null;
 }
 
 /**
@@ -201,6 +230,29 @@ interface AutoModeConfig {
   projectPath: string;
 }
 
+/**
+ * Execution state for recovery after server restart
+ * Tracks which features were running and auto-loop configuration
+ */
+interface ExecutionState {
+  version: 1;
+  autoLoopWasRunning: boolean;
+  maxConcurrency: number;
+  projectPath: string;
+  runningFeatureIds: string[];
+  savedAt: string;
+}
+
+// Default empty execution state
+const DEFAULT_EXECUTION_STATE: ExecutionState = {
+  version: 1,
+  autoLoopWasRunning: false,
+  maxConcurrency: 3,
+  projectPath: '',
+  runningFeatureIds: [],
+  savedAt: '',
+};
+
 // Constants for consecutive failure tracking
 const CONSECUTIVE_FAILURE_THRESHOLD = 3; // Pause after 3 consecutive failures
 const FAILURE_WINDOW_MS = 60000; // Failures within 1 minute count as consecutive
@@ -322,6 +374,9 @@ export class AutoModeService {
       projectPath,
     });
 
+    // Save execution state for recovery after restart
+    await this.saveExecutionState(projectPath);
+
     // Note: Memory folder initialization is now handled by loadContextFiles
 
     // Run the loop in the background
@@ -390,17 +445,23 @@ export class AutoModeService {
    */
   async stopAutoLoop(): Promise<number> {
     const wasRunning = this.autoLoopRunning;
+    const projectPath = this.config?.projectPath;
     this.autoLoopRunning = false;
     if (this.autoLoopAbortController) {
       this.autoLoopAbortController.abort();
       this.autoLoopAbortController = null;
     }
 
+    // Clear execution state when auto-loop is explicitly stopped
+    if (projectPath) {
+      await this.clearExecutionState(projectPath);
+    }
+
     // Emit stop event immediately when user explicitly stops
     if (wasRunning) {
       this.emitAutoModeEvent('auto_mode_stopped', {
         message: 'Auto mode stopped',
-        projectPath: this.config?.projectPath,
+        projectPath,
       });
     }
 
@@ -440,6 +501,11 @@ export class AutoModeService {
       startTime: Date.now(),
     };
     this.runningFeatures.set(featureId, tempRunningFeature);
+
+    // Save execution state when feature starts
+    if (isAutoMode) {
+      await this.saveExecutionState(projectPath);
+    }
 
     try {
       // Validate that project path is allowed using centralized validation
@@ -695,6 +761,11 @@ export class AutoModeService {
         `Pending approvals at cleanup: ${Array.from(this.pendingApprovals.keys()).join(', ') || 'none'}`
       );
       this.runningFeatures.delete(featureId);
+
+      // Update execution state after feature completes
+      if (this.autoLoopRunning && projectPath) {
+        await this.saveExecutionState(projectPath);
+      }
     }
   }
 
@@ -869,6 +940,25 @@ Complete the pipeline step instructions above. Review the previous work and appl
       throw new Error('already running');
     }
 
+    // Load feature to check status
+    const feature = await this.loadFeature(projectPath, featureId);
+    if (!feature) {
+      throw new Error(`Feature ${featureId} not found`);
+    }
+
+    // Check if feature is stuck in a pipeline step
+    const pipelineInfo = await this.detectPipelineStatus(
+      projectPath,
+      featureId,
+      (feature.status || '') as FeatureStatusWithPipeline
+    );
+
+    if (pipelineInfo.isPipeline) {
+      // Feature stuck in pipeline - use pipeline resume
+      return this.resumePipelineFeature(projectPath, feature, useWorktrees, pipelineInfo);
+    }
+
+    // Normal resume flow for non-pipeline features
     // Check if context exists in .automaker directory
     const featureDir = getFeatureDir(projectPath, featureId);
     const contextPath = path.join(featureDir, 'agent-output.md');
@@ -888,9 +978,250 @@ Complete the pipeline step instructions above. Review the previous work and appl
     }
 
     // No context, start fresh - executeFeature will handle adding to runningFeatures
-    // Remove the temporary entry we added
-    this.runningFeatures.delete(featureId);
     return this.executeFeature(projectPath, featureId, useWorktrees, false);
+  }
+
+  /**
+   * Resume a feature that crashed during pipeline execution.
+   * Handles multiple edge cases to ensure robust recovery:
+   * - No context file: Restart entire pipeline from beginning
+   * - Step deleted from config: Complete feature without remaining pipeline steps
+   * - Valid step exists: Resume from the crashed step and continue
+   *
+   * @param {string} projectPath - Absolute path to the project directory
+   * @param {Feature} feature - The feature object (already loaded to avoid redundant reads)
+   * @param {boolean} useWorktrees - Whether to use git worktrees for isolation
+   * @param {PipelineStatusInfo} pipelineInfo - Information about the pipeline status from detectPipelineStatus()
+   * @returns {Promise<void>} Resolves when resume operation completes or throws on error
+   * @throws {Error} If pipeline config is null but stepIndex is valid (should never happen)
+   * @private
+   */
+  private async resumePipelineFeature(
+    projectPath: string,
+    feature: Feature,
+    useWorktrees: boolean,
+    pipelineInfo: PipelineStatusInfo
+  ): Promise<void> {
+    const featureId = feature.id;
+    console.log(
+      `[AutoMode] Resuming feature ${featureId} from pipeline step ${pipelineInfo.stepId}`
+    );
+
+    // Check for context file
+    const featureDir = getFeatureDir(projectPath, featureId);
+    const contextPath = path.join(featureDir, 'agent-output.md');
+
+    let hasContext = false;
+    try {
+      await secureFs.access(contextPath);
+      hasContext = true;
+    } catch {
+      // No context
+    }
+
+    // Edge Case 1: No context file - restart entire pipeline from beginning
+    if (!hasContext) {
+      console.warn(
+        `[AutoMode] No context found for pipeline feature ${featureId}, restarting from beginning`
+      );
+
+      // Reset status to in_progress and start fresh
+      await this.updateFeatureStatus(projectPath, featureId, 'in_progress');
+
+      return this.executeFeature(projectPath, featureId, useWorktrees, false);
+    }
+
+    // Edge Case 2: Step no longer exists in pipeline config
+    if (pipelineInfo.stepIndex === -1) {
+      console.warn(
+        `[AutoMode] Step ${pipelineInfo.stepId} no longer exists in pipeline, completing feature without pipeline`
+      );
+
+      const finalStatus = feature.skipTests ? 'waiting_approval' : 'verified';
+
+      await this.updateFeatureStatus(projectPath, featureId, finalStatus);
+
+      this.emitAutoModeEvent('auto_mode_feature_complete', {
+        featureId,
+        passes: true,
+        message:
+          'Pipeline step no longer exists - feature completed without remaining pipeline steps',
+        projectPath,
+      });
+
+      return;
+    }
+
+    // Normal case: Valid pipeline step exists, has context
+    // Resume from the stuck step (re-execute the step that crashed)
+    if (!pipelineInfo.config) {
+      throw new Error('Pipeline config is null but stepIndex is valid - this should not happen');
+    }
+
+    return this.resumeFromPipelineStep(
+      projectPath,
+      feature,
+      useWorktrees,
+      pipelineInfo.stepIndex,
+      pipelineInfo.config
+    );
+  }
+
+  /**
+   * Resume pipeline execution from a specific step index.
+   * Re-executes the step that crashed (to handle partial completion),
+   * then continues executing all remaining pipeline steps in order.
+   *
+   * This method handles the complete pipeline resume workflow:
+   * - Validates feature and step index
+   * - Locates or creates git worktree if needed
+   * - Executes remaining steps starting from the crashed step
+   * - Updates feature status to verified/waiting_approval when complete
+   * - Emits progress events throughout execution
+   *
+   * @param {string} projectPath - Absolute path to the project directory
+   * @param {Feature} feature - The feature object (already loaded to avoid redundant reads)
+   * @param {boolean} useWorktrees - Whether to use git worktrees for isolation
+   * @param {number} startFromStepIndex - Zero-based index of the step to resume from
+   * @param {PipelineConfig} pipelineConfig - Pipeline config passed from detectPipelineStatus to avoid re-reading
+   * @returns {Promise<void>} Resolves when pipeline execution completes successfully
+   * @throws {Error} If feature not found, step index invalid, or pipeline execution fails
+   * @private
+   */
+  private async resumeFromPipelineStep(
+    projectPath: string,
+    feature: Feature,
+    useWorktrees: boolean,
+    startFromStepIndex: number,
+    pipelineConfig: PipelineConfig
+  ): Promise<void> {
+    const featureId = feature.id;
+
+    const sortedSteps = [...pipelineConfig.steps].sort((a, b) => a.order - b.order);
+
+    // Validate step index
+    if (startFromStepIndex < 0 || startFromStepIndex >= sortedSteps.length) {
+      throw new Error(`Invalid step index: ${startFromStepIndex}`);
+    }
+
+    // Get steps to execute (from startFromStepIndex onwards)
+    const stepsToExecute = sortedSteps.slice(startFromStepIndex);
+
+    console.log(
+      `[AutoMode] Resuming pipeline for feature ${featureId} from step ${startFromStepIndex + 1}/${sortedSteps.length}`
+    );
+
+    // Add to running features immediately
+    const abortController = new AbortController();
+    this.runningFeatures.set(featureId, {
+      featureId,
+      projectPath,
+      worktreePath: null, // Will be set below
+      branchName: feature.branchName ?? null,
+      abortController,
+      isAutoMode: false,
+      startTime: Date.now(),
+    });
+
+    try {
+      // Validate project path
+      validateWorkingDirectory(projectPath);
+
+      // Derive workDir from feature.branchName
+      let worktreePath: string | null = null;
+      const branchName = feature.branchName;
+
+      if (useWorktrees && branchName) {
+        worktreePath = await this.findExistingWorktreeForBranch(projectPath, branchName);
+        if (worktreePath) {
+          console.log(`[AutoMode] Using worktree for branch "${branchName}": ${worktreePath}`);
+        } else {
+          console.warn(
+            `[AutoMode] Worktree for branch "${branchName}" not found, using project path`
+          );
+        }
+      }
+
+      const workDir = worktreePath ? path.resolve(worktreePath) : path.resolve(projectPath);
+      validateWorkingDirectory(workDir);
+
+      // Update running feature with worktree info
+      const runningFeature = this.runningFeatures.get(featureId);
+      if (runningFeature) {
+        runningFeature.worktreePath = worktreePath;
+        runningFeature.branchName = branchName ?? null;
+      }
+
+      // Emit resume event
+      this.emitAutoModeEvent('auto_mode_feature_start', {
+        featureId,
+        projectPath,
+        feature: {
+          id: featureId,
+          title: feature.title || 'Resuming Pipeline',
+          description: feature.description,
+        },
+      });
+
+      this.emitAutoModeEvent('auto_mode_progress', {
+        featureId,
+        content: `Resuming from pipeline step ${startFromStepIndex + 1}/${sortedSteps.length}`,
+        projectPath,
+      });
+
+      // Load autoLoadClaudeMd setting
+      const autoLoadClaudeMd = await getAutoLoadClaudeMdSetting(
+        projectPath,
+        this.settingsService,
+        '[AutoMode]'
+      );
+
+      // Execute remaining pipeline steps (starting from crashed step)
+      await this.executePipelineSteps(
+        projectPath,
+        featureId,
+        feature,
+        stepsToExecute,
+        workDir,
+        abortController,
+        autoLoadClaudeMd
+      );
+
+      // Determine final status
+      const finalStatus = feature.skipTests ? 'waiting_approval' : 'verified';
+      await this.updateFeatureStatus(projectPath, featureId, finalStatus);
+
+      console.log('[AutoMode] Pipeline resume completed successfully');
+
+      this.emitAutoModeEvent('auto_mode_feature_complete', {
+        featureId,
+        passes: true,
+        message: 'Pipeline resumed and completed successfully',
+        projectPath,
+      });
+    } catch (error) {
+      const errorInfo = classifyError(error);
+
+      if (errorInfo.isAbort) {
+        this.emitAutoModeEvent('auto_mode_feature_complete', {
+          featureId,
+          passes: false,
+          message: 'Pipeline resume stopped by user',
+          projectPath,
+        });
+      } else {
+        console.error(`[AutoMode] Pipeline resume failed for feature ${featureId}:`, error);
+        await this.updateFeatureStatus(projectPath, featureId, 'backlog');
+        this.emitAutoModeEvent('auto_mode_error', {
+          featureId,
+          error: errorInfo.message,
+          errorType: errorInfo.type,
+          projectPath,
+        });
+      }
+    } finally {
+      this.runningFeatures.delete(featureId);
+    }
   }
 
   /**
@@ -2838,6 +3169,111 @@ Review the previous work and continue the implementation. If the feature appears
   }
 
   /**
+   * Detect if a feature is stuck in a pipeline step and extract step information.
+   * Parses the feature status to determine if it's a pipeline status (e.g., 'pipeline_step_xyz'),
+   * loads the pipeline configuration, and validates that the step still exists.
+   *
+   * This method handles several scenarios:
+   * - Non-pipeline status: Returns default PipelineStatusInfo with isPipeline=false
+   * - Invalid pipeline status format: Returns isPipeline=true but null step info
+   * - Step deleted from config: Returns stepIndex=-1 to signal missing step
+   * - Valid pipeline step: Returns full step information and config
+   *
+   * @param {string} projectPath - Absolute path to the project directory
+   * @param {string} featureId - Unique identifier of the feature
+   * @param {FeatureStatusWithPipeline} currentStatus - Current feature status (may include pipeline step info)
+   * @returns {Promise<PipelineStatusInfo>} Information about the pipeline status and step
+   * @private
+   */
+  private async detectPipelineStatus(
+    projectPath: string,
+    featureId: string,
+    currentStatus: FeatureStatusWithPipeline
+  ): Promise<PipelineStatusInfo> {
+    // Check if status is pipeline format using PipelineService
+    const isPipeline = pipelineService.isPipelineStatus(currentStatus);
+
+    if (!isPipeline) {
+      return {
+        isPipeline: false,
+        stepId: null,
+        stepIndex: -1,
+        totalSteps: 0,
+        step: null,
+        config: null,
+      };
+    }
+
+    // Extract step ID using PipelineService
+    const stepId = pipelineService.getStepIdFromStatus(currentStatus);
+
+    if (!stepId) {
+      console.warn(
+        `[AutoMode] Feature ${featureId} has invalid pipeline status format: ${currentStatus}`
+      );
+      return {
+        isPipeline: true,
+        stepId: null,
+        stepIndex: -1,
+        totalSteps: 0,
+        step: null,
+        config: null,
+      };
+    }
+
+    // Load pipeline config
+    const config = await pipelineService.getPipelineConfig(projectPath);
+
+    if (!config || config.steps.length === 0) {
+      // Pipeline config doesn't exist or empty - feature stuck with invalid pipeline status
+      console.warn(
+        `[AutoMode] Feature ${featureId} has pipeline status but no pipeline config exists`
+      );
+      return {
+        isPipeline: true,
+        stepId,
+        stepIndex: -1,
+        totalSteps: 0,
+        step: null,
+        config: null,
+      };
+    }
+
+    // Find the step directly from config (already loaded, avoid redundant file read)
+    const sortedSteps = [...config.steps].sort((a, b) => a.order - b.order);
+    const stepIndex = sortedSteps.findIndex((s) => s.id === stepId);
+    const step = stepIndex === -1 ? null : sortedSteps[stepIndex];
+
+    if (!step) {
+      // Step not found in current config - step was deleted/changed
+      console.warn(
+        `[AutoMode] Feature ${featureId} stuck in step ${stepId} which no longer exists in pipeline config`
+      );
+      return {
+        isPipeline: true,
+        stepId,
+        stepIndex: -1,
+        totalSteps: sortedSteps.length,
+        step: null,
+        config,
+      };
+    }
+
+    console.log(
+      `[AutoMode] Detected pipeline status for feature ${featureId}: step ${stepIndex + 1}/${sortedSteps.length} (${step.name})`
+    );
+
+    return {
+      isPipeline: true,
+      stepId,
+      stepIndex,
+      totalSteps: sortedSteps.length,
+      step,
+      config,
+    };
+  }
+
+  /**
    * Build a focused prompt for executing a single task.
    * Each task gets minimal context to keep the agent focused.
    */
@@ -2950,6 +3386,149 @@ Begin implementing task ${task.id} now.`;
     });
   }
 
+  // ============================================================================
+  // Execution State Persistence - For recovery after server restart
+  // ============================================================================
+
+  /**
+   * Save execution state to disk for recovery after server restart
+   */
+  private async saveExecutionState(projectPath: string): Promise<void> {
+    try {
+      await ensureAutomakerDir(projectPath);
+      const statePath = getExecutionStatePath(projectPath);
+      const state: ExecutionState = {
+        version: 1,
+        autoLoopWasRunning: this.autoLoopRunning,
+        maxConcurrency: this.config?.maxConcurrency ?? 3,
+        projectPath,
+        runningFeatureIds: Array.from(this.runningFeatures.keys()),
+        savedAt: new Date().toISOString(),
+      };
+      await secureFs.writeFile(statePath, JSON.stringify(state, null, 2), 'utf-8');
+      logger.info(`Saved execution state: ${state.runningFeatureIds.length} running features`);
+    } catch (error) {
+      logger.error('Failed to save execution state:', error);
+    }
+  }
+
+  /**
+   * Load execution state from disk
+   */
+  private async loadExecutionState(projectPath: string): Promise<ExecutionState> {
+    try {
+      const statePath = getExecutionStatePath(projectPath);
+      const content = (await secureFs.readFile(statePath, 'utf-8')) as string;
+      const state = JSON.parse(content) as ExecutionState;
+      return state;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        logger.error('Failed to load execution state:', error);
+      }
+      return DEFAULT_EXECUTION_STATE;
+    }
+  }
+
+  /**
+   * Clear execution state (called on successful shutdown or when auto-loop stops)
+   */
+  private async clearExecutionState(projectPath: string): Promise<void> {
+    try {
+      const statePath = getExecutionStatePath(projectPath);
+      await secureFs.unlink(statePath);
+      logger.info('Cleared execution state');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        logger.error('Failed to clear execution state:', error);
+      }
+    }
+  }
+
+  /**
+   * Check for and resume interrupted features after server restart
+   * This should be called during server initialization
+   */
+  async resumeInterruptedFeatures(projectPath: string): Promise<void> {
+    logger.info('Checking for interrupted features to resume...');
+
+    // Load all features and find those that were interrupted
+    const featuresDir = getFeaturesDir(projectPath);
+
+    try {
+      const entries = await secureFs.readdir(featuresDir, { withFileTypes: true });
+      const interruptedFeatures: Feature[] = [];
+
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          const featurePath = path.join(featuresDir, entry.name, 'feature.json');
+          try {
+            const data = (await secureFs.readFile(featurePath, 'utf-8')) as string;
+            const feature = JSON.parse(data) as Feature;
+
+            // Check if feature was interrupted (in_progress or pipeline_*)
+            if (
+              feature.status === 'in_progress' ||
+              (feature.status && feature.status.startsWith('pipeline_'))
+            ) {
+              // Verify it has existing context (agent-output.md)
+              const featureDir = getFeatureDir(projectPath, feature.id);
+              const contextPath = path.join(featureDir, 'agent-output.md');
+              try {
+                await secureFs.access(contextPath);
+                interruptedFeatures.push(feature);
+                logger.info(
+                  `Found interrupted feature: ${feature.id} (${feature.title}) - status: ${feature.status}`
+                );
+              } catch {
+                // No context file, skip this feature - it will be restarted fresh
+                logger.info(`Interrupted feature ${feature.id} has no context, will restart fresh`);
+              }
+            }
+          } catch {
+            // Skip invalid features
+          }
+        }
+      }
+
+      if (interruptedFeatures.length === 0) {
+        logger.info('No interrupted features found');
+        return;
+      }
+
+      logger.info(`Found ${interruptedFeatures.length} interrupted feature(s) to resume`);
+
+      // Emit event to notify UI
+      this.emitAutoModeEvent('auto_mode_resuming_features', {
+        message: `Resuming ${interruptedFeatures.length} interrupted feature(s) after server restart`,
+        projectPath,
+        featureIds: interruptedFeatures.map((f) => f.id),
+        features: interruptedFeatures.map((f) => ({
+          id: f.id,
+          title: f.title,
+          status: f.status,
+        })),
+      });
+
+      // Resume each interrupted feature
+      for (const feature of interruptedFeatures) {
+        try {
+          logger.info(`Resuming feature: ${feature.id} (${feature.title})`);
+          // Use resumeFeature which will detect the existing context and continue
+          await this.resumeFeature(projectPath, feature.id, true);
+        } catch (error) {
+          logger.error(`Failed to resume feature ${feature.id}:`, error);
+          // Continue with other features
+        }
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        logger.info('No features directory found, nothing to resume');
+      } else {
+        logger.error('Error checking for interrupted features:', error);
+      }
+    }
+  }
+
   /**
    * Extract and record learnings from a completed feature
    * Uses a quick Claude call to identify important decisions and patterns
@@ -3002,40 +3581,42 @@ IMPORTANT: Only include NON-OBVIOUS learnings with real reasoning. Skip trivial 
 If nothing notable: {"learnings": []}`;
 
     try {
-      // Import query dynamically to avoid circular dependencies
-      const { query } = await import('@anthropic-ai/claude-agent-sdk');
-
       // Get model from phase settings
       const settings = await this.settingsService?.getGlobalSettings();
       const phaseModelEntry =
         settings?.phaseModels?.memoryExtractionModel || DEFAULT_PHASE_MODELS.memoryExtractionModel;
       const { model } = resolvePhaseModel(phaseModelEntry);
+      const hasClaudeKey = Boolean(process.env.ANTHROPIC_API_KEY);
+      let resolvedModel = model;
 
-      const stream = query({
-        prompt: userPrompt,
-        options: {
-          model,
-          maxTurns: 1,
-          allowedTools: [],
-          permissionMode: 'acceptEdits',
-          systemPrompt:
-            'You are a JSON extraction assistant. You MUST respond with ONLY valid JSON, no explanations, no markdown, no other text. Extract learnings from the provided implementation context and return them as JSON.',
-        },
-      });
-
-      // Extract text from stream
-      let responseText = '';
-      for await (const msg of stream) {
-        if (msg.type === 'assistant' && msg.message?.content) {
-          for (const block of msg.message.content) {
-            if (block.type === 'text' && block.text) {
-              responseText += block.text;
-            }
-          }
-        } else if (msg.type === 'result' && msg.subtype === 'success') {
-          responseText = msg.result || responseText;
+      if (isClaudeModel(model) && !hasClaudeKey) {
+        const fallbackModel = feature.model
+          ? resolveModelString(feature.model, DEFAULT_MODELS.claude)
+          : null;
+        if (fallbackModel && !isClaudeModel(fallbackModel)) {
+          console.log(
+            `[AutoMode] Claude not configured for memory extraction; using feature model "${fallbackModel}".`
+          );
+          resolvedModel = fallbackModel;
+        } else {
+          console.log(
+            '[AutoMode] Claude not configured for memory extraction; skipping learning extraction.'
+          );
+          return;
         }
       }
+
+      const result = await simpleQuery({
+        prompt: userPrompt,
+        model: resolvedModel,
+        cwd: projectPath,
+        maxTurns: 1,
+        allowedTools: [],
+        systemPrompt:
+          'You are a JSON extraction assistant. You MUST respond with ONLY valid JSON, no explanations, no markdown, no other text. Extract learnings from the provided implementation context and return them as JSON.',
+      });
+
+      const responseText = result.text;
 
       console.log(`[AutoMode] Learning extraction response: ${responseText.length} chars`);
       console.log(`[AutoMode] Response preview: ${responseText.substring(0, 300)}`);

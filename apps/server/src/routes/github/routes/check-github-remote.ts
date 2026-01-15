@@ -5,6 +5,43 @@
 import type { Request, Response } from 'express';
 import { execAsync, execEnv, getErrorMessage, logError } from './common.js';
 
+const GIT_REMOTE_ORIGIN_COMMAND = 'git remote get-url origin';
+const GH_REPO_VIEW_COMMAND = 'gh repo view --json name,owner';
+const GITHUB_REPO_URL_PREFIX = 'https://github.com/';
+const GITHUB_HTTPS_REMOTE_REGEX = /https:\/\/github\.com\/([^/]+)\/([^/.]+)/;
+const GITHUB_SSH_REMOTE_REGEX = /git@github\.com:([^/]+)\/([^/.]+)/;
+
+interface GhRepoViewResponse {
+  name?: string;
+  owner?: {
+    login?: string;
+  };
+}
+
+async function resolveRepoFromGh(projectPath: string): Promise<{
+  owner: string;
+  repo: string;
+} | null> {
+  try {
+    const { stdout } = await execAsync(GH_REPO_VIEW_COMMAND, {
+      cwd: projectPath,
+      env: execEnv,
+    });
+
+    const data = JSON.parse(stdout) as GhRepoViewResponse;
+    const owner = typeof data.owner?.login === 'string' ? data.owner.login : null;
+    const repo = typeof data.name === 'string' ? data.name : null;
+
+    if (!owner || !repo) {
+      return null;
+    }
+
+    return { owner, repo };
+  } catch {
+    return null;
+  }
+}
+
 export interface GitHubRemoteStatus {
   hasGitHubRemote: boolean;
   remoteUrl: string | null;
@@ -21,19 +58,38 @@ export async function checkGitHubRemote(projectPath: string): Promise<GitHubRemo
   };
 
   try {
-    // Get the remote URL (origin by default)
-    const { stdout } = await execAsync('git remote get-url origin', {
-      cwd: projectPath,
-      env: execEnv,
-    });
+    let remoteUrl = '';
+    try {
+      // Get the remote URL (origin by default)
+      const { stdout } = await execAsync(GIT_REMOTE_ORIGIN_COMMAND, {
+        cwd: projectPath,
+        env: execEnv,
+      });
+      remoteUrl = stdout.trim();
+      status.remoteUrl = remoteUrl || null;
+    } catch {
+      // Ignore missing origin remote
+    }
 
-    const remoteUrl = stdout.trim();
-    status.remoteUrl = remoteUrl;
+    const ghRepo = await resolveRepoFromGh(projectPath);
+    if (ghRepo) {
+      status.hasGitHubRemote = true;
+      status.owner = ghRepo.owner;
+      status.repo = ghRepo.repo;
+      if (!status.remoteUrl) {
+        status.remoteUrl = `${GITHUB_REPO_URL_PREFIX}${ghRepo.owner}/${ghRepo.repo}`;
+      }
+      return status;
+    }
 
     // Check if it's a GitHub URL
     // Formats: https://github.com/owner/repo.git, git@github.com:owner/repo.git
-    const httpsMatch = remoteUrl.match(/https:\/\/github\.com\/([^/]+)\/([^/.]+)/);
-    const sshMatch = remoteUrl.match(/git@github\.com:([^/]+)\/([^/.]+)/);
+    if (!remoteUrl) {
+      return status;
+    }
+
+    const httpsMatch = remoteUrl.match(GITHUB_HTTPS_REMOTE_REGEX);
+    const sshMatch = remoteUrl.match(GITHUB_SSH_REMOTE_REGEX);
 
     const match = httpsMatch || sshMatch;
     if (match) {

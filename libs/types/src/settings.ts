@@ -6,7 +6,7 @@
  * (for file I/O via SettingsService) and the UI (for state management and sync).
  */
 
-import type { ModelAlias, AgentModel, CodexModelId } from './model.js';
+import type { ModelAlias, ModelId } from './model.js';
 import type { CursorModelId } from './cursor-models.js';
 import { CURSOR_MODEL_MAP, getAllCursorModelIds } from './cursor-models.js';
 import type { OpencodeModelId } from './opencode-models.js';
@@ -65,9 +65,6 @@ export type ThemeMode =
   | 'nordlight'
   | 'blossom';
 
-/** KanbanCardDetailLevel - Controls how much information is displayed on kanban cards */
-export type KanbanCardDetailLevel = 'minimal' | 'standard' | 'detailed';
-
 /** PlanningMode - Planning levels for feature generation workflows */
 export type PlanningMode = 'skip' | 'lite' | 'spec' | 'full';
 
@@ -117,8 +114,8 @@ const DEFAULT_CODEX_ADDITIONAL_DIRS: string[] = [];
  * - Cursor models: Handle thinking internally
  */
 export interface PhaseModelEntry {
-  /** The model to use (Claude alias, Cursor model ID, or Codex model ID) */
-  model: ModelAlias | CursorModelId | CodexModelId;
+  /** The model to use (supports Claude, Cursor, Codex, OpenCode, and dynamic provider IDs) */
+  model: ModelId;
   /** Extended thinking level (only applies to Claude models, defaults to 'none') */
   thinkingLevel?: ThinkingLevel;
   /** Reasoning effort level (only applies to Codex models, defaults to 'none') */
@@ -160,6 +157,10 @@ export interface PhaseModelConfig {
   // Memory tasks - for learning extraction and memory operations
   /** Model for extracting learnings from completed agent sessions */
   memoryExtractionModel: PhaseModelEntry;
+
+  // Quick tasks - commit messages
+  /** Model for generating git commit messages from diffs */
+  commitMessageModel: PhaseModelEntry;
 }
 
 /** Keys of PhaseModelConfig for type-safe access */
@@ -201,8 +202,6 @@ export interface KeyboardShortcuts {
   context: string;
   /** Open settings */
   settings: string;
-  /** Open AI profiles */
-  profiles: string;
   /** Open terminal */
   terminal: string;
   /** Toggle sidebar visibility */
@@ -223,104 +222,12 @@ export interface KeyboardShortcuts {
   cyclePrevProject: string;
   /** Cycle to next project */
   cycleNextProject: string;
-  /** Add new AI profile */
-  addProfile: string;
   /** Split terminal right */
   splitTerminalRight: string;
   /** Split terminal down */
   splitTerminalDown: string;
   /** Close current terminal */
   closeTerminal: string;
-}
-
-/**
- * AIProfile - Configuration for an AI model with specific parameters
- *
- * Profiles can be built-in defaults or user-created. They define which model to use,
- * thinking level, and other parameters for feature generation tasks.
- */
-export interface AIProfile {
-  /** Unique identifier for the profile */
-  id: string;
-  /** Display name for the profile */
-  name: string;
-  /** User-friendly description */
-  description: string;
-  /** Provider selection: 'claude', 'cursor', or 'codex' */
-  provider: ModelProvider;
-  /** Whether this is a built-in default profile */
-  isBuiltIn: boolean;
-  /** Optional icon identifier or emoji */
-  icon?: string;
-
-  // Claude-specific settings
-  /** Which Claude model to use (opus, sonnet, haiku) - only for Claude provider */
-  model?: ModelAlias;
-  /** Extended thinking level for reasoning-based tasks - only for Claude provider */
-  thinkingLevel?: ThinkingLevel;
-
-  // Cursor-specific settings
-  /** Which Cursor model to use - only for Cursor provider
-   * Note: For Cursor, thinking is embedded in the model ID (e.g., 'claude-sonnet-4-thinking')
-   */
-  cursorModel?: CursorModelId;
-
-  // Codex-specific settings
-  /** Which Codex/GPT model to use - only for Codex provider */
-  codexModel?: CodexModelId;
-
-  // OpenCode-specific settings
-  /** Which OpenCode model to use - only for OpenCode provider */
-  opencodeModel?: OpencodeModelId;
-}
-
-/**
- * Helper to determine if a profile uses thinking mode
- */
-export function profileHasThinking(profile: AIProfile): boolean {
-  if (profile.provider === 'claude') {
-    return profile.thinkingLevel !== undefined && profile.thinkingLevel !== 'none';
-  }
-
-  if (profile.provider === 'cursor') {
-    const model = profile.cursorModel || 'auto';
-    // Check using model map for hasThinking flag, or check for 'thinking' in name
-    const modelConfig = CURSOR_MODEL_MAP[model];
-    return modelConfig?.hasThinking ?? false;
-  }
-
-  if (profile.provider === 'codex') {
-    // Codex models handle thinking internally (o-series models)
-    const model = profile.codexModel || 'codex-gpt-5.2';
-    return model.startsWith('o');
-  }
-
-  if (profile.provider === 'opencode') {
-    // OpenCode models don't expose thinking configuration
-    return false;
-  }
-
-  return false;
-}
-
-/**
- * Get effective model string for execution
- */
-export function getProfileModelString(profile: AIProfile): string {
-  if (profile.provider === 'cursor') {
-    return `cursor:${profile.cursorModel || 'auto'}`;
-  }
-
-  if (profile.provider === 'codex') {
-    return `codex:${profile.codexModel || 'codex-gpt-5.2'}`;
-  }
-
-  if (profile.provider === 'opencode') {
-    return `opencode:${profile.opencodeModel || DEFAULT_OPENCODE_MODEL}`;
-  }
-
-  // Claude
-  return profile.model || 'sonnet';
 }
 
 /**
@@ -388,6 +295,12 @@ export interface ProjectRef {
   lastOpened?: string;
   /** Project-specific theme override (or undefined to use global) */
   theme?: string;
+  /** Whether project is pinned to favorites on dashboard */
+  isFavorite?: boolean;
+  /** Lucide icon name for project identification */
+  icon?: string;
+  /** Custom icon image path for project switcher */
+  customIconPath?: string;
 }
 
 /**
@@ -426,7 +339,7 @@ export interface ChatSessionRef {
  * GlobalSettings - User preferences and state stored globally in {DATA_DIR}/settings.json
  *
  * This is the main settings file that persists user preferences across sessions.
- * Includes theme, UI state, feature defaults, keyboard shortcuts, AI profiles, and projects.
+ * Includes theme, UI state, feature defaults, keyboard shortcuts, and projects.
  * Format: JSON with version field for migration support.
  */
 export interface GlobalSettings {
@@ -454,8 +367,6 @@ export interface GlobalSettings {
   sidebarOpen: boolean;
   /** Whether chat history panel is open */
   chatHistoryOpen: boolean;
-  /** How much detail to show on kanban cards */
-  kanbanCardDetailLevel: KanbanCardDetailLevel;
 
   // Feature Generation Defaults
   /** Max features to generate concurrently */
@@ -468,18 +379,20 @@ export interface GlobalSettings {
   skipVerificationInAutoMode: boolean;
   /** Default: use git worktrees for feature branches */
   useWorktrees: boolean;
-  /** Default: only show AI profiles (hide other settings) */
-  showProfilesOnly: boolean;
   /** Default: planning approach (skip/lite/spec/full) */
   defaultPlanningMode: PlanningMode;
   /** Default: require manual approval before generating */
   defaultRequirePlanApproval: boolean;
-  /** ID of currently selected AI profile (null = use built-in) */
-  defaultAIProfileId: string | null;
+  /** Default model and thinking level for new feature cards */
+  defaultFeatureModel: PhaseModelEntry;
 
   // Audio Preferences
   /** Mute completion notification sound */
   muteDoneSound: boolean;
+
+  // AI Commit Message Generation
+  /** Enable AI-generated commit messages when opening commit dialog (default: true) */
+  enableAiCommitMessages: boolean;
 
   // AI Model Selection (per-phase configuration)
   /** Phase-specific AI model configuration */
@@ -502,14 +415,12 @@ export interface GlobalSettings {
   enabledOpencodeModels?: OpencodeModelId[];
   /** Default OpenCode model selection when switching to OpenCode CLI */
   opencodeDefaultModel?: OpencodeModelId;
+  /** Which dynamic OpenCode models are enabled (empty = all discovered) */
+  enabledDynamicModelIds?: string[];
 
   // Input Configuration
   /** User's keyboard shortcut bindings */
   keyboardShortcuts: KeyboardShortcuts;
-
-  // AI Profiles
-  /** User-created AI profiles */
-  aiProfiles: AIProfile[];
 
   // Project Management
   /** List of active projects */
@@ -564,6 +475,10 @@ export interface GlobalSettings {
   // MCP Server Configuration
   /** List of configured MCP servers for agent use */
   mcpServers: MCPServerConfig[];
+
+  // Editor Configuration
+  /** Default editor command for "Open In" action (null = auto-detect: Cursor > VS Code > first available) */
+  defaultEditorCommand: string | null;
 
   // Prompt Customization
   /** Custom prompts for Auto Mode, Agent Runner, Backlog Planning, and Enhancements */
@@ -697,6 +612,22 @@ export interface ProjectSettings {
   /** Project-specific board background settings */
   boardBackground?: BoardBackgroundSettings;
 
+  // Project Branding
+  /** Custom icon image path for project switcher (relative to .automaker/) */
+  customIconPath?: string;
+
+  // UI Visibility
+  /** Whether the worktree panel row is visible (default: true) */
+  worktreePanelVisible?: boolean;
+  /** Whether to show the init script indicator panel (default: true) */
+  showInitScriptIndicator?: boolean;
+
+  // Worktree Behavior
+  /** Default value for "delete branch" checkbox when deleting a worktree (default: false) */
+  defaultDeleteBranchWithWorktree?: boolean;
+  /** Auto-dismiss init script indicator after completion (default: true) */
+  autoDismissInitScriptIndicator?: boolean;
+
   // Session Tracking
   /** Last chat session selected in this project */
   lastSelectedSessionId?: string;
@@ -738,6 +669,9 @@ export const DEFAULT_PHASE_MODELS: PhaseModelConfig = {
 
   // Memory - use fast model for learning extraction (cost-effective)
   memoryExtractionModel: { model: 'haiku' },
+
+  // Commit messages - use fast model for speed
+  commitMessageModel: { model: 'haiku' },
 };
 
 /** Current version of the global settings schema */
@@ -754,7 +688,6 @@ export const DEFAULT_KEYBOARD_SHORTCUTS: KeyboardShortcuts = {
   spec: 'D',
   context: 'C',
   settings: 'S',
-  profiles: 'M',
   terminal: 'T',
   toggleSidebar: '`',
   addFeature: 'N',
@@ -765,7 +698,6 @@ export const DEFAULT_KEYBOARD_SHORTCUTS: KeyboardShortcuts = {
   projectPicker: 'P',
   cyclePrevProject: 'Q',
   cycleNextProject: 'E',
-  addProfile: 'N',
   splitTerminalRight: 'Alt+D',
   splitTerminalDown: 'Alt+S',
   closeTerminal: 'Alt+W',
@@ -780,17 +712,16 @@ export const DEFAULT_GLOBAL_SETTINGS: GlobalSettings = {
   theme: 'dark',
   sidebarOpen: true,
   chatHistoryOpen: false,
-  kanbanCardDetailLevel: 'standard',
   maxConcurrency: 3,
   defaultSkipTests: true,
   enableDependencyBlocking: true,
   skipVerificationInAutoMode: false,
   useWorktrees: true,
-  showProfilesOnly: false,
   defaultPlanningMode: 'skip',
   defaultRequirePlanApproval: false,
-  defaultAIProfileId: null,
+  defaultFeatureModel: { model: 'opus' },
   muteDoneSound: false,
+  enableAiCommitMessages: true,
   phaseModels: DEFAULT_PHASE_MODELS,
   enhancementModel: 'sonnet',
   validationModel: 'opus',
@@ -798,8 +729,8 @@ export const DEFAULT_GLOBAL_SETTINGS: GlobalSettings = {
   cursorDefaultModel: 'auto',
   enabledOpencodeModels: getAllOpencodeModelIds(),
   opencodeDefaultModel: DEFAULT_OPENCODE_MODEL,
+  enabledDynamicModelIds: [],
   keyboardShortcuts: DEFAULT_KEYBOARD_SHORTCUTS,
-  aiProfiles: [],
   projects: [],
   trashedProjects: [],
   currentProjectId: null,
@@ -819,6 +750,7 @@ export const DEFAULT_GLOBAL_SETTINGS: GlobalSettings = {
   codexAdditionalDirs: DEFAULT_CODEX_ADDITIONAL_DIRS,
   codexThreadId: undefined,
   mcpServers: [],
+  defaultEditorCommand: null,
   enableSkills: true,
   skillsSources: ['user', 'project'],
   enableSubagents: true,

@@ -93,7 +93,9 @@ test.describe('Settings startup sync race', () => {
 
     // App should eventually render a main view after settings hydration.
     await page
-      .locator('[data-testid="welcome-view"], [data-testid="board-view"]')
+      .locator(
+        '[data-testid="welcome-view"], [data-testid="dashboard-view"], [data-testid="board-view"]'
+      )
       .first()
       .waitFor({ state: 'visible', timeout: 30000 });
 
@@ -112,7 +114,9 @@ test.describe('Settings startup sync race', () => {
     await page.waitForLoadState('load');
     await handleLoginScreenIfPresent(page);
     await page
-      .locator('[data-testid="welcome-view"], [data-testid="board-view"]')
+      .locator(
+        '[data-testid="welcome-view"], [data-testid="dashboard-view"], [data-testid="board-view"]'
+      )
       .first()
       .waitFor({ state: 'visible', timeout: 30000 });
 

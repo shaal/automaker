@@ -70,6 +70,8 @@ const eslintConfig = defineConfig([
         AbortSignal: 'readonly',
         Audio: 'readonly',
         ScrollBehavior: 'readonly',
+        URL: 'readonly',
+        URLSearchParams: 'readonly',
         // Timers
         setTimeout: 'readonly',
         setInterval: 'readonly',

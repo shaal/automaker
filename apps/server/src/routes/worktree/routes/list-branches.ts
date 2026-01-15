@@ -1,5 +1,5 @@
 /**
- * POST /list-branches endpoint - List all local branches
+ * POST /list-branches endpoint - List all local branches and optionally remote branches
  *
  * Note: Git repository validation (isGitRepo, hasCommits) is handled by
  * the requireValidWorktree middleware in index.ts
@@ -21,8 +21,9 @@ interface BranchInfo {
 export function createListBranchesHandler() {
   return async (req: Request, res: Response): Promise<void> => {
     try {
-      const { worktreePath } = req.body as {
+      const { worktreePath, includeRemote = false } = req.body as {
         worktreePath: string;
+        includeRemote?: boolean;
       };
 
       if (!worktreePath) {
@@ -59,6 +60,55 @@ export function createListBranchesHandler() {
             isRemote: false,
           };
         });
+
+      // Fetch remote branches if requested
+      if (includeRemote) {
+        try {
+          // Fetch latest remote refs (silently, don't fail if offline)
+          try {
+            await execAsync('git fetch --all --quiet', {
+              cwd: worktreePath,
+              timeout: 10000, // 10 second timeout
+            });
+          } catch {
+            // Ignore fetch errors - we'll use cached remote refs
+          }
+
+          // List remote branches
+          const { stdout: remoteBranchesOutput } = await execAsync(
+            'git branch -r --format="%(refname:short)"',
+            { cwd: worktreePath }
+          );
+
+          const localBranchNames = new Set(branches.map((b) => b.name));
+
+          remoteBranchesOutput
+            .trim()
+            .split('\n')
+            .filter((b) => b.trim())
+            .forEach((name) => {
+              // Remove any surrounding quotes
+              const cleanName = name.trim().replace(/^['"]|['"]$/g, '');
+              // Skip HEAD pointers like "origin/HEAD"
+              if (cleanName.includes('/HEAD')) return;
+
+              // Only add remote branches if a branch with the exact same name isn't already
+              // in the list. This avoids duplicates if a local branch is named like a remote one.
+              // Note: We intentionally include remote branches even when a local branch with the
+              // same base name exists (e.g., show "origin/main" even if local "main" exists),
+              // since users need to select remote branches as PR base targets.
+              if (!localBranchNames.has(cleanName)) {
+                branches.push({
+                  name: cleanName, // Keep full name like "origin/main"
+                  isCurrent: false,
+                  isRemote: true,
+                });
+              }
+            });
+        } catch {
+          // Ignore errors fetching remote branches - return local branches only
+        }
+      }
 
       // Get ahead/behind count for current branch
       let aheadCount = 0;

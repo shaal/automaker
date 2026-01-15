@@ -1,7 +1,7 @@
 /**
  * PUT /api/settings/credentials - Update API credentials
  *
- * Updates API keys for Anthropic. Partial updates supported.
+ * Updates API keys for supported providers. Partial updates supported.
  * Returns masked credentials for verification without exposing full keys.
  *
  * Request body: `Partial<Credentials>` (usually just apiKeys)

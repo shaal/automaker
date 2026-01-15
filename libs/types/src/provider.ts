@@ -174,7 +174,7 @@ export interface ContentBlock {
  */
 export interface ProviderMessage {
   type: 'assistant' | 'user' | 'error' | 'result';
-  subtype?: 'success' | 'error';
+  subtype?: 'success' | 'error' | 'error_max_turns' | 'error_max_structured_output_retries';
   session_id?: string;
   message?: {
     role: 'user' | 'assistant';
@@ -183,6 +183,8 @@ export interface ProviderMessage {
   result?: string;
   error?: string;
   parent_tool_use_id?: string | null;
+  /** Structured output from SDK when using outputFormat */
+  structured_output?: Record<string, unknown>;
 }
 
 /**

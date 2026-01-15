@@ -26,22 +26,22 @@
  * ```
  */
 
-import { execSync } from 'child_process';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
-import { BaseProvider } from './base-provider.js';
-import type { ProviderConfig, ExecuteOptions, ProviderMessage } from './types.js';
 import {
-  spawnJSONLProcess,
-  type SubprocessOptions,
-  isWslAvailable,
-  findCliInWsl,
   createWslCommand,
+  findCliInWsl,
+  isWslAvailable,
+  spawnJSONLProcess,
   windowsToWslPath,
+  type SubprocessOptions,
   type WslCliResult,
 } from '@automaker/platform';
 import { createLogger, isAbortError } from '@automaker/utils';
+import { execSync } from 'child_process';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { BaseProvider } from './base-provider.js';
+import type { ExecuteOptions, ProviderConfig, ProviderMessage } from './types.js';
 
 /**
  * Spawn strategy for CLI tools on Windows
@@ -522,8 +522,13 @@ export abstract class CliProvider extends BaseProvider {
       throw new Error(`${this.getCliName()} CLI not found. ${this.getInstallInstructions()}`);
     }
 
-    const cliArgs = this.buildCliArgs(options);
-    const subprocessOptions = this.buildSubprocessOptions(options, cliArgs);
+    // Many CLI-based providers do not support a separate "system" message.
+    // If a systemPrompt is provided, embed it into the prompt so downstream models
+    // still receive critical formatting/schema instructions (e.g., JSON-only outputs).
+    const effectiveOptions = this.embedSystemPromptIntoPrompt(options);
+
+    const cliArgs = this.buildCliArgs(effectiveOptions);
+    const subprocessOptions = this.buildSubprocessOptions(effectiveOptions, cliArgs);
 
     try {
       for await (const rawEvent of spawnJSONLProcess(subprocessOptions)) {
@@ -554,5 +559,53 @@ export abstract class CliProvider extends BaseProvider {
 
       throw error;
     }
+  }
+
+  /**
+   * Embed system prompt text into the user prompt for CLI providers.
+   *
+   * Most CLI providers we integrate with only accept a single prompt via stdin/args.
+   * When upstream code supplies `options.systemPrompt`, we prepend it to the prompt
+   * content and clear `systemPrompt` to avoid any accidental double-injection by
+   * subclasses.
+   */
+  protected embedSystemPromptIntoPrompt(options: ExecuteOptions): ExecuteOptions {
+    if (!options.systemPrompt) {
+      return options;
+    }
+
+    // Only string system prompts can be reliably embedded for CLI providers.
+    // Presets are provider-specific (e.g., Claude SDK) and cannot be represented
+    // universally. If a preset is provided, we only embed its optional `append`.
+    const systemText =
+      typeof options.systemPrompt === 'string'
+        ? options.systemPrompt
+        : options.systemPrompt.append
+          ? options.systemPrompt.append
+          : '';
+
+    if (!systemText) {
+      return { ...options, systemPrompt: undefined };
+    }
+
+    // Preserve original prompt structure.
+    if (typeof options.prompt === 'string') {
+      return {
+        ...options,
+        prompt: `${systemText}\n\n---\n\n${options.prompt}`,
+        systemPrompt: undefined,
+      };
+    }
+
+    if (Array.isArray(options.prompt)) {
+      return {
+        ...options,
+        prompt: [{ type: 'text', text: systemText }, ...options.prompt],
+        systemPrompt: undefined,
+      };
+    }
+
+    // Should be unreachable due to ExecuteOptions typing, but keep safe.
+    return { ...options, systemPrompt: undefined };
   }
 }

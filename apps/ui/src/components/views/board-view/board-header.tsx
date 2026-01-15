@@ -1,27 +1,41 @@
-import { useState } from 'react';
-import { HotkeyButton } from '@/components/ui/hotkey-button';
-import { Button } from '@/components/ui/button';
-import { Slider } from '@/components/ui/slider';
+import { useCallback } from 'react';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
-import { Plus, Bot, Wand2, Settings2 } from 'lucide-react';
-import { KeyboardShortcut } from '@/hooks/use-keyboard-shortcuts';
+import { Wand2, GitBranch } from 'lucide-react';
 import { UsagePopover } from '@/components/usage-popover';
 import { useAppStore } from '@/store/app-store';
 import { useSetupStore } from '@/store/setup-store';
-import { AutoModeSettingsDialog } from './dialogs/auto-mode-settings-dialog';
+import { useIsMobile } from '@/hooks/use-media-query';
+import { AutoModeSettingsPopover } from './dialogs/auto-mode-settings-popover';
+import { WorktreeSettingsPopover } from './dialogs/worktree-settings-popover';
+import { PlanSettingsPopover } from './dialogs/plan-settings-popover';
+import { getHttpApiClient } from '@/lib/http-api-client';
+import { BoardSearchBar } from './board-search-bar';
+import { BoardControls } from './board-controls';
+import { ViewToggle, type ViewMode } from './components';
+import { HeaderMobileMenu } from './header-mobile-menu';
+
+export type { ViewMode };
 
 interface BoardHeaderProps {
-  projectName: string;
+  projectPath: string;
   maxConcurrency: number;
   runningAgentsCount: number;
   onConcurrencyChange: (value: number) => void;
   isAutoModeRunning: boolean;
   onAutoModeToggle: (enabled: boolean) => void;
-  onAddFeature: () => void;
   onOpenPlanDialog: () => void;
-  addFeatureShortcut: KeyboardShortcut;
   isMounted: boolean;
+  // Search bar props
+  searchQuery: string;
+  onSearchChange: (query: string) => void;
+  isCreatingSpec: boolean;
+  creatingSpecProjectPath?: string;
+  // Board controls props
+  onShowBoardBackground: () => void;
+  // View toggle props
+  viewMode: ViewMode;
+  onViewModeChange: (mode: ViewMode) => void;
 }
 
 // Shared styles for header control containers
@@ -29,75 +43,134 @@ const controlContainerClass =
   'flex items-center gap-1.5 px-3 h-8 rounded-md bg-secondary border border-border';
 
 export function BoardHeader({
-  projectName,
+  projectPath,
   maxConcurrency,
   runningAgentsCount,
   onConcurrencyChange,
   isAutoModeRunning,
   onAutoModeToggle,
-  onAddFeature,
   onOpenPlanDialog,
-  addFeatureShortcut,
   isMounted,
+  searchQuery,
+  onSearchChange,
+  isCreatingSpec,
+  creatingSpecProjectPath,
+  onShowBoardBackground,
+  viewMode,
+  onViewModeChange,
 }: BoardHeaderProps) {
-  const [showAutoModeSettings, setShowAutoModeSettings] = useState(false);
-  const apiKeys = useAppStore((state) => state.apiKeys);
   const claudeAuthStatus = useSetupStore((state) => state.claudeAuthStatus);
   const skipVerificationInAutoMode = useAppStore((state) => state.skipVerificationInAutoMode);
   const setSkipVerificationInAutoMode = useAppStore((state) => state.setSkipVerificationInAutoMode);
+  const planUseSelectedWorktreeBranch = useAppStore((state) => state.planUseSelectedWorktreeBranch);
+  const setPlanUseSelectedWorktreeBranch = useAppStore(
+    (state) => state.setPlanUseSelectedWorktreeBranch
+  );
+  const addFeatureUseSelectedWorktreeBranch = useAppStore(
+    (state) => state.addFeatureUseSelectedWorktreeBranch
+  );
+  const setAddFeatureUseSelectedWorktreeBranch = useAppStore(
+    (state) => state.setAddFeatureUseSelectedWorktreeBranch
+  );
   const codexAuthStatus = useSetupStore((state) => state.codexAuthStatus);
 
-  // Claude usage tracking visibility logic
-  // Hide when using API key (only show for Claude Code CLI users)
-  // Also hide on Windows for now (CLI usage command not supported)
-  const isWindows =
-    typeof navigator !== 'undefined' && navigator.platform?.toLowerCase().includes('win');
-  const hasClaudeApiKey = !!apiKeys.anthropic || !!claudeAuthStatus?.hasEnvApiKey;
-  const isClaudeCliVerified =
-    claudeAuthStatus?.authenticated && claudeAuthStatus?.method === 'cli_authenticated';
-  const showClaudeUsage = !hasClaudeApiKey && !isWindows && isClaudeCliVerified;
+  // Worktree panel visibility (per-project)
+  const worktreePanelVisibleByProject = useAppStore((state) => state.worktreePanelVisibleByProject);
+  const setWorktreePanelVisible = useAppStore((state) => state.setWorktreePanelVisible);
+  const isWorktreePanelVisible = worktreePanelVisibleByProject[projectPath] ?? true;
+
+  const handleWorktreePanelToggle = useCallback(
+    async (visible: boolean) => {
+      // Update local store
+      setWorktreePanelVisible(projectPath, visible);
+
+      // Persist to server
+      try {
+        const httpClient = getHttpApiClient();
+        await httpClient.settings.updateProject(projectPath, {
+          worktreePanelVisible: visible,
+        });
+      } catch (error) {
+        console.error('Failed to persist worktree panel visibility:', error);
+      }
+    },
+    [projectPath, setWorktreePanelVisible]
+  );
+
+  const isClaudeCliVerified = !!claudeAuthStatus?.authenticated;
+  const showClaudeUsage = isClaudeCliVerified;
 
   // Codex usage tracking visibility logic
   // Show if Codex is authenticated (CLI or API key)
   const showCodexUsage = !!codexAuthStatus?.authenticated;
 
-  return (
-    <div className="flex items-center justify-between p-4 border-b border-border bg-glass backdrop-blur-md">
-      <div>
-        <h1 className="text-xl font-bold">Kanban Board</h1>
-        <p className="text-sm text-muted-foreground">{projectName}</p>
-      </div>
-      <div className="flex gap-2 items-center">
-        {/* Usage Popover - show if either provider is authenticated */}
-        {isMounted && (showClaudeUsage || showCodexUsage) && <UsagePopover />}
+  const isMobile = useIsMobile();
 
-        {/* Concurrency Slider - only show after mount to prevent hydration issues */}
-        {isMounted && (
-          <div className={controlContainerClass} data-testid="concurrency-slider-container">
-            <Bot className="w-4 h-4 text-muted-foreground" />
-            <span className="text-sm font-medium">Agents</span>
-            <Slider
-              value={[maxConcurrency]}
-              onValueChange={(value) => onConcurrencyChange(value[0])}
-              min={1}
-              max={10}
-              step={1}
-              className="w-20"
-              data-testid="concurrency-slider"
-            />
-            <span
-              className="text-sm text-muted-foreground min-w-[5ch] text-center"
-              data-testid="concurrency-value"
+  return (
+    <div className="flex items-center justify-between gap-5 p-4 border-b border-border bg-glass backdrop-blur-md">
+      <div className="flex items-center gap-4">
+        <BoardSearchBar
+          searchQuery={searchQuery}
+          onSearchChange={onSearchChange}
+          isCreatingSpec={isCreatingSpec}
+          creatingSpecProjectPath={creatingSpecProjectPath}
+          currentProjectPath={projectPath}
+        />
+        {isMounted && <ViewToggle viewMode={viewMode} onViewModeChange={onViewModeChange} />}
+        <BoardControls isMounted={isMounted} onShowBoardBackground={onShowBoardBackground} />
+      </div>
+      <div className="flex gap-4 items-center">
+        {/* Usage Popover - show if either provider is authenticated, only on desktop */}
+        {isMounted && !isMobile && (showClaudeUsage || showCodexUsage) && <UsagePopover />}
+
+        {/* Mobile view: show hamburger menu with all controls */}
+        {isMounted && isMobile && (
+          <HeaderMobileMenu
+            isWorktreePanelVisible={isWorktreePanelVisible}
+            onWorktreePanelToggle={handleWorktreePanelToggle}
+            maxConcurrency={maxConcurrency}
+            runningAgentsCount={runningAgentsCount}
+            onConcurrencyChange={onConcurrencyChange}
+            isAutoModeRunning={isAutoModeRunning}
+            onAutoModeToggle={onAutoModeToggle}
+            onOpenAutoModeSettings={() => {}}
+            onOpenPlanDialog={onOpenPlanDialog}
+            showClaudeUsage={showClaudeUsage}
+            showCodexUsage={showCodexUsage}
+          />
+        )}
+
+        {/* Desktop view: show full controls */}
+        {/* Worktrees Toggle - only show after mount to prevent hydration issues */}
+        {isMounted && !isMobile && (
+          <div className={controlContainerClass} data-testid="worktrees-toggle-container">
+            <GitBranch className="w-4 h-4 text-muted-foreground" />
+            <Label
+              htmlFor="worktrees-toggle"
+              className="text-xs font-medium cursor-pointer whitespace-nowrap"
             >
-              {runningAgentsCount} / {maxConcurrency}
-            </span>
+              Worktree Bar
+            </Label>
+            <Switch
+              id="worktrees-toggle"
+              checked={isWorktreePanelVisible}
+              onCheckedChange={handleWorktreePanelToggle}
+              data-testid="worktrees-toggle"
+            />
+            <WorktreeSettingsPopover
+              addFeatureUseSelectedWorktreeBranch={addFeatureUseSelectedWorktreeBranch}
+              onAddFeatureUseSelectedWorktreeBranchChange={setAddFeatureUseSelectedWorktreeBranch}
+            />
           </div>
         )}
 
         {/* Auto Mode Toggle - only show after mount to prevent hydration issues */}
-        {isMounted && (
+        {isMounted && !isMobile && (
           <div className={controlContainerClass} data-testid="auto-mode-toggle-container">
-            <Label htmlFor="auto-mode-toggle" className="text-sm font-medium cursor-pointer">
+            <Label
+              htmlFor="auto-mode-toggle"
+              className="text-xs font-medium cursor-pointer whitespace-nowrap"
+            >
               Auto Mode
             </Label>
             <Switch
@@ -106,45 +179,33 @@ export function BoardHeader({
               onCheckedChange={onAutoModeToggle}
               data-testid="auto-mode-toggle"
             />
-            <button
-              onClick={() => setShowAutoModeSettings(true)}
-              className="p-1 rounded hover:bg-accent/50 transition-colors"
-              title="Auto Mode Settings"
-              data-testid="auto-mode-settings-button"
-            >
-              <Settings2 className="w-4 h-4 text-muted-foreground" />
-            </button>
+            <AutoModeSettingsPopover
+              skipVerificationInAutoMode={skipVerificationInAutoMode}
+              onSkipVerificationChange={setSkipVerificationInAutoMode}
+              maxConcurrency={maxConcurrency}
+              runningAgentsCount={runningAgentsCount}
+              onConcurrencyChange={onConcurrencyChange}
+            />
           </div>
         )}
 
-        {/* Auto Mode Settings Dialog */}
-        <AutoModeSettingsDialog
-          open={showAutoModeSettings}
-          onOpenChange={setShowAutoModeSettings}
-          skipVerificationInAutoMode={skipVerificationInAutoMode}
-          onSkipVerificationChange={setSkipVerificationInAutoMode}
-        />
-
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={onOpenPlanDialog}
-          data-testid="plan-backlog-button"
-        >
-          <Wand2 className="w-4 h-4 mr-2" />
-          Plan
-        </Button>
-
-        <HotkeyButton
-          size="sm"
-          onClick={onAddFeature}
-          hotkey={addFeatureShortcut}
-          hotkeyActive={false}
-          data-testid="add-feature-button"
-        >
-          <Plus className="w-4 h-4 mr-2" />
-          Add Feature
-        </HotkeyButton>
+        {/* Plan Button with Settings - only show on desktop, mobile has it in the menu */}
+        {isMounted && !isMobile && (
+          <div className={controlContainerClass} data-testid="plan-button-container">
+            <button
+              onClick={onOpenPlanDialog}
+              className="flex items-center gap-1.5 hover:text-foreground transition-colors"
+              data-testid="plan-backlog-button"
+            >
+              <Wand2 className="w-4 h-4 text-muted-foreground" />
+              <span className="text-sm font-medium">Plan</span>
+            </button>
+            <PlanSettingsPopover
+              planUseSelectedWorktreeBranch={planUseSelectedWorktreeBranch}
+              onPlanUseSelectedWorktreeBranchChange={setPlanUseSelectedWorktreeBranch}
+            />
+          </div>
+        )}
       </div>
     </div>
   );

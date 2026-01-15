@@ -1,6 +1,9 @@
 /**
  * Model alias mapping for Claude models
  */
+import type { CursorModelId } from './cursor-models.js';
+import type { OpencodeModelId } from './opencode-models.js';
+
 export const CLAUDE_MODEL_MAP: Record<string, string> = {
   haiku: 'claude-haiku-4-5-20251001',
   sonnet: 'claude-sonnet-4-5-20250929',
@@ -74,3 +77,26 @@ export type CodexModelId = (typeof CODEX_MODEL_MAP)[keyof typeof CODEX_MODEL_MAP
  * Represents available models across providers
  */
 export type AgentModel = ModelAlias | CodexModelId;
+
+/**
+ * Dynamic provider model IDs discovered at runtime (provider/model format)
+ */
+export type DynamicModelId = `${string}/${string}`;
+
+/**
+ * Provider-prefixed model IDs used for routing
+ */
+export type PrefixedCursorModelId = `cursor-${string}`;
+export type PrefixedOpencodeModelId = `opencode-${string}`;
+
+/**
+ * ModelId - Unified model identifier across providers
+ */
+export type ModelId =
+  | ModelAlias
+  | CodexModelId
+  | CursorModelId
+  | OpencodeModelId
+  | DynamicModelId
+  | PrefixedCursorModelId
+  | PrefixedOpencodeModelId;

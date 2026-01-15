@@ -36,9 +36,11 @@ import type {
 import type { Message, SessionListItem } from '@/types/electron';
 import type { Feature, ClaudeUsageResponse, CodexUsageResponse } from '@/store/app-store';
 import type { WorktreeAPI, GitAPI, ModelDefinition, ProviderStatus } from '@/types/electron';
+import type { ModelId, ThinkingLevel, ReasoningEffort } from '@automaker/types';
 import { getGlobalFileBrowser } from '@/contexts/file-browser-context';
 
 const logger = createLogger('HttpClient');
+const NO_STORE_CACHE_MODE: RequestCache = 'no-store';
 
 // Cached server URL (set during initialization in Electron mode)
 let cachedServerUrl: string | null = null;
@@ -69,6 +71,7 @@ const handleUnauthorized = (): void => {
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
     body: '{}',
+    cache: NO_STORE_CACHE_MODE,
   }).catch(() => {});
   notifyLoggedOut();
 };
@@ -296,6 +299,7 @@ export const checkAuthStatus = async (): Promise<{
     const response = await fetch(`${getServerUrl()}/api/auth/status`, {
       credentials: 'include',
       headers: getApiKey() ? { 'X-API-Key': getApiKey()! } : undefined,
+      cache: NO_STORE_CACHE_MODE,
     });
     const data = await response.json();
     return {
@@ -322,6 +326,7 @@ export const login = async (
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
       body: JSON.stringify({ apiKey }),
+      cache: NO_STORE_CACHE_MODE,
     });
     const data = await response.json();
 
@@ -361,6 +366,7 @@ export const fetchSessionToken = async (): Promise<boolean> => {
   try {
     const response = await fetch(`${getServerUrl()}/api/auth/status`, {
       credentials: 'include', // Send the session cookie
+      cache: NO_STORE_CACHE_MODE,
     });
 
     if (!response.ok) {
@@ -391,6 +397,7 @@ export const logout = async (): Promise<{ success: boolean }> => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
+      cache: NO_STORE_CACHE_MODE,
     });
 
     // Clear the cached session token
@@ -439,6 +446,7 @@ export const verifySession = async (): Promise<boolean> => {
   const response = await fetch(`${getServerUrl()}/api/settings/status`, {
     headers,
     credentials: 'include',
+    cache: NO_STORE_CACHE_MODE,
     // Avoid hanging indefinitely during backend reloads or network issues
     signal: AbortSignal.timeout(2500),
   });
@@ -475,6 +483,7 @@ export const checkSandboxEnvironment = async (): Promise<{
   try {
     const response = await fetch(`${getServerUrl()}/api/health/environment`, {
       method: 'GET',
+      cache: NO_STORE_CACHE_MODE,
       signal: AbortSignal.timeout(5000),
     });
 
@@ -499,7 +508,56 @@ type EventType =
   | 'issue-validation:event'
   | 'backlog-plan:event'
   | 'ideation:stream'
-  | 'ideation:analysis';
+  | 'ideation:analysis'
+  | 'worktree:init-started'
+  | 'worktree:init-output'
+  | 'worktree:init-completed'
+  | 'dev-server:started'
+  | 'dev-server:output'
+  | 'dev-server:stopped';
+
+/**
+ * Dev server log event payloads for WebSocket streaming
+ */
+export interface DevServerStartedEvent {
+  worktreePath: string;
+  port: number;
+  url: string;
+  timestamp: string;
+}
+
+export interface DevServerOutputEvent {
+  worktreePath: string;
+  content: string;
+  timestamp: string;
+}
+
+export interface DevServerStoppedEvent {
+  worktreePath: string;
+  port: number;
+  exitCode: number | null;
+  error?: string;
+  timestamp: string;
+}
+
+export type DevServerLogEvent =
+  | { type: 'dev-server:started'; payload: DevServerStartedEvent }
+  | { type: 'dev-server:output'; payload: DevServerOutputEvent }
+  | { type: 'dev-server:stopped'; payload: DevServerStoppedEvent };
+
+/**
+ * Response type for fetching dev server logs
+ */
+export interface DevServerLogsResponse {
+  success: boolean;
+  result?: {
+    worktreePath: string;
+    port: number;
+    logs: string;
+    startedAt: string;
+  };
+  error?: string;
+}
 
 type EventCallback = (payload: unknown) => void;
 
@@ -556,6 +614,7 @@ export class HttpApiClient implements ElectronAPI {
       const response = await fetch(`${this.serverUrl}/api/auth/token`, {
         headers,
         credentials: 'include',
+        cache: NO_STORE_CACHE_MODE,
       });
 
       if (response.status === 401 || response.status === 403) {
@@ -587,6 +646,17 @@ export class HttpApiClient implements ElectronAPI {
 
     this.isConnecting = true;
 
+    // Wait for API key initialization to complete before attempting connection
+    // This prevents race conditions during app startup
+    waitForApiKeyInit()
+      .then(() => this.doConnectWebSocketInternal())
+      .catch((error) => {
+        logger.error('Failed to initialize for WebSocket connection:', error);
+        this.isConnecting = false;
+      });
+  }
+
+  private doConnectWebSocketInternal(): void {
     // Electron mode typically authenticates with the injected API key.
     // However, in external-server/cookie-auth flows, the API key may be unavailable.
     // In that case, fall back to the same wsToken/cookie authentication used in web mode
@@ -771,6 +841,7 @@ export class HttpApiClient implements ElectronAPI {
     const response = await fetch(`${this.serverUrl}${endpoint}`, {
       headers: this.getHeaders(),
       credentials: 'include', // Include cookies for session auth
+      cache: NO_STORE_CACHE_MODE,
     });
 
     if (response.status === 401 || response.status === 403) {
@@ -825,13 +896,14 @@ export class HttpApiClient implements ElectronAPI {
     return response.json();
   }
 
-  private async httpDelete<T>(endpoint: string): Promise<T> {
+  private async httpDelete<T>(endpoint: string, body?: unknown): Promise<T> {
     // Ensure API key is initialized before making request
     await waitForApiKeyInit();
     const response = await fetch(`${this.serverUrl}${endpoint}`, {
       method: 'DELETE',
       headers: this.getHeaders(),
       credentials: 'include', // Include cookies for session auth
+      body: body ? JSON.stringify(body) : undefined,
     });
 
     if (response.status === 401 || response.status === 403) {
@@ -1148,6 +1220,7 @@ export class HttpApiClient implements ElectronAPI {
       success: boolean;
       hasAnthropicKey: boolean;
       hasGoogleKey: boolean;
+      hasOpenaiKey: boolean;
     }> => this.get('/api/setup/api-keys'),
 
     getPlatform: (): Promise<{
@@ -1415,6 +1488,67 @@ export class HttpApiClient implements ElectronAPI {
       error?: string;
     }> => this.get('/api/setup/opencode-status'),
 
+    // OpenCode Dynamic Model Discovery
+    getOpencodeModels: (
+      refresh?: boolean
+    ): Promise<{
+      success: boolean;
+      models?: Array<{
+        id: string;
+        name: string;
+        modelString: string;
+        provider: string;
+        description: string;
+        supportsTools: boolean;
+        supportsVision: boolean;
+        tier: string;
+        default?: boolean;
+      }>;
+      count?: number;
+      cached?: boolean;
+      error?: string;
+    }> => this.get(`/api/setup/opencode/models${refresh ? '?refresh=true' : ''}`),
+
+    refreshOpencodeModels: (): Promise<{
+      success: boolean;
+      models?: Array<{
+        id: string;
+        name: string;
+        modelString: string;
+        provider: string;
+        description: string;
+        supportsTools: boolean;
+        supportsVision: boolean;
+        tier: string;
+        default?: boolean;
+      }>;
+      count?: number;
+      error?: string;
+    }> => this.post('/api/setup/opencode/models/refresh'),
+
+    getOpencodeProviders: (): Promise<{
+      success: boolean;
+      providers?: Array<{
+        id: string;
+        name: string;
+        authenticated: boolean;
+        authMethod?: 'oauth' | 'api_key';
+      }>;
+      authenticated?: Array<{
+        id: string;
+        name: string;
+        authenticated: boolean;
+        authMethod?: 'oauth' | 'api_key';
+      }>;
+      error?: string;
+    }> => this.get('/api/setup/opencode/providers'),
+
+    clearOpencodeCache: (): Promise<{
+      success: boolean;
+      message?: string;
+      error?: string;
+    }> => this.post('/api/setup/opencode/cache/clear'),
+
     onInstallProgress: (callback: (progress: unknown) => void) => {
       return this.subscribeToEvent('agent:stream', callback);
     },
@@ -1438,6 +1572,16 @@ export class HttpApiClient implements ElectronAPI {
       features?: Feature[];
       error?: string;
     }>;
+    bulkDelete: (
+      projectPath: string,
+      featureIds: string[]
+    ) => Promise<{
+      success: boolean;
+      deletedCount?: number;
+      failedCount?: number;
+      results?: Array<{ featureId: string; success: boolean; error?: string }>;
+      error?: string;
+    }>;
   } = {
     getAll: (projectPath: string) => this.post('/api/features/list', { projectPath }),
     get: (projectPath: string, featureId: string) =>
@@ -1449,7 +1593,8 @@ export class HttpApiClient implements ElectronAPI {
       featureId: string,
       updates: Partial<Feature>,
       descriptionHistorySource?: 'enhance' | 'edit',
-      enhancementMode?: 'improve' | 'technical' | 'simplify' | 'acceptance'
+      enhancementMode?: 'improve' | 'technical' | 'simplify' | 'acceptance' | 'ux-reviewer',
+      preEnhancementDescription?: string
     ) =>
       this.post('/api/features/update', {
         projectPath,
@@ -1457,6 +1602,7 @@ export class HttpApiClient implements ElectronAPI {
         updates,
         descriptionHistorySource,
         enhancementMode,
+        preEnhancementDescription,
       }),
     delete: (projectPath: string, featureId: string) =>
       this.post('/api/features/delete', { projectPath, featureId }),
@@ -1466,6 +1612,8 @@ export class HttpApiClient implements ElectronAPI {
       this.post('/api/features/generate-title', { description }),
     bulkUpdate: (projectPath: string, featureIds: string[], updates: Partial<Feature>) =>
       this.post('/api/features/bulk-update', { projectPath, featureIds, updates }),
+    bulkDelete: (projectPath: string, featureIds: string[]) =>
+      this.post('/api/features/bulk-delete', { projectPath, featureIds }),
   };
 
   // Auto Mode API
@@ -1504,14 +1652,14 @@ export class HttpApiClient implements ElectronAPI {
       featureId: string,
       prompt: string,
       imagePaths?: string[],
-      worktreePath?: string
+      useWorktrees?: boolean
     ) =>
       this.post('/api/auto-mode/follow-up-feature', {
         projectPath,
         featureId,
         prompt,
         imagePaths,
-        worktreePath,
+        useWorktrees,
       }),
     commitFeature: (projectPath: string, featureId: string, worktreePath?: string) =>
       this.post('/api/auto-mode/commit-feature', {
@@ -1533,6 +1681,8 @@ export class HttpApiClient implements ElectronAPI {
         editedPlan,
         feedback,
       }),
+    resumeInterrupted: (projectPath: string) =>
+      this.post('/api/auto-mode/resume-interrupted', { projectPath }),
     onEvent: (callback: (event: AutoModeEvent) => void) => {
       return this.subscribeToEvent('auto-mode:event', callback as EventCallback);
     },
@@ -1556,8 +1706,12 @@ export class HttpApiClient implements ElectronAPI {
 
   // Worktree API
   worktree: WorktreeAPI = {
-    mergeFeature: (projectPath: string, featureId: string, options?: object) =>
-      this.post('/api/worktree/merge', { projectPath, featureId, options }),
+    mergeFeature: (
+      projectPath: string,
+      branchName: string,
+      worktreePath: string,
+      options?: object
+    ) => this.post('/api/worktree/merge', { projectPath, branchName, worktreePath, options }),
     getInfo: (projectPath: string, featureId: string) =>
       this.post('/api/worktree/info', { projectPath, featureId }),
     getStatus: (projectPath: string, featureId: string) =>
@@ -1579,6 +1733,8 @@ export class HttpApiClient implements ElectronAPI {
       }),
     commit: (worktreePath: string, message: string) =>
       this.post('/api/worktree/commit', { worktreePath, message }),
+    generateCommitMessage: (worktreePath: string) =>
+      this.post('/api/worktree/generate-commit-message', { worktreePath }),
     push: (worktreePath: string, force?: boolean) =>
       this.post('/api/worktree/push', { worktreePath, force }),
     createPR: (worktreePath: string, options?: any) =>
@@ -1594,20 +1750,71 @@ export class HttpApiClient implements ElectronAPI {
     pull: (worktreePath: string) => this.post('/api/worktree/pull', { worktreePath }),
     checkoutBranch: (worktreePath: string, branchName: string) =>
       this.post('/api/worktree/checkout-branch', { worktreePath, branchName }),
-    listBranches: (worktreePath: string) =>
-      this.post('/api/worktree/list-branches', { worktreePath }),
+    listBranches: (worktreePath: string, includeRemote?: boolean) =>
+      this.post('/api/worktree/list-branches', { worktreePath, includeRemote }),
     switchBranch: (worktreePath: string, branchName: string) =>
       this.post('/api/worktree/switch-branch', { worktreePath, branchName }),
-    openInEditor: (worktreePath: string) =>
-      this.post('/api/worktree/open-in-editor', { worktreePath }),
+    openInEditor: (worktreePath: string, editorCommand?: string) =>
+      this.post('/api/worktree/open-in-editor', { worktreePath, editorCommand }),
     getDefaultEditor: () => this.get('/api/worktree/default-editor'),
+    getAvailableEditors: () => this.get('/api/worktree/available-editors'),
+    refreshEditors: () => this.post('/api/worktree/refresh-editors', {}),
     initGit: (projectPath: string) => this.post('/api/worktree/init-git', { projectPath }),
     startDevServer: (projectPath: string, worktreePath: string) =>
       this.post('/api/worktree/start-dev', { projectPath, worktreePath }),
     stopDevServer: (worktreePath: string) => this.post('/api/worktree/stop-dev', { worktreePath }),
     listDevServers: () => this.post('/api/worktree/list-dev-servers', {}),
+    getDevServerLogs: (worktreePath: string): Promise<DevServerLogsResponse> =>
+      this.get(`/api/worktree/dev-server-logs?worktreePath=${encodeURIComponent(worktreePath)}`),
+    onDevServerLogEvent: (callback: (event: DevServerLogEvent) => void) => {
+      const unsub1 = this.subscribeToEvent('dev-server:started', (payload) =>
+        callback({ type: 'dev-server:started', payload: payload as DevServerStartedEvent })
+      );
+      const unsub2 = this.subscribeToEvent('dev-server:output', (payload) =>
+        callback({ type: 'dev-server:output', payload: payload as DevServerOutputEvent })
+      );
+      const unsub3 = this.subscribeToEvent('dev-server:stopped', (payload) =>
+        callback({ type: 'dev-server:stopped', payload: payload as DevServerStoppedEvent })
+      );
+      return () => {
+        unsub1();
+        unsub2();
+        unsub3();
+      };
+    },
     getPRInfo: (worktreePath: string, branchName: string) =>
       this.post('/api/worktree/pr-info', { worktreePath, branchName }),
+    // Init script methods
+    getInitScript: (projectPath: string) =>
+      this.get(`/api/worktree/init-script?projectPath=${encodeURIComponent(projectPath)}`),
+    setInitScript: (projectPath: string, content: string) =>
+      this.put('/api/worktree/init-script', { projectPath, content }),
+    deleteInitScript: (projectPath: string) =>
+      this.httpDelete('/api/worktree/init-script', { projectPath }),
+    runInitScript: (projectPath: string, worktreePath: string, branch: string) =>
+      this.post('/api/worktree/run-init-script', { projectPath, worktreePath, branch }),
+    onInitScriptEvent: (
+      callback: (event: {
+        type: 'worktree:init-started' | 'worktree:init-output' | 'worktree:init-completed';
+        payload: unknown;
+      }) => void
+    ) => {
+      // Note: subscribeToEvent callback receives (payload) not (_, payload)
+      const unsub1 = this.subscribeToEvent('worktree:init-started', (payload) =>
+        callback({ type: 'worktree:init-started', payload })
+      );
+      const unsub2 = this.subscribeToEvent('worktree:init-output', (payload) =>
+        callback({ type: 'worktree:init-output', payload })
+      );
+      const unsub3 = this.subscribeToEvent('worktree:init-completed', (payload) =>
+        callback({ type: 'worktree:init-completed', payload })
+      );
+      return () => {
+        unsub1();
+        unsub2();
+        unsub3();
+      };
+    },
   };
 
   // Git API
@@ -1668,8 +1875,13 @@ export class HttpApiClient implements ElectronAPI {
         projectPath,
         maxFeatures,
       }),
-    stop: () => this.post('/api/spec-regeneration/stop'),
-    status: () => this.get('/api/spec-regeneration/status'),
+    stop: (projectPath?: string) => this.post('/api/spec-regeneration/stop', { projectPath }),
+    status: (projectPath?: string) =>
+      this.get(
+        projectPath
+          ? `/api/spec-regeneration/status?projectPath=${encodeURIComponent(projectPath)}`
+          : '/api/spec-regeneration/status'
+      ),
     onEvent: (callback: (event: SpecRegenerationEvent) => void) => {
       return this.subscribeToEvent('spec-regeneration:event', callback as EventCallback);
     },
@@ -1698,9 +1910,17 @@ export class HttpApiClient implements ElectronAPI {
     validateIssue: (
       projectPath: string,
       issue: IssueValidationInput,
-      model?: string,
-      thinkingLevel?: string
-    ) => this.post('/api/github/validate-issue', { projectPath, ...issue, model, thinkingLevel }),
+      model?: ModelId,
+      thinkingLevel?: ThinkingLevel,
+      reasoningEffort?: ReasoningEffort
+    ) =>
+      this.post('/api/github/validate-issue', {
+        projectPath,
+        ...issue,
+        model,
+        thinkingLevel,
+        reasoningEffort,
+      }),
     getValidationStatus: (projectPath: string, issueNumber?: number) =>
       this.post('/api/github/validation-status', { projectPath, issueNumber }),
     stopValidation: (projectPath: string, issueNumber: number) =>
@@ -1858,19 +2078,15 @@ export class HttpApiClient implements ElectronAPI {
         theme: string;
         sidebarOpen: boolean;
         chatHistoryOpen: boolean;
-        kanbanCardDetailLevel: string;
         maxConcurrency: number;
         defaultSkipTests: boolean;
         enableDependencyBlocking: boolean;
         useWorktrees: boolean;
-        showProfilesOnly: boolean;
         defaultPlanningMode: string;
         defaultRequirePlanApproval: boolean;
-        defaultAIProfileId: string | null;
         muteDoneSound: boolean;
         enhancementModel: string;
         keyboardShortcuts: Record<string, string>;
-        aiProfiles: unknown[];
         projects: unknown[];
         trashedProjects: unknown[];
         projectHistory: string[];
@@ -1954,6 +2170,7 @@ export class HttpApiClient implements ElectronAPI {
           cardBorderOpacity: number;
           hideScrollbar: boolean;
         };
+        worktreePanelVisible?: boolean;
         lastSelectedSessionId?: string;
       };
       error?: string;
@@ -2056,6 +2273,25 @@ export class HttpApiClient implements ElectronAPI {
   // Codex API
   codex = {
     getUsage: (): Promise<CodexUsageResponse> => this.get('/api/codex/usage'),
+    getModels: (
+      refresh = false
+    ): Promise<{
+      success: boolean;
+      models?: Array<{
+        id: string;
+        label: string;
+        description: string;
+        hasThinking: boolean;
+        supportsVision: boolean;
+        tier: 'premium' | 'standard' | 'basic';
+        isDefault: boolean;
+      }>;
+      cachedAt?: number;
+      error?: string;
+    }> => {
+      const url = `/api/codex/models${refresh ? '?refresh=true' : ''}`;
+      return this.get(url);
+    },
   };
 
   // Context API
@@ -2107,9 +2343,10 @@ export class HttpApiClient implements ElectronAPI {
           removedDependencies: string[];
           addedDependencies: string[];
         }>;
-      }
+      },
+      branchName?: string
     ): Promise<{ success: boolean; appliedChanges?: string[]; error?: string }> =>
-      this.post('/api/backlog-plan/apply', { projectPath, plan }),
+      this.post('/api/backlog-plan/apply', { projectPath, plan, branchName }),
 
     onEvent: (callback: (data: unknown) => void): (() => void) => {
       return this.subscribeToEvent('backlog-plan:event', callback as EventCallback);

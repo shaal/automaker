@@ -41,6 +41,8 @@ export {
   DEFAULT_BACKLOG_PLAN_USER_PROMPT_TEMPLATE,
   DEFAULT_BACKLOG_PLAN_PROMPTS,
   DEFAULT_ENHANCEMENT_PROMPTS,
+  DEFAULT_COMMIT_MESSAGE_SYSTEM_PROMPT,
+  DEFAULT_COMMIT_MESSAGE_PROMPTS,
   DEFAULT_PROMPTS,
 } from './defaults.js';
 
@@ -50,6 +52,7 @@ export {
   mergeAgentPrompts,
   mergeBacklogPlanPrompts,
   mergeEnhancementPrompts,
+  mergeCommitMessagePrompts,
   mergeAllPrompts,
 } from './merge.js';
 
@@ -59,4 +62,5 @@ export type {
   ResolvedAgentPrompts,
   ResolvedBacklogPlanPrompts,
   ResolvedEnhancementPrompts,
+  ResolvedCommitMessagePrompts,
 } from '@automaker/types';

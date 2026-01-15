@@ -2,18 +2,23 @@
  * POST /list endpoint - List all git worktrees
  *
  * Returns actual git worktrees from `git worktree list`.
+ * Also scans .worktrees/ directory to discover worktrees that may have been
+ * created externally or whose git state was corrupted.
  * Does NOT include tracked branches - only real worktrees with separate directories.
  */
 
 import type { Request, Response } from 'express';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import path from 'path';
 import * as secureFs from '../../../lib/secure-fs.js';
 import { isGitRepo } from '@automaker/git-utils';
-import { getErrorMessage, logError, normalizePath } from '../common.js';
+import { getErrorMessage, logError, normalizePath, execEnv, isGhCliAvailable } from '../common.js';
 import { readAllWorktreeMetadata, type WorktreePRInfo } from '../../../lib/worktree-metadata.js';
+import { createLogger } from '@automaker/utils';
 
 const execAsync = promisify(exec);
+const logger = createLogger('Worktree');
 
 interface WorktreeInfo {
   path: string;
@@ -33,6 +38,133 @@ async function getCurrentBranch(cwd: string): Promise<string> {
   } catch {
     return '';
   }
+}
+
+/**
+ * Scan the .worktrees directory to discover worktrees that may exist on disk
+ * but are not registered with git (e.g., created externally or corrupted state).
+ */
+async function scanWorktreesDirectory(
+  projectPath: string,
+  knownWorktreePaths: Set<string>
+): Promise<Array<{ path: string; branch: string }>> {
+  const discovered: Array<{ path: string; branch: string }> = [];
+  const worktreesDir = path.join(projectPath, '.worktrees');
+
+  try {
+    // Check if .worktrees directory exists
+    await secureFs.access(worktreesDir);
+  } catch {
+    // .worktrees directory doesn't exist
+    return discovered;
+  }
+
+  try {
+    const entries = await secureFs.readdir(worktreesDir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+
+      const worktreePath = path.join(worktreesDir, entry.name);
+      const normalizedPath = normalizePath(worktreePath);
+
+      // Skip if already known from git worktree list
+      if (knownWorktreePaths.has(normalizedPath)) continue;
+
+      // Check if this is a valid git repository
+      const gitPath = path.join(worktreePath, '.git');
+      try {
+        const gitStat = await secureFs.stat(gitPath);
+
+        // Git worktrees have a .git FILE (not directory) that points to the parent repo
+        // Regular repos have a .git DIRECTORY
+        if (gitStat.isFile() || gitStat.isDirectory()) {
+          // Try to get the branch name
+          const branch = await getCurrentBranch(worktreePath);
+          if (branch) {
+            logger.info(
+              `Discovered worktree in .worktrees/ not in git worktree list: ${entry.name} (branch: ${branch})`
+            );
+            discovered.push({
+              path: normalizedPath,
+              branch,
+            });
+          } else {
+            // Try to get branch from HEAD if branch --show-current fails (detached HEAD)
+            try {
+              const { stdout: headRef } = await execAsync('git rev-parse --abbrev-ref HEAD', {
+                cwd: worktreePath,
+              });
+              const headBranch = headRef.trim();
+              if (headBranch && headBranch !== 'HEAD') {
+                logger.info(
+                  `Discovered worktree in .worktrees/ not in git worktree list: ${entry.name} (branch: ${headBranch})`
+                );
+                discovered.push({
+                  path: normalizedPath,
+                  branch: headBranch,
+                });
+              }
+            } catch {
+              // Can't determine branch, skip this directory
+            }
+          }
+        }
+      } catch {
+        // Not a git repo, skip
+      }
+    }
+  } catch (error) {
+    logger.warn(`Failed to scan .worktrees directory: ${getErrorMessage(error)}`);
+  }
+
+  return discovered;
+}
+
+/**
+ * Fetch open PRs from GitHub and create a map of branch name to PR info.
+ * This allows detecting PRs that were created outside the app.
+ */
+async function fetchGitHubPRs(projectPath: string): Promise<Map<string, WorktreePRInfo>> {
+  const prMap = new Map<string, WorktreePRInfo>();
+
+  try {
+    // Check if gh CLI is available
+    const ghAvailable = await isGhCliAvailable();
+    if (!ghAvailable) {
+      return prMap;
+    }
+
+    // Fetch open PRs from GitHub
+    const { stdout } = await execAsync(
+      'gh pr list --state open --json number,title,url,state,headRefName,createdAt --limit 1000',
+      { cwd: projectPath, env: execEnv, timeout: 15000 }
+    );
+
+    const prs = JSON.parse(stdout || '[]') as Array<{
+      number: number;
+      title: string;
+      url: string;
+      state: string;
+      headRefName: string;
+      createdAt: string;
+    }>;
+
+    for (const pr of prs) {
+      prMap.set(pr.headRefName, {
+        number: pr.number,
+        url: pr.url,
+        title: pr.title,
+        state: pr.state,
+        createdAt: pr.createdAt,
+      });
+    }
+  } catch (error) {
+    // Silently fail - PR detection is optional
+    logger.warn(`Failed to fetch GitHub PRs: ${getErrorMessage(error)}`);
+  }
+
+  return prMap;
 }
 
 export function createListHandler() {
@@ -116,6 +248,22 @@ export function createListHandler() {
         }
       }
 
+      // Scan .worktrees directory to discover worktrees that exist on disk
+      // but are not registered with git (e.g., created externally)
+      const knownPaths = new Set(worktrees.map((w) => w.path));
+      const discoveredWorktrees = await scanWorktreesDirectory(projectPath, knownPaths);
+
+      // Add discovered worktrees to the list
+      for (const discovered of discoveredWorktrees) {
+        worktrees.push({
+          path: discovered.path,
+          branch: discovered.branch,
+          isMain: false,
+          isCurrent: discovered.branch === currentBranch,
+          hasWorktree: true,
+        });
+      }
+
       // Read all worktree metadata to get PR info
       const allMetadata = await readAllWorktreeMetadata(projectPath);
 
@@ -139,11 +287,23 @@ export function createListHandler() {
         }
       }
 
-      // Add PR info from metadata for each worktree
+      // Add PR info from metadata or GitHub for each worktree
+      // Only fetch GitHub PRs if includeDetails is requested (performance optimization)
+      const githubPRs = includeDetails
+        ? await fetchGitHubPRs(projectPath)
+        : new Map<string, WorktreePRInfo>();
+
       for (const worktree of worktrees) {
         const metadata = allMetadata.get(worktree.branch);
         if (metadata?.pr) {
+          // Use stored metadata (more complete info)
           worktree.pr = metadata.pr;
+        } else if (includeDetails) {
+          // Fall back to GitHub PR detection only when includeDetails is requested
+          const githubPR = githubPRs.get(worktree.branch);
+          if (githubPR) {
+            worktree.pr = githubPR;
+          }
         }
       }
 

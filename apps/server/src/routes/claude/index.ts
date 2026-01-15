@@ -34,6 +34,13 @@ export function createClaudeRoutes(service: ClaudeUsageService): Router {
           error: 'Authentication required',
           message: "Please run 'claude login' to authenticate",
         });
+      } else if (message.includes('TRUST_PROMPT_PENDING')) {
+        // Trust prompt appeared but couldn't be auto-approved
+        res.status(200).json({
+          error: 'Trust prompt pending',
+          message:
+            'Claude CLI needs folder permission. Please run "claude" in your terminal and approve access.',
+        });
       } else if (message.includes('timed out')) {
         res.status(200).json({
           error: 'Command timed out',

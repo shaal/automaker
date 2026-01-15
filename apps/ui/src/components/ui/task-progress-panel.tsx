@@ -230,7 +230,7 @@ export function TaskProgressPanel({
         )}
       >
         <div className="overflow-hidden">
-          <div className="p-4 pt-2 relative max-h-[300px] overflow-y-auto scrollbar-visible">
+          <div className="p-4 pt-2 relative max-h-[200px] overflow-y-auto scrollbar-visible">
             {/* Vertical Connector Line */}
             <div className="absolute left-[2.35rem] top-4 bottom-8 w-px bg-linear-to-b from-border/80 via-border/40 to-transparent" />
 

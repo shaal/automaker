@@ -6,6 +6,17 @@ import type { Request, Response } from 'express';
 import { execAsync, execEnv, getErrorMessage, logError } from './common.js';
 import { checkGitHubRemote } from './check-github-remote.js';
 
+const OPEN_PRS_LIMIT = 100;
+const MERGED_PRS_LIMIT = 50;
+const PR_LIST_FIELDS =
+  'number,title,state,author,createdAt,labels,url,isDraft,headRefName,reviewDecision,mergeable,body';
+const PR_STATE_OPEN = 'open';
+const PR_STATE_MERGED = 'merged';
+const GH_PR_LIST_COMMAND = 'gh pr list';
+const GH_STATE_FLAG = '--state';
+const GH_JSON_FLAG = '--json';
+const GH_LIMIT_FLAG = '--limit';
+
 export interface GitHubLabel {
   name: string;
   color: string;
@@ -57,16 +68,36 @@ export function createListPRsHandler() {
         return;
       }
 
+      const repoQualifier =
+        remoteStatus.owner && remoteStatus.repo ? `${remoteStatus.owner}/${remoteStatus.repo}` : '';
+      const repoFlag = repoQualifier ? `-R ${repoQualifier}` : '';
+
       const [openResult, mergedResult] = await Promise.all([
         execAsync(
-          'gh pr list --state open --json number,title,state,author,createdAt,labels,url,isDraft,headRefName,reviewDecision,mergeable,body --limit 100',
+          [
+            GH_PR_LIST_COMMAND,
+            repoFlag,
+            `${GH_STATE_FLAG} ${PR_STATE_OPEN}`,
+            `${GH_JSON_FLAG} ${PR_LIST_FIELDS}`,
+            `${GH_LIMIT_FLAG} ${OPEN_PRS_LIMIT}`,
+          ]
+            .filter(Boolean)
+            .join(' '),
           {
             cwd: projectPath,
             env: execEnv,
           }
         ),
         execAsync(
-          'gh pr list --state merged --json number,title,state,author,createdAt,labels,url,isDraft,headRefName,reviewDecision,mergeable,body --limit 50',
+          [
+            GH_PR_LIST_COMMAND,
+            repoFlag,
+            `${GH_STATE_FLAG} ${PR_STATE_MERGED}`,
+            `${GH_JSON_FLAG} ${PR_LIST_FIELDS}`,
+            `${GH_LIMIT_FLAG} ${MERGED_PRS_LIMIT}`,
+          ]
+            .filter(Boolean)
+            .join(' '),
           {
             cwd: projectPath,
             env: execEnv,

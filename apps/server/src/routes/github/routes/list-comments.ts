@@ -25,19 +25,24 @@ interface GraphQLComment {
   updatedAt: string;
 }
 
+interface GraphQLCommentConnection {
+  totalCount: number;
+  pageInfo: {
+    hasNextPage: boolean;
+    endCursor: string | null;
+  };
+  nodes: GraphQLComment[];
+}
+
+interface GraphQLIssueOrPullRequest {
+  __typename: 'Issue' | 'PullRequest';
+  comments: GraphQLCommentConnection;
+}
+
 interface GraphQLResponse {
   data?: {
     repository?: {
-      issue?: {
-        comments: {
-          totalCount: number;
-          pageInfo: {
-            hasNextPage: boolean;
-            endCursor: string | null;
-          };
-          nodes: GraphQLComment[];
-        };
-      };
+      issueOrPullRequest?: GraphQLIssueOrPullRequest | null;
     };
   };
   errors?: Array<{ message: string }>;
@@ -45,6 +50,7 @@ interface GraphQLResponse {
 
 /** Timeout for GitHub API requests in milliseconds */
 const GITHUB_API_TIMEOUT_MS = 30000;
+const COMMENTS_PAGE_SIZE = 50;
 
 /**
  * Validate cursor format (GraphQL cursors are typically base64 strings)
@@ -54,7 +60,7 @@ function isValidCursor(cursor: string): boolean {
 }
 
 /**
- * Fetch comments for a specific issue using GitHub GraphQL API
+ * Fetch comments for a specific issue or pull request using GitHub GraphQL API
  */
 async function fetchIssueComments(
   projectPath: string,
@@ -70,24 +76,52 @@ async function fetchIssueComments(
 
   // Use GraphQL variables instead of string interpolation for safety
   const query = `
-    query GetIssueComments($owner: String!, $repo: String!, $issueNumber: Int!, $cursor: String) {
+    query GetIssueComments(
+      $owner: String!
+      $repo: String!
+      $issueNumber: Int!
+      $cursor: String
+      $pageSize: Int!
+    ) {
       repository(owner: $owner, name: $repo) {
-        issue(number: $issueNumber) {
-          comments(first: 50, after: $cursor) {
-            totalCount
-            pageInfo {
-              hasNextPage
-              endCursor
-            }
-            nodes {
-              id
-              author {
-                login
-                avatarUrl
+        issueOrPullRequest(number: $issueNumber) {
+          __typename
+          ... on Issue {
+            comments(first: $pageSize, after: $cursor) {
+              totalCount
+              pageInfo {
+                hasNextPage
+                endCursor
               }
-              body
-              createdAt
-              updatedAt
+              nodes {
+                id
+                author {
+                  login
+                  avatarUrl
+                }
+                body
+                createdAt
+                updatedAt
+              }
+            }
+          }
+          ... on PullRequest {
+            comments(first: $pageSize, after: $cursor) {
+              totalCount
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
+              nodes {
+                id
+                author {
+                  login
+                  avatarUrl
+                }
+                body
+                createdAt
+                updatedAt
+              }
             }
           }
         }
@@ -99,6 +133,7 @@ async function fetchIssueComments(
     repo,
     issueNumber,
     cursor: cursor || null,
+    pageSize: COMMENTS_PAGE_SIZE,
   };
 
   const requestBody = JSON.stringify({ query, variables });
@@ -140,10 +175,10 @@ async function fetchIssueComments(
     throw new Error(response.errors[0].message);
   }
 
-  const commentsData = response.data?.repository?.issue?.comments;
+  const commentsData = response.data?.repository?.issueOrPullRequest?.comments;
 
   if (!commentsData) {
-    throw new Error('Issue not found or no comments data available');
+    throw new Error('Issue or pull request not found or no comments data available');
   }
 
   const comments: GitHubComment[] = commentsData.nodes.map((node) => ({

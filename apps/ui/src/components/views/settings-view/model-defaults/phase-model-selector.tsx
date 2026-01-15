@@ -1,6 +1,7 @@
-import * as React from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { useAppStore } from '@/store/app-store';
+import { useIsMobile } from '@/hooks/use-media-query';
 import type {
   ModelAlias,
   CursorModelId,
@@ -8,8 +9,6 @@ import type {
   OpencodeModelId,
   GroupedModel,
   PhaseModelEntry,
-  ThinkingLevel,
-  ReasoningEffort,
 } from '@automaker/types';
 import {
   stripProviderPrefix,
@@ -17,21 +16,25 @@ import {
   getModelGroup,
   isGroupSelected,
   getSelectedVariant,
-  isCursorModel,
   codexModelHasThinking,
 } from '@automaker/types';
 import {
   CLAUDE_MODELS,
   CURSOR_MODELS,
-  CODEX_MODELS,
   OPENCODE_MODELS,
   THINKING_LEVELS,
   THINKING_LEVEL_LABELS,
   REASONING_EFFORT_LEVELS,
   REASONING_EFFORT_LABELS,
+  type ModelOption,
 } from '@/components/views/board-view/shared/model-constants';
 import { Check, ChevronsUpDown, Star, ChevronRight } from 'lucide-react';
-import { AnthropicIcon, CursorIcon, OpenAIIcon, OpenCodeIcon } from '@/components/ui/provider-icon';
+import {
+  AnthropicIcon,
+  CursorIcon,
+  OpenAIIcon,
+  getProviderIconForModel,
+} from '@/components/ui/provider-icon';
 import { Button } from '@/components/ui/button';
 import {
   Command,
@@ -43,6 +46,80 @@ import {
   CommandSeparator,
 } from '@/components/ui/command';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+
+const OPENCODE_CLI_GROUP_LABEL = 'OpenCode CLI';
+const OPENCODE_PROVIDER_FALLBACK = 'opencode';
+const OPENCODE_PROVIDER_WORD_SEPARATOR = '-';
+const OPENCODE_MODEL_ID_SEPARATOR = '/';
+const OPENCODE_SECTION_GROUP_PADDING = 'pt-2';
+
+const OPENCODE_STATIC_PROVIDER_LABELS: Record<string, string> = {
+  [OPENCODE_PROVIDER_FALLBACK]: 'OpenCode (Free)',
+};
+
+const OPENCODE_DYNAMIC_PROVIDER_LABELS: Record<string, string> = {
+  'github-copilot': 'GitHub Copilot',
+  'zai-coding-plan': 'Z.AI Coding Plan',
+  google: 'Google AI',
+  openai: 'OpenAI',
+  openrouter: 'OpenRouter',
+  anthropic: 'Anthropic',
+  xai: 'xAI',
+  deepseek: 'DeepSeek',
+  ollama: 'Ollama (Local)',
+  lmstudio: 'LM Studio (Local)',
+  azure: 'Azure OpenAI',
+  [OPENCODE_PROVIDER_FALLBACK]: 'OpenCode (Free)',
+};
+
+const OPENCODE_DYNAMIC_PROVIDER_ORDER = [
+  'github-copilot',
+  'google',
+  'openai',
+  'openrouter',
+  'anthropic',
+  'xai',
+  'deepseek',
+  'ollama',
+  'lmstudio',
+  'azure',
+  'zai-coding-plan',
+];
+
+const OPENCODE_SECTION_ORDER = ['free', 'dynamic'] as const;
+
+const OPENCODE_SECTION_LABELS: Record<(typeof OPENCODE_SECTION_ORDER)[number], string> = {
+  free: 'Free Tier',
+  dynamic: 'Connected Providers',
+};
+
+const OPENCODE_STATIC_PROVIDER_BY_ID = new Map(
+  OPENCODE_MODELS.map((model) => [model.id, model.provider])
+);
+
+function formatProviderLabel(providerKey: string): string {
+  return providerKey
+    .split(OPENCODE_PROVIDER_WORD_SEPARATOR)
+    .map((word) => (word ? word[0].toUpperCase() + word.slice(1) : word))
+    .join(' ');
+}
+
+function getOpencodeSectionKey(providerKey: string): (typeof OPENCODE_SECTION_ORDER)[number] {
+  if (providerKey === OPENCODE_PROVIDER_FALLBACK) {
+    return 'free';
+  }
+  return 'dynamic';
+}
+
+function getOpencodeGroupLabel(
+  providerKey: string,
+  sectionKey: (typeof OPENCODE_SECTION_ORDER)[number]
+): string {
+  if (sectionKey === 'free') {
+    return OPENCODE_STATIC_PROVIDER_LABELS[providerKey] || 'OpenCode Free Tier';
+  }
+  return OPENCODE_DYNAMIC_PROVIDER_LABELS[providerKey] || formatProviderLabel(providerKey);
+}
 
 interface PhaseModelSelectorProps {
   /** Label shown in full mode */
@@ -73,23 +150,54 @@ export function PhaseModelSelector({
   align = 'end',
   disabled = false,
 }: PhaseModelSelectorProps) {
-  const [open, setOpen] = React.useState(false);
-  const [expandedGroup, setExpandedGroup] = React.useState<string | null>(null);
-  const [expandedClaudeModel, setExpandedClaudeModel] = React.useState<ModelAlias | null>(null);
-  const [expandedCodexModel, setExpandedCodexModel] = React.useState<CodexModelId | null>(null);
-  const commandListRef = React.useRef<HTMLDivElement>(null);
-  const expandedTriggerRef = React.useRef<HTMLDivElement>(null);
-  const expandedClaudeTriggerRef = React.useRef<HTMLDivElement>(null);
-  const expandedCodexTriggerRef = React.useRef<HTMLDivElement>(null);
-  const { enabledCursorModels, favoriteModels, toggleFavoriteModel } = useAppStore();
+  const [open, setOpen] = useState(false);
+  const [expandedGroup, setExpandedGroup] = useState<string | null>(null);
+  const [expandedClaudeModel, setExpandedClaudeModel] = useState<ModelAlias | null>(null);
+  const [expandedCodexModel, setExpandedCodexModel] = useState<CodexModelId | null>(null);
+  const commandListRef = useRef<HTMLDivElement>(null);
+  const expandedTriggerRef = useRef<HTMLDivElement>(null);
+  const expandedClaudeTriggerRef = useRef<HTMLDivElement>(null);
+  const expandedCodexTriggerRef = useRef<HTMLDivElement>(null);
+  const {
+    enabledCursorModels,
+    favoriteModels,
+    toggleFavoriteModel,
+    codexModels,
+    codexModelsLoading,
+    fetchCodexModels,
+    dynamicOpencodeModels,
+    opencodeModelsLoading,
+    fetchOpencodeModels,
+  } = useAppStore();
+
+  // Detect mobile devices to use inline expansion instead of nested popovers
+  const isMobile = useIsMobile();
 
   // Extract model and thinking/reasoning levels from value
   const selectedModel = value.model;
   const selectedThinkingLevel = value.thinkingLevel || 'none';
   const selectedReasoningEffort = value.reasoningEffort || 'none';
 
+  // Fetch Codex models on mount
+  useEffect(() => {
+    if (codexModels.length === 0 && !codexModelsLoading) {
+      fetchCodexModels().catch(() => {
+        // Silently fail - user will see empty Codex section
+      });
+    }
+  }, [codexModels.length, codexModelsLoading, fetchCodexModels]);
+
+  // Fetch OpenCode models on mount
+  useEffect(() => {
+    if (dynamicOpencodeModels.length === 0 && !opencodeModelsLoading) {
+      fetchOpencodeModels().catch(() => {
+        // Silently fail - user will see only static OpenCode models
+      });
+    }
+  }, [dynamicOpencodeModels.length, opencodeModelsLoading, fetchOpencodeModels]);
+
   // Close expanded group when trigger scrolls out of view
-  React.useEffect(() => {
+  useEffect(() => {
     const triggerElement = expandedTriggerRef.current;
     const listElement = commandListRef.current;
     if (!triggerElement || !listElement || !expandedGroup) return;
@@ -112,7 +220,7 @@ export function PhaseModelSelector({
   }, [expandedGroup]);
 
   // Close expanded Claude model popover when trigger scrolls out of view
-  React.useEffect(() => {
+  useEffect(() => {
     const triggerElement = expandedClaudeTriggerRef.current;
     const listElement = commandListRef.current;
     if (!triggerElement || !listElement || !expandedClaudeModel) return;
@@ -135,7 +243,7 @@ export function PhaseModelSelector({
   }, [expandedClaudeModel]);
 
   // Close expanded Codex model popover when trigger scrolls out of view
-  React.useEffect(() => {
+  useEffect(() => {
     const triggerElement = expandedCodexTriggerRef.current;
     const listElement = commandListRef.current;
     if (!triggerElement || !listElement || !expandedCodexModel) return;
@@ -157,6 +265,17 @@ export function PhaseModelSelector({
     return () => observer.disconnect();
   }, [expandedCodexModel]);
 
+  // Transform dynamic Codex models from store to component format
+  const transformedCodexModels = useMemo(() => {
+    return codexModels.map((model) => ({
+      id: model.id,
+      label: model.label,
+      description: model.description,
+      provider: 'codex' as const,
+      badge: model.tier === 'premium' ? 'Premium' : model.tier === 'basic' ? 'Speed' : undefined,
+    }));
+  }, [codexModels]);
+
   // Filter Cursor models to only show enabled ones
   const availableCursorModels = CURSOR_MODELS.filter((model) => {
     const cursorId = stripProviderPrefix(model.id) as CursorModelId;
@@ -164,7 +283,7 @@ export function PhaseModelSelector({
   });
 
   // Helper to find current selected model details
-  const currentModel = React.useMemo(() => {
+  const currentModel = useMemo(() => {
     const claudeModel = CLAUDE_MODELS.find((m) => m.id === selectedModel);
     if (claudeModel) {
       // Add thinking level to label if not 'none'
@@ -198,18 +317,36 @@ export function PhaseModelSelector({
     }
 
     // Check Codex models
-    const codexModel = CODEX_MODELS.find((m) => m.id === selectedModel);
+    const codexModel = transformedCodexModels.find((m) => m.id === selectedModel);
     if (codexModel) return { ...codexModel, icon: OpenAIIcon };
 
-    // Check OpenCode models
+    // Check OpenCode models (static) - use dynamic icon resolution for provider-specific icons
     const opencodeModel = OPENCODE_MODELS.find((m) => m.id === selectedModel);
-    if (opencodeModel) return { ...opencodeModel, icon: OpenCodeIcon };
+    if (opencodeModel) return { ...opencodeModel, icon: getProviderIconForModel(opencodeModel.id) };
+
+    // Check dynamic OpenCode models - use dynamic icon resolution for provider-specific icons
+    const dynamicModel = dynamicOpencodeModels.find((m) => m.id === selectedModel);
+    if (dynamicModel) {
+      return {
+        id: dynamicModel.id,
+        label: dynamicModel.name,
+        description: dynamicModel.description,
+        provider: 'opencode' as const,
+        icon: getProviderIconForModel(dynamicModel.id),
+      };
+    }
 
     return null;
-  }, [selectedModel, selectedThinkingLevel, availableCursorModels]);
+  }, [
+    selectedModel,
+    selectedThinkingLevel,
+    availableCursorModels,
+    transformedCodexModels,
+    dynamicOpencodeModels,
+  ]);
 
   // Compute grouped vs standalone Cursor models
-  const { groupedModels, standaloneCursorModels } = React.useMemo(() => {
+  const { groupedModels, standaloneCursorModels } = useMemo(() => {
     const grouped: GroupedModel[] = [];
     const standalone: typeof CURSOR_MODELS = [];
     const seenGroups = new Set<string>();
@@ -241,13 +378,35 @@ export function PhaseModelSelector({
     return { groupedModels: grouped, standaloneCursorModels: standalone };
   }, [availableCursorModels, enabledCursorModels]);
 
+  // Combine static and dynamic OpenCode models
+  const allOpencodeModels: ModelOption[] = useMemo(() => {
+    // Start with static models
+    const staticModels = [...OPENCODE_MODELS];
+
+    // Add dynamic models (convert ModelDefinition to ModelOption)
+    const dynamicModelOptions: ModelOption[] = dynamicOpencodeModels.map((model) => ({
+      id: model.id,
+      label: model.name,
+      description: model.description,
+      badge: model.tier === 'premium' ? 'Premium' : model.tier === 'basic' ? 'Free' : undefined,
+      provider: 'opencode' as const,
+    }));
+
+    // Merge, avoiding duplicates (static models take precedence for same ID)
+    // In practice, static and dynamic IDs don't overlap
+    const staticIds = new Set(staticModels.map((m) => m.id));
+    const uniqueDynamic = dynamicModelOptions.filter((m) => !staticIds.has(m.id));
+
+    return [...staticModels, ...uniqueDynamic];
+  }, [dynamicOpencodeModels]);
+
   // Group models
-  const { favorites, claude, cursor, codex, opencode } = React.useMemo(() => {
+  const { favorites, claude, cursor, codex, opencode } = useMemo(() => {
     const favs: typeof CLAUDE_MODELS = [];
     const cModels: typeof CLAUDE_MODELS = [];
     const curModels: typeof CURSOR_MODELS = [];
-    const codModels: typeof CODEX_MODELS = [];
-    const ocModels: typeof OPENCODE_MODELS = [];
+    const codModels: typeof transformedCodexModels = [];
+    const ocModels: ModelOption[] = [];
 
     // Process Claude Models
     CLAUDE_MODELS.forEach((model) => {
@@ -268,7 +427,7 @@ export function PhaseModelSelector({
     });
 
     // Process Codex Models
-    CODEX_MODELS.forEach((model) => {
+    transformedCodexModels.forEach((model) => {
       if (favoriteModels.includes(model.id)) {
         favs.push(model);
       } else {
@@ -276,8 +435,8 @@ export function PhaseModelSelector({
       }
     });
 
-    // Process OpenCode Models
-    OPENCODE_MODELS.forEach((model) => {
+    // Process OpenCode Models (including dynamic)
+    allOpencodeModels.forEach((model) => {
       if (favoriteModels.includes(model.id)) {
         favs.push(model);
       } else {
@@ -292,10 +451,98 @@ export function PhaseModelSelector({
       codex: codModels,
       opencode: ocModels,
     };
-  }, [favoriteModels, availableCursorModels]);
+  }, [favoriteModels, availableCursorModels, transformedCodexModels, allOpencodeModels]);
+
+  // Group OpenCode models by model type for better organization
+  const opencodeSections = useMemo(() => {
+    type OpencodeSectionKey = (typeof OPENCODE_SECTION_ORDER)[number];
+    type OpencodeGroup = { key: string; label: string; models: ModelOption[] };
+    type OpencodeSection = {
+      key: OpencodeSectionKey;
+      label: string;
+      showGroupLabels: boolean;
+      groups: OpencodeGroup[];
+    };
+
+    const sections: Record<OpencodeSectionKey, Record<string, OpencodeGroup>> = {
+      free: {},
+      dynamic: {},
+    };
+    const dynamicProviderById = new Map(
+      dynamicOpencodeModels.map((model) => [model.id, model.provider])
+    );
+
+    const resolveProviderKey = (modelId: string): string => {
+      const staticProvider = OPENCODE_STATIC_PROVIDER_BY_ID.get(modelId);
+      if (staticProvider) return staticProvider;
+
+      const dynamicProvider = dynamicProviderById.get(modelId);
+      if (dynamicProvider) return dynamicProvider;
+
+      return modelId.includes(OPENCODE_MODEL_ID_SEPARATOR)
+        ? modelId.split(OPENCODE_MODEL_ID_SEPARATOR)[0]
+        : OPENCODE_PROVIDER_FALLBACK;
+    };
+
+    const addModelToGroup = (
+      sectionKey: OpencodeSectionKey,
+      providerKey: string,
+      model: ModelOption
+    ) => {
+      if (!sections[sectionKey][providerKey]) {
+        sections[sectionKey][providerKey] = {
+          key: providerKey,
+          label: getOpencodeGroupLabel(providerKey, sectionKey),
+          models: [],
+        };
+      }
+      sections[sectionKey][providerKey].models.push(model);
+    };
+
+    opencode.forEach((model) => {
+      const providerKey = resolveProviderKey(model.id);
+      const sectionKey = getOpencodeSectionKey(providerKey);
+      addModelToGroup(sectionKey, providerKey, model);
+    });
+
+    const buildGroupList = (sectionKey: OpencodeSectionKey): OpencodeGroup[] => {
+      const groupMap = sections[sectionKey];
+      const priorityOrder = sectionKey === 'dynamic' ? OPENCODE_DYNAMIC_PROVIDER_ORDER : [];
+      const priorityMap = new Map(priorityOrder.map((provider, index) => [provider, index]));
+
+      return Object.keys(groupMap)
+        .sort((a, b) => {
+          const aPriority = priorityMap.get(a);
+          const bPriority = priorityMap.get(b);
+
+          if (aPriority !== undefined && bPriority !== undefined) {
+            return aPriority - bPriority;
+          }
+          if (aPriority !== undefined) return -1;
+          if (bPriority !== undefined) return 1;
+
+          return groupMap[a].label.localeCompare(groupMap[b].label);
+        })
+        .map((key) => groupMap[key]);
+    };
+
+    const builtSections = OPENCODE_SECTION_ORDER.map((sectionKey) => {
+      const groups = buildGroupList(sectionKey);
+      if (groups.length === 0) return null;
+
+      return {
+        key: sectionKey,
+        label: OPENCODE_SECTION_LABELS[sectionKey],
+        showGroupLabels: sectionKey !== 'free',
+        groups,
+      };
+    }).filter(Boolean) as OpencodeSection[];
+
+    return builtSections;
+  }, [opencode, dynamicOpencodeModels]);
 
   // Render Codex model item with secondary popover for reasoning effort (only for models that support it)
-  const renderCodexModelItem = (model: (typeof CODEX_MODELS)[0]) => {
+  const renderCodexModelItem = (model: (typeof transformedCodexModels)[0]) => {
     const isSelected = selectedModel === model.id;
     const isFavorite = favoriteModels.includes(model.id);
     const hasReasoning = codexModelHasThinking(model.id as CodexModelId);
@@ -353,6 +600,107 @@ export function PhaseModelSelector({
     }
 
     // Model supports reasoning - show popover with reasoning effort options
+    // On mobile, render inline expansion instead of nested popover
+    if (isMobile) {
+      return (
+        <div key={model.id}>
+          <CommandItem
+            value={model.label}
+            onSelect={() => setExpandedCodexModel(isExpanded ? null : (model.id as CodexModelId))}
+            className="group flex items-center justify-between py-2"
+          >
+            <div className="flex items-center gap-3 overflow-hidden">
+              <OpenAIIcon
+                className={cn(
+                  'h-4 w-4 shrink-0',
+                  isSelected ? 'text-primary' : 'text-muted-foreground'
+                )}
+              />
+              <div className="flex flex-col truncate">
+                <span className={cn('truncate font-medium', isSelected && 'text-primary')}>
+                  {model.label}
+                </span>
+                <span className="truncate text-xs text-muted-foreground">
+                  {isSelected && currentReasoning !== 'none'
+                    ? `Reasoning: ${REASONING_EFFORT_LABELS[currentReasoning]}`
+                    : model.description}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1 ml-2">
+              <Button
+                variant="ghost"
+                size="icon"
+                className={cn(
+                  'h-6 w-6 hover:bg-transparent hover:text-yellow-500 focus:ring-0',
+                  isFavorite
+                    ? 'text-yellow-500 opacity-100'
+                    : 'opacity-0 group-hover:opacity-100 text-muted-foreground'
+                )}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleFavoriteModel(model.id);
+                }}
+              >
+                <Star className={cn('h-3.5 w-3.5', isFavorite && 'fill-current')} />
+              </Button>
+              {isSelected && !isExpanded && <Check className="h-4 w-4 text-primary shrink-0" />}
+              <ChevronRight
+                className={cn(
+                  'h-4 w-4 text-muted-foreground transition-transform',
+                  isExpanded && 'rotate-90'
+                )}
+              />
+            </div>
+          </CommandItem>
+
+          {/* Inline reasoning effort options on mobile */}
+          {isExpanded && (
+            <div className="pl-6 pr-2 pb-2 space-y-1">
+              <div className="px-2 py-1 text-xs font-medium text-muted-foreground">
+                Reasoning Effort
+              </div>
+              {REASONING_EFFORT_LEVELS.map((effort) => (
+                <button
+                  key={effort}
+                  onClick={() => {
+                    onChange({
+                      model: model.id as CodexModelId,
+                      reasoningEffort: effort,
+                    });
+                    setExpandedCodexModel(null);
+                    setOpen(false);
+                  }}
+                  className={cn(
+                    'w-full flex items-center justify-between px-2 py-2 rounded-sm text-sm',
+                    'hover:bg-accent cursor-pointer transition-colors',
+                    isSelected && currentReasoning === effort && 'bg-accent text-accent-foreground'
+                  )}
+                >
+                  <div className="flex flex-col items-start">
+                    <span className="font-medium text-xs">{REASONING_EFFORT_LABELS[effort]}</span>
+                    <span className="text-[10px] text-muted-foreground">
+                      {effort === 'none' && 'No reasoning capability'}
+                      {effort === 'minimal' && 'Minimal reasoning'}
+                      {effort === 'low' && 'Light reasoning'}
+                      {effort === 'medium' && 'Moderate reasoning'}
+                      {effort === 'high' && 'Deep reasoning'}
+                      {effort === 'xhigh' && 'Maximum reasoning'}
+                    </span>
+                  </div>
+                  {isSelected && currentReasoning === effort && (
+                    <Check className="h-3.5 w-3.5 text-primary" />
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Desktop: Use nested popover
     return (
       <CommandItem
         key={model.id}
@@ -480,6 +828,9 @@ export function PhaseModelSelector({
     const isSelected = selectedModel === model.id;
     const isFavorite = favoriteModels.includes(model.id);
 
+    // Get the appropriate icon based on the specific model ID
+    const ProviderIcon = getProviderIconForModel(model.id);
+
     return (
       <CommandItem
         key={model.id}
@@ -491,7 +842,7 @@ export function PhaseModelSelector({
         className="group flex items-center justify-between py-2"
       >
         <div className="flex items-center gap-3 overflow-hidden">
-          <OpenCodeIcon
+          <ProviderIcon
             className={cn(
               'h-4 w-4 shrink-0',
               isSelected ? 'text-primary' : 'text-muted-foreground'
@@ -594,6 +945,106 @@ export function PhaseModelSelector({
     const isExpanded = expandedClaudeModel === model.id;
     const currentThinking = isSelected ? selectedThinkingLevel : 'none';
 
+    // On mobile, render inline expansion instead of nested popover
+    if (isMobile) {
+      return (
+        <div key={model.id}>
+          <CommandItem
+            value={model.label}
+            onSelect={() => setExpandedClaudeModel(isExpanded ? null : (model.id as ModelAlias))}
+            className="group flex items-center justify-between py-2"
+          >
+            <div className="flex items-center gap-3 overflow-hidden">
+              <AnthropicIcon
+                className={cn(
+                  'h-4 w-4 shrink-0',
+                  isSelected ? 'text-primary' : 'text-muted-foreground'
+                )}
+              />
+              <div className="flex flex-col truncate">
+                <span className={cn('truncate font-medium', isSelected && 'text-primary')}>
+                  {model.label}
+                </span>
+                <span className="truncate text-xs text-muted-foreground">
+                  {isSelected && currentThinking !== 'none'
+                    ? `Thinking: ${THINKING_LEVEL_LABELS[currentThinking]}`
+                    : model.description}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1 ml-2">
+              <Button
+                variant="ghost"
+                size="icon"
+                className={cn(
+                  'h-6 w-6 hover:bg-transparent hover:text-yellow-500 focus:ring-0',
+                  isFavorite
+                    ? 'text-yellow-500 opacity-100'
+                    : 'opacity-0 group-hover:opacity-100 text-muted-foreground'
+                )}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleFavoriteModel(model.id);
+                }}
+              >
+                <Star className={cn('h-3.5 w-3.5', isFavorite && 'fill-current')} />
+              </Button>
+              {isSelected && !isExpanded && <Check className="h-4 w-4 text-primary shrink-0" />}
+              <ChevronRight
+                className={cn(
+                  'h-4 w-4 text-muted-foreground transition-transform',
+                  isExpanded && 'rotate-90'
+                )}
+              />
+            </div>
+          </CommandItem>
+
+          {/* Inline thinking level options on mobile */}
+          {isExpanded && (
+            <div className="pl-6 pr-2 pb-2 space-y-1">
+              <div className="px-2 py-1 text-xs font-medium text-muted-foreground">
+                Thinking Level
+              </div>
+              {THINKING_LEVELS.map((level) => (
+                <button
+                  key={level}
+                  onClick={() => {
+                    onChange({
+                      model: model.id as ModelAlias,
+                      thinkingLevel: level,
+                    });
+                    setExpandedClaudeModel(null);
+                    setOpen(false);
+                  }}
+                  className={cn(
+                    'w-full flex items-center justify-between px-2 py-2 rounded-sm text-sm',
+                    'hover:bg-accent cursor-pointer transition-colors',
+                    isSelected && currentThinking === level && 'bg-accent text-accent-foreground'
+                  )}
+                >
+                  <div className="flex flex-col items-start">
+                    <span className="font-medium text-xs">{THINKING_LEVEL_LABELS[level]}</span>
+                    <span className="text-[10px] text-muted-foreground">
+                      {level === 'none' && 'No extended thinking'}
+                      {level === 'low' && 'Light reasoning (1k tokens)'}
+                      {level === 'medium' && 'Moderate reasoning (10k tokens)'}
+                      {level === 'high' && 'Deep reasoning (16k tokens)'}
+                      {level === 'ultrathink' && 'Maximum reasoning (32k tokens)'}
+                    </span>
+                  </div>
+                  {isSelected && currentThinking === level && (
+                    <Check className="h-3.5 w-3.5 text-primary" />
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Desktop: Use nested popover
     return (
       <CommandItem
         key={model.id}
@@ -728,6 +1179,90 @@ export function PhaseModelSelector({
           ? 'Reasoning Mode'
           : 'Capacity Options';
 
+    // On mobile, render inline expansion instead of nested popover
+    if (isMobile) {
+      return (
+        <div key={group.baseId}>
+          <CommandItem
+            value={group.label}
+            onSelect={() => setExpandedGroup(isExpanded ? null : group.baseId)}
+            className="group flex items-center justify-between py-2"
+          >
+            <div className="flex items-center gap-3 overflow-hidden">
+              <CursorIcon
+                className={cn(
+                  'h-4 w-4 shrink-0',
+                  groupIsSelected ? 'text-primary' : 'text-muted-foreground'
+                )}
+              />
+              <div className="flex flex-col truncate">
+                <span className={cn('truncate font-medium', groupIsSelected && 'text-primary')}>
+                  {group.label}
+                </span>
+                <span className="truncate text-xs text-muted-foreground">
+                  {selectedVariant ? `Selected: ${selectedVariant.label}` : group.description}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1 ml-2">
+              {groupIsSelected && !isExpanded && (
+                <Check className="h-4 w-4 text-primary shrink-0" />
+              )}
+              <ChevronRight
+                className={cn(
+                  'h-4 w-4 text-muted-foreground transition-transform',
+                  isExpanded && 'rotate-90'
+                )}
+              />
+            </div>
+          </CommandItem>
+
+          {/* Inline variant options on mobile */}
+          {isExpanded && (
+            <div className="pl-6 pr-2 pb-2 space-y-1">
+              <div className="px-2 py-1 text-xs font-medium text-muted-foreground">
+                {variantTypeLabel}
+              </div>
+              {group.variants.map((variant) => (
+                <button
+                  key={variant.id}
+                  onClick={() => {
+                    onChange({ model: variant.id });
+                    setExpandedGroup(null);
+                    setOpen(false);
+                  }}
+                  className={cn(
+                    'w-full flex items-center justify-between px-2 py-2 rounded-sm text-sm',
+                    'hover:bg-accent cursor-pointer transition-colors',
+                    selectedModel === variant.id && 'bg-accent text-accent-foreground'
+                  )}
+                >
+                  <div className="flex flex-col items-start">
+                    <span className="font-medium text-xs">{variant.label}</span>
+                    {variant.description && (
+                      <span className="text-[10px] text-muted-foreground">
+                        {variant.description}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {variant.badge && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+                        {variant.badge}
+                      </span>
+                    )}
+                    {selectedModel === variant.id && <Check className="h-3.5 w-3.5 text-primary" />}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Desktop: Use nested popover
     return (
       <CommandItem
         key={group.baseId}
@@ -876,6 +1411,7 @@ export function PhaseModelSelector({
       className="w-[320px] p-0"
       align={align}
       onWheel={(e) => e.stopPropagation()}
+      onTouchMove={(e) => e.stopPropagation()}
       onPointerDownOutside={(e) => {
         // Only prevent close if clicking inside a nested popover (thinking level panel)
         const target = e.target as HTMLElement;
@@ -888,7 +1424,7 @@ export function PhaseModelSelector({
         <CommandInput placeholder="Search models..." />
         <CommandList
           ref={commandListRef}
-          className="max-h-[300px] overflow-y-auto overscroll-contain"
+          className="max-h-[300px] overflow-y-auto overscroll-contain touch-pan-y"
         >
           <CommandEmpty>No model found.</CommandEmpty>
 
@@ -919,7 +1455,7 @@ export function PhaseModelSelector({
                     }
                     // Codex model
                     if (model.provider === 'codex') {
-                      return renderCodexModelItem(model);
+                      return renderCodexModelItem(model as (typeof transformedCodexModels)[0]);
                     }
                     // OpenCode model
                     if (model.provider === 'opencode') {
@@ -955,9 +1491,32 @@ export function PhaseModelSelector({
             </CommandGroup>
           )}
 
-          {opencode.length > 0 && (
-            <CommandGroup heading="OpenCode Models">
-              {opencode.map((model) => renderOpencodeModelItem(model))}
+          {opencodeSections.length > 0 && (
+            <CommandGroup heading={OPENCODE_CLI_GROUP_LABEL}>
+              {opencodeSections.map((section, sectionIndex) => (
+                <Fragment key={section.key}>
+                  <div className="px-2 pt-2 text-xs font-medium text-muted-foreground">
+                    {section.label}
+                  </div>
+                  <div
+                    className={cn(
+                      'space-y-2',
+                      section.key === 'dynamic' && OPENCODE_SECTION_GROUP_PADDING
+                    )}
+                  >
+                    {section.groups.map((group) => (
+                      <div key={group.key} className="space-y-1">
+                        {section.showGroupLabels && (
+                          <div className="px-2 py-1 text-xs font-medium text-muted-foreground">
+                            {group.label}
+                          </div>
+                        )}
+                        {group.models.map((model) => renderOpencodeModelItem(model))}
+                      </div>
+                    ))}
+                  </div>
+                </Fragment>
+              ))}
             </CommandGroup>
           )}
         </CommandList>

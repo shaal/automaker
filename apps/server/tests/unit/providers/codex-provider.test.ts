@@ -257,7 +257,7 @@ describe('codex-provider.ts', () => {
       expect(results[1].result).toBe('Hello from SDK');
     });
 
-    it('uses the CLI when tools are requested even if an API key is present', async () => {
+    it('uses the SDK when API key is present, even for tool requests (to avoid OAuth issues)', async () => {
       process.env[OPENAI_API_KEY_ENV] = 'sk-test';
       vi.mocked(spawnJSONLProcess).mockReturnValue((async function* () {})());
 
@@ -270,8 +270,8 @@ describe('codex-provider.ts', () => {
         })
       );
 
-      expect(codexRunMock).not.toHaveBeenCalled();
-      expect(spawnJSONLProcess).toHaveBeenCalled();
+      expect(codexRunMock).toHaveBeenCalled();
+      expect(spawnJSONLProcess).not.toHaveBeenCalled();
     });
 
     it('falls back to CLI when no tools are requested and no API key is available', async () => {

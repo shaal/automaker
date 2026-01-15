@@ -24,6 +24,7 @@ For complete details on contribution terms and rights assignment, please review 
     - [Development Setup](#development-setup)
     - [Project Structure](#project-structure)
   - [Pull Request Process](#pull-request-process)
+    - [Branching Strategy (RC Branches)](#branching-strategy-rc-branches)
     - [Branch Naming Convention](#branch-naming-convention)
     - [Commit Message Format](#commit-message-format)
     - [Submitting a Pull Request](#submitting-a-pull-request)
@@ -186,6 +187,59 @@ automaker/
 
 This section covers everything you need to know about contributing changes through pull requests, from creating your branch to getting your code merged.
 
+### Branching Strategy (RC Branches)
+
+Automaker uses **Release Candidate (RC) branches** for all development work. Understanding this workflow is essential before contributing.
+
+**How it works:**
+
+1. **All development happens on RC branches** - We maintain version-specific RC branches (e.g., `v0.10.0rc`, `v0.11.0rc`) where all active development occurs
+2. **RC branches are eventually merged to main** - Once an RC branch is stable and ready for release, it gets merged into `main`
+3. **Main branch is for releases only** - The `main` branch contains only released, stable code
+
+**Before creating a PR:**
+
+1. **Check for the latest RC branch** - Before starting work, check the repository for the current RC branch:
+
+   ```bash
+   git fetch upstream
+   git branch -r | grep rc
+   ```
+
+2. **Base your work on the RC branch** - Create your feature branch from the latest RC branch, not from `main`:
+
+   ```bash
+   # Find the latest RC branch (e.g., v0.11.0rc)
+   git checkout upstream/v0.11.0rc
+   git checkout -b feature/your-feature-name
+   ```
+
+3. **Target the RC branch in your PR** - When opening your pull request, set the base branch to the current RC branch, not `main`
+
+**Example workflow:**
+
+```bash
+# 1. Fetch latest changes
+git fetch upstream
+
+# 2. Check for RC branches
+git branch -r | grep rc
+# Output: upstream/v0.11.0rc
+
+# 3. Create your branch from the RC
+git checkout -b feature/add-dark-mode upstream/v0.11.0rc
+
+# 4. Make your changes and commit
+git commit -m "feat: Add dark mode support"
+
+# 5. Push to your fork
+git push origin feature/add-dark-mode
+
+# 6. Open PR targeting the RC branch (v0.11.0rc), NOT main
+```
+
+**Important:** PRs opened directly against `main` will be asked to retarget to the current RC branch.
+
 ### Branch Naming Convention
 
 We use a consistent branch naming pattern to keep our repository organized:
@@ -275,14 +329,14 @@ Follow these steps to submit your contribution:
 
 #### 1. Prepare Your Changes
 
-Ensure you've synced with the latest upstream changes:
+Ensure you've synced with the latest upstream changes from the RC branch:
 
 ```bash
 # Fetch latest changes from upstream
 git fetch upstream
 
-# Rebase your branch on main (if needed)
-git rebase upstream/main
+# Rebase your branch on the current RC branch (if needed)
+git rebase upstream/v0.11.0rc  # Use the current RC branch name
 ```
 
 #### 2. Run Pre-submission Checks
@@ -314,18 +368,19 @@ git push origin feature/your-feature-name
 
 1. Go to your fork on GitHub
 2. Click "Compare & pull request" for your branch
-3. Ensure the base repository is `AutoMaker-Org/automaker` and base branch is `main`
+3. **Important:** Set the base repository to `AutoMaker-Org/automaker` and the base branch to the **current RC branch** (e.g., `v0.11.0rc`), not `main`
 4. Fill out the PR template completely
 
 #### PR Requirements Checklist
 
 Your PR should include:
 
+- [ ] **Targets the current RC branch** (not `main`) - see [Branching Strategy](#branching-strategy-rc-branches)
 - [ ] **Clear title** describing the change (use conventional commit format)
 - [ ] **Description** explaining what changed and why
 - [ ] **Link to related issue** (if applicable): `Closes #123` or `Fixes #456`
 - [ ] **All CI checks passing** (format, lint, build, tests)
-- [ ] **No merge conflicts** with main branch
+- [ ] **No merge conflicts** with the RC branch
 - [ ] **Tests included** for new functionality
 - [ ] **Documentation updated** if adding/changing public APIs
 

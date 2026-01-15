@@ -30,3 +30,11 @@ export { OpencodeProvider } from './opencode-provider.js';
 
 // Provider factory
 export { ProviderFactory } from './provider-factory.js';
+
+// Simple query service - unified interface for basic AI queries
+export { simpleQuery, streamingQuery } from './simple-query-service.js';
+export type {
+  SimpleQueryOptions,
+  SimpleQueryResult,
+  StreamingQueryOptions,
+} from './simple-query-service.js';

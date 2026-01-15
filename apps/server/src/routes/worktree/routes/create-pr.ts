@@ -70,9 +70,8 @@ export function createCreatePRHandler() {
         logger.debug(`Changed files:\n${status}`);
       }
 
-      // If there are changes, commit them
+      // If there are changes, commit them before creating the PR
       let commitHash: string | null = null;
-      let commitError: string | null = null;
       if (hasChanges) {
         const message = commitMessage || `Changes from ${branchName}`;
         logger.debug(`Committing changes with message: ${message}`);
@@ -98,14 +97,13 @@ export function createCreatePRHandler() {
           logger.info(`Commit successful: ${commitHash}`);
         } catch (commitErr: unknown) {
           const err = commitErr as { stderr?: string; message?: string };
-          commitError = err.stderr || err.message || 'Commit failed';
+          const commitError = err.stderr || err.message || 'Commit failed';
           logger.error(`Commit failed: ${commitError}`);
 
           // Return error immediately - don't proceed with push/PR if commit fails
           res.status(500).json({
             success: false,
             error: `Failed to commit changes: ${commitError}`,
-            commitError,
           });
           return;
         }
@@ -381,9 +379,8 @@ export function createCreatePRHandler() {
         success: true,
         result: {
           branch: branchName,
-          committed: hasChanges && !commitError,
+          committed: hasChanges,
           commitHash,
-          commitError: commitError || undefined,
           pushed: true,
           prUrl,
           prNumber,

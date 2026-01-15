@@ -118,8 +118,37 @@ export function useDevServers({ projectPath }: UseDevServersOptions) {
   const handleOpenDevServerUrl = useCallback(
     (worktree: WorktreeInfo) => {
       const serverInfo = runningDevServers.get(getWorktreeKey(worktree));
-      if (serverInfo) {
-        window.open(serverInfo.url, '_blank');
+      if (!serverInfo) {
+        logger.warn('No dev server info found for worktree:', getWorktreeKey(worktree));
+        toast.error('Dev server not found', {
+          description: 'The dev server may have stopped. Try starting it again.',
+        });
+        return;
+      }
+
+      try {
+        // Rewrite URL hostname to match the current browser's hostname.
+        // This ensures dev server URLs work when accessing Automaker from
+        // remote machines (e.g., 192.168.x.x or hostname.local instead of localhost).
+        const devServerUrl = new URL(serverInfo.url);
+
+        // Security: Only allow http/https protocols to prevent potential attacks
+        // via data:, javascript:, file:, or other dangerous URL schemes
+        if (devServerUrl.protocol !== 'http:' && devServerUrl.protocol !== 'https:') {
+          logger.error('Invalid dev server URL protocol:', devServerUrl.protocol);
+          toast.error('Invalid dev server URL', {
+            description: 'The server returned an unsupported URL protocol.',
+          });
+          return;
+        }
+
+        devServerUrl.hostname = window.location.hostname;
+        window.open(devServerUrl.toString(), '_blank', 'noopener,noreferrer');
+      } catch (error) {
+        logger.error('Failed to parse dev server URL:', error);
+        toast.error('Failed to open dev server', {
+          description: 'The server URL could not be processed. Please try again.',
+        });
       }
     },
     [runningDevServers, getWorktreeKey]

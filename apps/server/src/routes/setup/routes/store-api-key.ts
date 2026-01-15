@@ -21,21 +21,24 @@ export function createStoreApiKeyHandler() {
         return;
       }
 
-      setApiKey(provider, apiKey);
-
-      // Also set as environment variable and persist to .env
-      if (provider === 'anthropic' || provider === 'anthropic_oauth_token') {
-        // Both API key and OAuth token use ANTHROPIC_API_KEY
-        process.env.ANTHROPIC_API_KEY = apiKey;
-        await persistApiKeyToEnv('ANTHROPIC_API_KEY', apiKey);
-        logger.info('[Setup] Stored API key as ANTHROPIC_API_KEY');
-      } else {
+      const providerEnvMap: Record<string, string> = {
+        anthropic: 'ANTHROPIC_API_KEY',
+        anthropic_oauth_token: 'ANTHROPIC_API_KEY',
+        openai: 'OPENAI_API_KEY',
+      };
+      const envKey = providerEnvMap[provider];
+      if (!envKey) {
         res.status(400).json({
           success: false,
-          error: `Unsupported provider: ${provider}. Only anthropic is supported.`,
+          error: `Unsupported provider: ${provider}. Only anthropic and openai are supported.`,
         });
         return;
       }
+
+      setApiKey(provider, apiKey);
+      process.env[envKey] = apiKey;
+      await persistApiKeyToEnv(envKey, apiKey);
+      logger.info(`[Setup] Stored API key as ${envKey}`);
 
       res.json({ success: true });
     } catch (error) {

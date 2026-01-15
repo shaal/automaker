@@ -233,6 +233,87 @@ export function getClaudeProjectsDir(): string {
 }
 
 /**
+ * Enumerate directories matching a prefix pattern and return full paths
+ * Used to resolve dynamic directory names like version numbers
+ */
+function enumerateMatchingPaths(
+  parentDir: string,
+  prefix: string,
+  ...subPathParts: string[]
+): string[] {
+  try {
+    if (!fsSync.existsSync(parentDir)) {
+      return [];
+    }
+    const entries = fsSync.readdirSync(parentDir);
+    const matching = entries.filter((entry) => entry.startsWith(prefix));
+    return matching.map((entry) => path.join(parentDir, entry, ...subPathParts));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Get common Git Bash installation paths on Windows
+ * Git Bash is needed for running shell scripts cross-platform
+ */
+export function getGitBashPaths(): string[] {
+  if (process.platform !== 'win32') {
+    return [];
+  }
+
+  const homeDir = os.homedir();
+  const localAppData = process.env.LOCALAPPDATA || '';
+
+  // Dynamic paths that require directory enumeration
+  // winget installs to: LocalAppData\Microsoft\WinGet\Packages\Git.Git_<hash>\bin\bash.exe
+  const wingetGitPaths = localAppData
+    ? enumerateMatchingPaths(
+        path.join(localAppData, 'Microsoft', 'WinGet', 'Packages'),
+        'Git.Git_',
+        'bin',
+        'bash.exe'
+      )
+    : [];
+
+  // GitHub Desktop bundles Git at: LocalAppData\GitHubDesktop\app-<version>\resources\app\git\cmd\bash.exe
+  const githubDesktopPaths = localAppData
+    ? enumerateMatchingPaths(
+        path.join(localAppData, 'GitHubDesktop'),
+        'app-',
+        'resources',
+        'app',
+        'git',
+        'cmd',
+        'bash.exe'
+      )
+    : [];
+
+  return [
+    // Standard Git for Windows installations
+    'C:\\Program Files\\Git\\bin\\bash.exe',
+    'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+    // User-local installations
+    path.join(localAppData, 'Programs', 'Git', 'bin', 'bash.exe'),
+    // Scoop package manager
+    path.join(homeDir, 'scoop', 'apps', 'git', 'current', 'bin', 'bash.exe'),
+    // Chocolatey
+    path.join(
+      process.env.ChocolateyInstall || 'C:\\ProgramData\\chocolatey',
+      'lib',
+      'git',
+      'tools',
+      'bin',
+      'bash.exe'
+    ),
+    // winget installations (dynamically resolved)
+    ...wingetGitPaths,
+    // GitHub Desktop bundled Git (dynamically resolved)
+    ...githubDesktopPaths,
+  ].filter(Boolean);
+}
+
+/**
  * Get common shell paths for shell detection
  * Includes both full paths and short names to match $SHELL or PATH entries
  */
@@ -550,6 +631,8 @@ function getAllAllowedSystemPaths(): string[] {
     getOpenCodeAuthPath(),
     // Shell paths
     ...getShellPaths(),
+    // Git Bash paths (for Windows cross-platform shell script execution)
+    ...getGitBashPaths(),
     // Node.js system paths
     ...getNodeSystemPaths(),
     getScoopNodePath(),
@@ -884,6 +967,13 @@ export async function findCodexCliPath(): Promise<string | null> {
 }
 
 /**
+ * Find Git Bash on Windows and return its path
+ */
+export async function findGitBashPath(): Promise<string | null> {
+  return findFirstExistingPath(getGitBashPaths());
+}
+
+/**
  * Get Claude authentication status by checking various indicators
  */
 export interface ClaudeAuthIndicators {
@@ -1124,7 +1214,16 @@ const OPENCODE_OAUTH_KEYS = ['access_token', 'oauth_token'] as const;
 const OPENCODE_API_KEY_KEYS = ['api_key', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY'] as const;
 
 // Provider names that OpenCode uses for provider-specific auth entries
-const OPENCODE_PROVIDERS = ['anthropic', 'openai', 'google', 'bedrock', 'amazon-bedrock'] as const;
+// NOTE: github-copilot uses refresh tokens, so 'access' may be empty but 'refresh' is valid
+const OPENCODE_PROVIDERS = [
+  'anthropic',
+  'openai',
+  'google',
+  'bedrock',
+  'amazon-bedrock',
+  'github-copilot',
+  'copilot',
+] as const;
 
 function getOpenCodeNestedTokens(record: Record<string, unknown>): Record<string, unknown> | null {
   const tokens = record[OPENCODE_TOKENS_KEY];
@@ -1137,18 +1236,28 @@ function getOpenCodeNestedTokens(record: Record<string, unknown>): Record<string
 /**
  * Check if the auth JSON has provider-specific OAuth credentials
  * OpenCode stores auth in format: { "anthropic": { "type": "oauth", "access": "...", "refresh": "..." } }
+ * GitHub Copilot uses refresh tokens, so 'access' may be empty but 'refresh' is valid
  */
 function hasProviderOAuth(authJson: Record<string, unknown>): boolean {
   for (const provider of OPENCODE_PROVIDERS) {
     const providerAuth = authJson[provider];
     if (providerAuth && typeof providerAuth === 'object' && !Array.isArray(providerAuth)) {
       const auth = providerAuth as Record<string, unknown>;
-      // Check for OAuth type with access token
-      if (auth.type === 'oauth' && typeof auth.access === 'string' && auth.access) {
-        return true;
+      // Check for OAuth type with access token OR refresh token (GitHub Copilot uses refresh tokens)
+      if (auth.type === 'oauth') {
+        if (
+          (typeof auth.access === 'string' && auth.access) ||
+          (typeof auth.refresh === 'string' && auth.refresh)
+        ) {
+          return true;
+        }
       }
       // Also check for access_token field directly
       if (typeof auth.access_token === 'string' && auth.access_token) {
+        return true;
+      }
+      // Check for refresh_token field directly
+      if (typeof auth.refresh_token === 'string' && auth.refresh_token) {
         return true;
       }
     }

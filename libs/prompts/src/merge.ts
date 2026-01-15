@@ -14,17 +14,20 @@ import type {
   AgentPrompts,
   BacklogPlanPrompts,
   EnhancementPrompts,
+  CommitMessagePrompts,
   CustomPrompt,
   ResolvedAutoModePrompts,
   ResolvedAgentPrompts,
   ResolvedBacklogPlanPrompts,
   ResolvedEnhancementPrompts,
+  ResolvedCommitMessagePrompts,
 } from '@automaker/types';
 import {
   DEFAULT_AUTO_MODE_PROMPTS,
   DEFAULT_AGENT_PROMPTS,
   DEFAULT_BACKLOG_PLAN_PROMPTS,
   DEFAULT_ENHANCEMENT_PROMPTS,
+  DEFAULT_COMMIT_MESSAGE_PROMPTS,
 } from './defaults.js';
 
 /**
@@ -113,6 +116,22 @@ export function mergeEnhancementPrompts(custom?: EnhancementPrompts): ResolvedEn
       custom?.acceptanceSystemPrompt,
       DEFAULT_ENHANCEMENT_PROMPTS.acceptanceSystemPrompt
     ),
+    uxReviewerSystemPrompt: resolvePrompt(
+      custom?.uxReviewerSystemPrompt,
+      DEFAULT_ENHANCEMENT_PROMPTS.uxReviewerSystemPrompt
+    ),
+  };
+}
+
+/**
+ * Merge custom Commit Message prompts with defaults
+ * Custom prompts override defaults only when enabled=true
+ */
+export function mergeCommitMessagePrompts(
+  custom?: CommitMessagePrompts
+): ResolvedCommitMessagePrompts {
+  return {
+    systemPrompt: resolvePrompt(custom?.systemPrompt, DEFAULT_COMMIT_MESSAGE_PROMPTS.systemPrompt),
   };
 }
 
@@ -126,5 +145,6 @@ export function mergeAllPrompts(custom?: PromptCustomization) {
     agent: mergeAgentPrompts(custom?.agent),
     backlogPlan: mergeBacklogPlanPrompts(custom?.backlogPlan),
     enhancement: mergeEnhancementPrompts(custom?.enhancement),
+    commitMessage: mergeCommitMessagePrompts(custom?.commitMessage),
   };
 }

@@ -11,13 +11,11 @@
  */
 
 import type { Request, Response } from 'express';
-import { query } from '@anthropic-ai/claude-agent-sdk';
 import { createLogger } from '@automaker/utils';
-import { DEFAULT_PHASE_MODELS, isCursorModel, stripProviderPrefix } from '@automaker/types';
+import { DEFAULT_PHASE_MODELS } from '@automaker/types';
 import { PathNotAllowedError } from '@automaker/platform';
 import { resolvePhaseModel } from '@automaker/model-resolver';
-import { createCustomOptions } from '../../../lib/sdk-options.js';
-import { ProviderFactory } from '../../../providers/provider-factory.js';
+import { simpleQuery } from '../../../providers/simple-query-service.js';
 import * as secureFs from '../../../lib/secure-fs.js';
 import * as path from 'path';
 import type { SettingsService } from '../../../services/settings-service.js';
@@ -47,31 +45,6 @@ interface DescribeFileSuccessResponse {
 interface DescribeFileErrorResponse {
   success: false;
   error: string;
-}
-
-/**
- * Extract text content from Claude SDK response messages
- */
-async function extractTextFromStream(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  stream: AsyncIterable<any>
-): Promise<string> {
-  let responseText = '';
-
-  for await (const msg of stream) {
-    if (msg.type === 'assistant' && msg.message?.content) {
-      const blocks = msg.message.content as Array<{ type: string; text?: string }>;
-      for (const block of blocks) {
-        if (block.type === 'text' && block.text) {
-          responseText += block.text;
-        }
-      }
-    } else if (msg.type === 'result' && msg.subtype === 'success') {
-      responseText = msg.result || responseText;
-    }
-  }
-
-  return responseText;
 }
 
 /**
@@ -159,16 +132,14 @@ export function createDescribeFileHandler(
 
       // Build prompt with file content passed as structured data
       // The file content is included directly, not via tool invocation
-      const instructionText = `Analyze the following file and provide a 1-2 sentence description suitable for use as context in an AI coding assistant. Focus on what the file contains, its purpose, and why an AI agent might want to use this context in the future (e.g., "API documentation for the authentication endpoints", "Configuration file for database connections", "Coding style guidelines for the project").
+      const prompt = `Analyze the following file and provide a 1-2 sentence description suitable for use as context in an AI coding assistant. Focus on what the file contains, its purpose, and why an AI agent might want to use this context in the future (e.g., "API documentation for the authentication endpoints", "Configuration file for database connections", "Coding style guidelines for the project").
 
 Respond with ONLY the description text, no additional formatting, preamble, or explanation.
 
-File: ${fileName}${truncated ? ' (truncated)' : ''}`;
+File: ${fileName}${truncated ? ' (truncated)' : ''}
 
-      const promptContent = [
-        { type: 'text' as const, text: instructionText },
-        { type: 'text' as const, text: `\n\n--- FILE CONTENT ---\n${contentToAnalyze}` },
-      ];
+--- FILE CONTENT ---
+${contentToAnalyze}`;
 
       // Use the file's directory as the working directory
       const cwd = path.dirname(resolvedPath);
@@ -190,67 +161,19 @@ File: ${fileName}${truncated ? ' (truncated)' : ''}`;
 
       logger.info(`Resolved model: ${model}, thinkingLevel: ${thinkingLevel}`);
 
-      let description: string;
+      // Use simpleQuery - provider abstraction handles routing to correct provider
+      const result = await simpleQuery({
+        prompt,
+        model,
+        cwd,
+        maxTurns: 1,
+        allowedTools: [],
+        thinkingLevel,
+        readOnly: true, // File description only reads, doesn't write
+        settingSources: autoLoadClaudeMd ? ['user', 'project', 'local'] : undefined,
+      });
 
-      // Route to appropriate provider based on model type
-      if (isCursorModel(model)) {
-        // Use Cursor provider for Cursor models
-        logger.info(`Using Cursor provider for model: ${model}`);
-
-        const provider = ProviderFactory.getProviderForModel(model);
-        // Strip provider prefix - providers expect bare model IDs
-        const bareModel = stripProviderPrefix(model);
-
-        // Build a simple text prompt for Cursor (no multi-part content blocks)
-        const cursorPrompt = `${instructionText}\n\n--- FILE CONTENT ---\n${contentToAnalyze}`;
-
-        let responseText = '';
-        for await (const msg of provider.executeQuery({
-          prompt: cursorPrompt,
-          model: bareModel,
-          cwd,
-          maxTurns: 1,
-          allowedTools: [],
-          readOnly: true, // File description only reads, doesn't write
-        })) {
-          if (msg.type === 'assistant' && msg.message?.content) {
-            for (const block of msg.message.content) {
-              if (block.type === 'text' && block.text) {
-                responseText += block.text;
-              }
-            }
-          }
-        }
-        description = responseText;
-      } else {
-        // Use Claude SDK for Claude models
-        logger.info(`Using Claude SDK for model: ${model}`);
-
-        // Use centralized SDK options with proper cwd validation
-        // No tools needed since we're passing file content directly
-        const sdkOptions = createCustomOptions({
-          cwd,
-          model,
-          maxTurns: 1,
-          allowedTools: [],
-          autoLoadClaudeMd,
-          thinkingLevel, // Pass thinking level for extended thinking
-        });
-
-        const promptGenerator = (async function* () {
-          yield {
-            type: 'user' as const,
-            session_id: '',
-            message: { role: 'user' as const, content: promptContent },
-            parent_tool_use_id: null,
-          };
-        })();
-
-        const stream = query({ prompt: promptGenerator, options: sdkOptions });
-
-        // Extract the description from the response
-        description = await extractTextFromStream(stream);
-      }
+      const description = result.text;
 
       if (!description || description.trim().length === 0) {
         logger.warn('Received empty response from Claude');

@@ -1,6 +1,6 @@
 // @ts-nocheck
-import { useEffect, useState } from 'react';
-import { Feature, ThinkingLevel, useAppStore } from '@/store/app-store';
+import { useEffect, useState, useMemo } from 'react';
+import { Feature, ThinkingLevel, ParsedTask } from '@/store/app-store';
 import type { ReasoningEffort } from '@automaker/types';
 import { getProviderFromModel } from '@/lib/utils';
 import {
@@ -10,6 +10,7 @@ import {
   DEFAULT_MODEL,
 } from '@/lib/agent-context-parser';
 import { cn } from '@/lib/utils';
+import type { AutoModeEvent } from '@/types/electron';
 import {
   Brain,
   ListTodo,
@@ -68,11 +69,69 @@ export function AgentInfoPanel({
   summary,
   isCurrentAutoTask,
 }: AgentInfoPanelProps) {
-  const { kanbanCardDetailLevel } = useAppStore();
   const [agentInfo, setAgentInfo] = useState<AgentTaskInfo | null>(null);
   const [isSummaryDialogOpen, setIsSummaryDialogOpen] = useState(false);
+  const [isTodosExpanded, setIsTodosExpanded] = useState(false);
+  // Track real-time task status updates from WebSocket events
+  const [taskStatusMap, setTaskStatusMap] = useState<
+    Map<string, 'pending' | 'in_progress' | 'completed'>
+  >(new Map());
+  // Fresh planSpec data fetched from API (store data is stale for task progress)
+  const [freshPlanSpec, setFreshPlanSpec] = useState<{
+    tasks?: ParsedTask[];
+    tasksCompleted?: number;
+    currentTaskId?: string;
+  } | null>(null);
 
-  const showAgentInfo = kanbanCardDetailLevel === 'detailed';
+  // Derive effective todos from planSpec.tasks when available, fallback to agentInfo.todos
+  // Uses freshPlanSpec (from API) for accurate progress, with taskStatusMap for real-time updates
+  const effectiveTodos = useMemo(() => {
+    // Use freshPlanSpec if available (fetched from API), fallback to store's feature.planSpec
+    const planSpec = freshPlanSpec?.tasks?.length ? freshPlanSpec : feature.planSpec;
+
+    // First priority: use planSpec.tasks if available (modern approach)
+    if (planSpec?.tasks && planSpec.tasks.length > 0) {
+      const completedCount = planSpec.tasksCompleted || 0;
+      const currentTaskId = planSpec.currentTaskId;
+
+      return planSpec.tasks.map((task: ParsedTask, index: number) => {
+        // Use real-time status from WebSocket events if available
+        const realtimeStatus = taskStatusMap.get(task.id);
+
+        // Calculate status: WebSocket status > index-based status > task.status
+        let effectiveStatus: 'pending' | 'in_progress' | 'completed';
+        if (realtimeStatus) {
+          effectiveStatus = realtimeStatus;
+        } else if (index < completedCount) {
+          effectiveStatus = 'completed';
+        } else if (task.id === currentTaskId) {
+          effectiveStatus = 'in_progress';
+        } else {
+          // Fallback to task.status if available, otherwise pending
+          effectiveStatus =
+            task.status === 'completed'
+              ? 'completed'
+              : task.status === 'in_progress'
+                ? 'in_progress'
+                : 'pending';
+        }
+
+        return {
+          content: task.description,
+          status: effectiveStatus,
+        };
+      });
+    }
+    // Fallback: use parsed agentInfo.todos from agent-output.md
+    return agentInfo?.todos || [];
+  }, [
+    freshPlanSpec,
+    feature.planSpec?.tasks,
+    feature.planSpec?.tasksCompleted,
+    feature.planSpec?.currentTaskId,
+    agentInfo?.todos,
+    taskStatusMap,
+  ]);
 
   useEffect(() => {
     const loadContext = async () => {
@@ -84,6 +143,7 @@ export function AgentInfoPanel({
 
       if (feature.status === 'backlog') {
         setAgentInfo(null);
+        setFreshPlanSpec(null);
         return;
       }
 
@@ -93,6 +153,21 @@ export function AgentInfoPanel({
         if (!currentProject?.path) return;
 
         if (api.features) {
+          // Fetch fresh feature data to get up-to-date planSpec (store data is stale)
+          try {
+            const featureResult = await api.features.get(currentProject.path, feature.id);
+            const freshFeature: any = (featureResult as any).feature;
+            if (featureResult.success && freshFeature?.planSpec) {
+              setFreshPlanSpec({
+                tasks: freshFeature.planSpec.tasks,
+                tasksCompleted: freshFeature.planSpec.tasksCompleted || 0,
+                currentTaskId: freshFeature.planSpec.currentTaskId,
+              });
+            }
+          } catch {
+            // Ignore errors fetching fresh planSpec
+          }
+
           const result = await api.features.getAgentOutput(currentProject.path, feature.id);
 
           if (result.success && result.content) {
@@ -115,15 +190,64 @@ export function AgentInfoPanel({
 
     loadContext();
 
-    if (isCurrentAutoTask) {
+    // Poll for updates when feature is in_progress (not just isCurrentAutoTask)
+    // This ensures planSpec progress stays in sync
+    if (isCurrentAutoTask || feature.status === 'in_progress') {
       const interval = setInterval(loadContext, 3000);
       return () => {
         clearInterval(interval);
       };
     }
   }, [feature.id, feature.status, contextContent, isCurrentAutoTask]);
+
+  // Listen to WebSocket events for real-time task status updates
+  // This ensures the Kanban card shows the same progress as the Agent Output modal
+  // Listen for ANY in-progress feature with planSpec tasks, not just isCurrentAutoTask
+  const hasPlanSpecTasks =
+    (freshPlanSpec?.tasks?.length ?? 0) > 0 || (feature.planSpec?.tasks?.length ?? 0) > 0;
+  const shouldListenToEvents = feature.status === 'in_progress' && hasPlanSpecTasks;
+
+  useEffect(() => {
+    if (!shouldListenToEvents) return;
+
+    const api = getElectronAPI();
+    if (!api?.autoMode) return;
+
+    const unsubscribe = api.autoMode.onEvent((event: AutoModeEvent) => {
+      // Only handle events for this feature
+      if (!('featureId' in event) || event.featureId !== feature.id) return;
+
+      switch (event.type) {
+        case 'auto_mode_task_started':
+          if ('taskId' in event) {
+            const taskEvent = event as Extract<AutoModeEvent, { type: 'auto_mode_task_started' }>;
+            setTaskStatusMap((prev) => {
+              const newMap = new Map(prev);
+              // Mark current task as in_progress
+              newMap.set(taskEvent.taskId, 'in_progress');
+              return newMap;
+            });
+          }
+          break;
+
+        case 'auto_mode_task_complete':
+          if ('taskId' in event) {
+            const taskEvent = event as Extract<AutoModeEvent, { type: 'auto_mode_task_complete' }>;
+            setTaskStatusMap((prev) => {
+              const newMap = new Map(prev);
+              newMap.set(taskEvent.taskId, 'completed');
+              return newMap;
+            });
+          }
+          break;
+      }
+    });
+
+    return unsubscribe;
+  }, [feature.id, shouldListenToEvents]);
+
   // Model/Preset Info for Backlog Cards
-  if (showAgentInfo && feature.status === 'backlog') {
+  if (feature.status === 'backlog') {
     const provider = getProviderFromModel(feature.model);
     const isCodex = provider === 'codex';
     const isClaude = provider === 'claude';
@@ -160,7 +284,9 @@ export function AgentInfoPanel({
   }
 
   // Agent Info Panel for non-backlog cards
-  if (showAgentInfo && feature.status !== 'backlog' && agentInfo) {
+  // Show panel if we have agentInfo OR planSpec.tasks (for spec/full mode)
+  // Note: hasPlanSpecTasks is already defined above and includes freshPlanSpec
+  if (feature.status !== 'backlog' && (agentInfo || hasPlanSpecTasks)) {
     return (
       <>
         <div className="mb-3 space-y-2 overflow-hidden">
@@ -173,7 +299,7 @@ export function AgentInfoPanel({
               })()}
               <span className="font-medium">{formatModelName(feature.model ?? DEFAULT_MODEL)}</span>
             </div>
-            {agentInfo.currentPhase && (
+            {agentInfo?.currentPhase && (
               <div
                 className={cn(
                   'px-1.5 py-0.5 rounded-md text-[10px] font-medium',
@@ -191,41 +317,56 @@ export function AgentInfoPanel({
           </div>
 
           {/* Task List Progress */}
-          {agentInfo.todos.length > 0 && (
+          {effectiveTodos.length > 0 && (
             <div className="space-y-1">
               <div className="flex items-center gap-1 text-[10px] text-muted-foreground/70">
                 <ListTodo className="w-3 h-3" />
                 <span>
-                  {agentInfo.todos.filter((t) => t.status === 'completed').length}/
-                  {agentInfo.todos.length} tasks
+                  {effectiveTodos.filter((t) => t.status === 'completed').length}/
+                  {effectiveTodos.length} tasks
                 </span>
               </div>
-              <div className="space-y-0.5 max-h-16 overflow-y-auto">
-                {agentInfo.todos.slice(0, 3).map((todo, idx) => (
-                  <div key={idx} className="flex items-center gap-1.5 text-[10px]">
-                    {todo.status === 'completed' ? (
-                      <CheckCircle2 className="w-2.5 h-2.5 text-[var(--status-success)] shrink-0" />
-                    ) : todo.status === 'in_progress' ? (
-                      <Loader2 className="w-2.5 h-2.5 text-[var(--status-warning)] animate-spin shrink-0" />
-                    ) : (
-                      <Circle className="w-2.5 h-2.5 text-muted-foreground/50 shrink-0" />
-                    )}
-                    <span
-                      className={cn(
-                        'break-words hyphens-auto line-clamp-2 leading-relaxed',
-                        todo.status === 'completed' && 'text-muted-foreground/60 line-through',
-                        todo.status === 'in_progress' && 'text-[var(--status-warning)]',
-                        todo.status === 'pending' && 'text-muted-foreground/80'
+              <div
+                className={cn(
+                  'space-y-0.5 overflow-y-auto',
+                  isTodosExpanded ? 'max-h-40' : 'max-h-16'
+                )}
+              >
+                {(isTodosExpanded ? effectiveTodos : effectiveTodos.slice(0, 3)).map(
+                  (todo, idx) => (
+                    <div key={idx} className="flex items-center gap-1.5 text-[10px]">
+                      {todo.status === 'completed' ? (
+                        <CheckCircle2 className="w-2.5 h-2.5 text-[var(--status-success)] shrink-0" />
+                      ) : todo.status === 'in_progress' ? (
+                        <Loader2 className="w-2.5 h-2.5 text-[var(--status-warning)] animate-spin shrink-0" />
+                      ) : (
+                        <Circle className="w-2.5 h-2.5 text-muted-foreground/50 shrink-0" />
                       )}
-                    >
-                      {todo.content}
-                    </span>
-                  </div>
-                ))}
-                {agentInfo.todos.length > 3 && (
-                  <p className="text-[10px] text-muted-foreground/60 pl-4">
-                    +{agentInfo.todos.length - 3} more
-                  </p>
+                      <span
+                        className={cn(
+                          'break-words hyphens-auto line-clamp-2 leading-relaxed',
+                          todo.status === 'completed' && 'text-muted-foreground/60 line-through',
+                          todo.status === 'in_progress' && 'text-[var(--status-warning)]',
+                          todo.status === 'pending' && 'text-muted-foreground/80'
+                        )}
+                      >
+                        {todo.content}
+                      </span>
+                    </div>
+                  )
+                )}
+                {effectiveTodos.length > 3 && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsTodosExpanded(!isTodosExpanded);
+                    }}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    className="text-[10px] text-muted-foreground/60 pl-4 hover:text-muted-foreground transition-colors cursor-pointer"
+                  >
+                    {isTodosExpanded ? 'Show less' : `+${effectiveTodos.length - 3} more`}
+                  </button>
                 )}
               </div>
             </div>
@@ -234,7 +375,7 @@ export function AgentInfoPanel({
           {/* Summary for waiting_approval and verified */}
           {(feature.status === 'waiting_approval' || feature.status === 'verified') && (
             <>
-              {(feature.summary || summary || agentInfo.summary) && (
+              {(feature.summary || summary || agentInfo?.summary) && (
                 <div className="space-y-1.5 pt-2 border-t border-border/30 overflow-hidden">
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-1 text-[10px] text-[var(--status-success)] min-w-0">
@@ -255,24 +396,28 @@ export function AgentInfoPanel({
                       <Expand className="w-3 h-3" />
                     </button>
                   </div>
-                  <p className="text-[10px] text-muted-foreground/70 line-clamp-3 break-words hyphens-auto leading-relaxed overflow-hidden">
-                    {feature.summary || summary || agentInfo.summary}
+                  <p
+                    className="text-[10px] text-muted-foreground/70 line-clamp-3 break-words hyphens-auto leading-relaxed overflow-hidden select-text cursor-text"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onMouseDown={(e) => e.stopPropagation()}
+                  >
+                    {feature.summary || summary || agentInfo?.summary}
                   </p>
                 </div>
               )}
               {!feature.summary &&
                 !summary &&
-                !agentInfo.summary &&
-                agentInfo.toolCallCount > 0 && (
+                !agentInfo?.summary &&
+                (agentInfo?.toolCallCount ?? 0) > 0 && (
                   <div className="flex items-center gap-2 text-[10px] text-muted-foreground/60 pt-2 border-t border-border/30">
                     <span className="flex items-center gap-1">
                       <Wrench className="w-2.5 h-2.5" />
-                      {agentInfo.toolCallCount} tool calls
+                      {agentInfo?.toolCallCount ?? 0} tool calls
                     </span>
-                    {agentInfo.todos.length > 0 && (
+                    {effectiveTodos.length > 0 && (
                       <span className="flex items-center gap-1">
                         <CheckCircle2 className="w-2.5 h-2.5 text-[var(--status-success)]" />
-                        {agentInfo.todos.filter((t) => t.status === 'completed').length} tasks done
+                        {effectiveTodos.filter((t) => t.status === 'completed').length} tasks done
                       </span>
                     )}
                   </div>
@@ -292,58 +437,15 @@ export function AgentInfoPanel({
     );
   }
 
-  // Show just the todo list for non-backlog features when showAgentInfo is false
-  // This ensures users always see what the agent is working on
-  if (!showAgentInfo && feature.status !== 'backlog' && agentInfo && agentInfo.todos.length > 0) {
-    return (
-      <div className="mb-3 space-y-1 overflow-hidden">
-        <div className="flex items-center gap-1 text-[10px] text-muted-foreground/70">
-          <ListTodo className="w-3 h-3" />
-          <span>
-            {agentInfo.todos.filter((t) => t.status === 'completed').length}/
-            {agentInfo.todos.length} tasks
-          </span>
-        </div>
-        <div className="space-y-0.5 max-h-24 overflow-y-auto">
-          {agentInfo.todos.map((todo, idx) => (
-            <div key={idx} className="flex items-center gap-1.5 text-[10px]">
-              {todo.status === 'completed' ? (
-                <CheckCircle2 className="w-2.5 h-2.5 text-[var(--status-success)] shrink-0" />
-              ) : todo.status === 'in_progress' ? (
-                <Loader2 className="w-2.5 h-2.5 text-[var(--status-warning)] animate-spin shrink-0" />
-              ) : (
-                <Circle className="w-2.5 h-2.5 text-muted-foreground/50 shrink-0" />
-              )}
-              <span
-                className={cn(
-                  'break-words hyphens-auto line-clamp-2 leading-relaxed',
-                  todo.status === 'completed' && 'text-muted-foreground/60 line-through',
-                  todo.status === 'in_progress' && 'text-[var(--status-warning)]',
-                  todo.status === 'pending' && 'text-muted-foreground/80'
-                )}
-              >
-                {todo.content}
-              </span>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  // Always render SummaryDialog if showAgentInfo is true (even if no agentInfo yet)
+  // Always render SummaryDialog (even if no agentInfo yet)
   // This ensures the dialog can be opened from the expand button
   return (
-    <>
-      {showAgentInfo && (
-        <SummaryDialog
-          feature={feature}
-          agentInfo={agentInfo}
-          summary={summary}
-          isOpen={isSummaryDialogOpen}
-          onOpenChange={setIsSummaryDialogOpen}
-        />
-      )}
-    </>
+    <SummaryDialog
+      feature={feature}
+      agentInfo={agentInfo}
+      summary={summary}
+      isOpen={isSummaryDialogOpen}
+      onOpenChange={setIsSummaryDialogOpen}
+    />
   );
 }

@@ -12,12 +12,10 @@
  */
 
 import type { Request, Response } from 'express';
-import { query } from '@anthropic-ai/claude-agent-sdk';
 import { createLogger, readImageAsBase64 } from '@automaker/utils';
-import { DEFAULT_PHASE_MODELS, isCursorModel, stripProviderPrefix } from '@automaker/types';
+import { DEFAULT_PHASE_MODELS, isCursorModel } from '@automaker/types';
 import { resolvePhaseModel } from '@automaker/model-resolver';
-import { createCustomOptions } from '../../../lib/sdk-options.js';
-import { ProviderFactory } from '../../../providers/provider-factory.js';
+import { simpleQuery } from '../../../providers/simple-query-service.js';
 import * as secureFs from '../../../lib/secure-fs.js';
 import * as path from 'path';
 import type { SettingsService } from '../../../services/settings-service.js';
@@ -179,56 +177,9 @@ function mapDescribeImageError(rawMessage: string | undefined): {
 }
 
 /**
- * Extract text content from Claude SDK response messages and log high-signal stream events.
- */
-async function extractTextFromStream(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  stream: AsyncIterable<any>,
-  requestId: string
-): Promise<string> {
-  let responseText = '';
-  let messageCount = 0;
-
-  logger.info(`[${requestId}] [Stream] Begin reading SDK stream...`);
-
-  for await (const msg of stream) {
-    messageCount++;
-    const msgType = msg?.type;
-    const msgSubtype = msg?.subtype;
-
-    // Keep this concise but informative. Full error object is logged in catch blocks.
-    logger.info(
-      `[${requestId}] [Stream] #${messageCount} type=${String(msgType)} subtype=${String(msgSubtype ?? '')}`
-    );
-
-    if (msgType === 'assistant' && msg.message?.content) {
-      const blocks = msg.message.content as Array<{ type: string; text?: string }>;
-      logger.info(`[${requestId}] [Stream] assistant blocks=${blocks.length}`);
-      for (const block of blocks) {
-        if (block.type === 'text' && block.text) {
-          responseText += block.text;
-        }
-      }
-    }
-
-    if (msgType === 'result' && msgSubtype === 'success') {
-      if (typeof msg.result === 'string' && msg.result.length > 0) {
-        responseText = msg.result;
-      }
-    }
-  }
-
-  logger.info(
-    `[${requestId}] [Stream] End of stream. messages=${messageCount} textLength=${responseText.length}`
-  );
-
-  return responseText;
-}
-
-/**
  * Create the describe-image request handler
  *
- * Uses Claude SDK query with multi-part content blocks to include the image (base64),
+ * Uses the provider abstraction with multi-part content blocks to include the image (base64),
  * matching the agent runner behavior.
  *
  * @param settingsService - Optional settings service for loading autoLoadClaudeMd setting
@@ -309,27 +260,6 @@ export function createDescribeImageHandler(
         `[${requestId}] image meta filename=${imageData.filename} mime=${imageData.mimeType} base64Len=${base64Length} estBytes=${estimatedBytes}`
       );
 
-      // Build multi-part prompt with image block (no Read tool required)
-      const instructionText =
-        `Describe this image in 1-2 sentences suitable for use as context in an AI coding assistant. ` +
-        `Focus on what the image shows and its purpose (e.g., "UI mockup showing login form with email/password fields", ` +
-        `"Architecture diagram of microservices", "Screenshot of error message in terminal").\n\n` +
-        `Respond with ONLY the description text, no additional formatting, preamble, or explanation.`;
-
-      const promptContent = [
-        { type: 'text' as const, text: instructionText },
-        {
-          type: 'image' as const,
-          source: {
-            type: 'base64' as const,
-            media_type: imageData.mimeType,
-            data: imageData.base64,
-          },
-        },
-      ];
-
-      logger.info(`[${requestId}] Built multi-part prompt blocks=${promptContent.length}`);
-
       const cwd = path.dirname(actualPath);
       logger.info(`[${requestId}] Using cwd=${cwd}`);
 
@@ -348,85 +278,59 @@ export function createDescribeImageHandler(
 
       logger.info(`[${requestId}] Using model: ${model}`);
 
-      let description: string;
+      // Build the instruction text
+      const instructionText =
+        `Describe this image in 1-2 sentences suitable for use as context in an AI coding assistant. ` +
+        `Focus on what the image shows and its purpose (e.g., "UI mockup showing login form with email/password fields", ` +
+        `"Architecture diagram of microservices", "Screenshot of error message in terminal").\n\n` +
+        `Respond with ONLY the description text, no additional formatting, preamble, or explanation.`;
 
-      // Route to appropriate provider based on model type
+      // Build prompt based on provider capability
+      // Some providers (like Cursor) may not support image content blocks
+      let prompt: string | Array<{ type: string; text?: string; source?: object }>;
+
       if (isCursorModel(model)) {
-        // Use Cursor provider for Cursor models
-        // Note: Cursor may have limited support for image content blocks
-        logger.info(`[${requestId}] Using Cursor provider for model: ${model}`);
-
-        const provider = ProviderFactory.getProviderForModel(model);
-        // Strip provider prefix - providers expect bare model IDs
-        const bareModel = stripProviderPrefix(model);
-
-        // Build prompt with image reference for Cursor
-        // Note: Cursor CLI may not support base64 image blocks directly,
-        // so we include the image path as context
-        const cursorPrompt = `${instructionText}\n\nImage file: ${actualPath}\nMIME type: ${imageData.mimeType}`;
-
-        let responseText = '';
-        const queryStart = Date.now();
-        for await (const msg of provider.executeQuery({
-          prompt: cursorPrompt,
-          model: bareModel,
-          cwd,
-          maxTurns: 1,
-          allowedTools: ['Read'], // Allow Read tool so Cursor can read the image if needed
-          readOnly: true, // Image description only reads, doesn't write
-        })) {
-          if (msg.type === 'assistant' && msg.message?.content) {
-            for (const block of msg.message.content) {
-              if (block.type === 'text' && block.text) {
-                responseText += block.text;
-              }
-            }
-          }
-        }
-        logger.info(`[${requestId}] Cursor query completed in ${Date.now() - queryStart}ms`);
-        description = responseText;
+        // Cursor may not support base64 image blocks directly
+        // Use text prompt with image path reference
+        logger.info(`[${requestId}] Using text prompt for Cursor model`);
+        prompt = `${instructionText}\n\nImage file: ${actualPath}\nMIME type: ${imageData.mimeType}`;
       } else {
-        // Use Claude SDK for Claude models (supports image content blocks)
-        logger.info(`[${requestId}] Using Claude SDK for model: ${model}`);
-
-        // Use the same centralized option builder used across the server (validates cwd)
-        const sdkOptions = createCustomOptions({
-          cwd,
-          model,
-          maxTurns: 1,
-          allowedTools: [],
-          autoLoadClaudeMd,
-          thinkingLevel, // Pass thinking level for extended thinking
-        });
-
-        logger.info(
-          `[${requestId}] SDK options model=${sdkOptions.model} maxTurns=${sdkOptions.maxTurns} allowedTools=${JSON.stringify(
-            sdkOptions.allowedTools
-          )}`
-        );
-
-        const promptGenerator = (async function* () {
-          yield {
-            type: 'user' as const,
-            session_id: '',
-            message: { role: 'user' as const, content: promptContent },
-            parent_tool_use_id: null,
-          };
-        })();
-
-        logger.info(`[${requestId}] Calling query()...`);
-        const queryStart = Date.now();
-        const stream = query({ prompt: promptGenerator, options: sdkOptions });
-        logger.info(`[${requestId}] query() returned stream in ${Date.now() - queryStart}ms`);
-
-        // Extract the description from the response
-        const extractStart = Date.now();
-        description = await extractTextFromStream(stream, requestId);
-        logger.info(`[${requestId}] extractMs=${Date.now() - extractStart}`);
+        // Claude and other vision-capable models support multi-part prompts with images
+        logger.info(`[${requestId}] Using multi-part prompt with image block`);
+        prompt = [
+          { type: 'text', text: instructionText },
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: imageData.mimeType,
+              data: imageData.base64,
+            },
+          },
+        ];
       }
 
+      logger.info(`[${requestId}] Calling simpleQuery...`);
+      const queryStart = Date.now();
+
+      // Use simpleQuery - provider abstraction handles routing
+      const result = await simpleQuery({
+        prompt,
+        model,
+        cwd,
+        maxTurns: 1,
+        allowedTools: isCursorModel(model) ? ['Read'] : [], // Allow Read for Cursor to read image if needed
+        thinkingLevel,
+        readOnly: true, // Image description only reads, doesn't write
+        settingSources: autoLoadClaudeMd ? ['user', 'project', 'local'] : undefined,
+      });
+
+      logger.info(`[${requestId}] simpleQuery completed in ${Date.now() - queryStart}ms`);
+
+      const description = result.text;
+
       if (!description || description.trim().length === 0) {
-        logger.warn(`[${requestId}] Received empty response from Claude`);
+        logger.warn(`[${requestId}] Received empty response from AI`);
         const response: DescribeImageErrorResponse = {
           success: false,
           error: 'Failed to generate description - empty response',

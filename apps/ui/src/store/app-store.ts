@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 // Note: persist middleware removed - settings now sync via API (use-settings-sync.ts)
 import type { Project, TrashedProject } from '@/lib/electron';
+import { getElectronAPI } from '@/lib/electron';
 import { createLogger } from '@automaker/utils/logger';
 import { setItem, getItem } from '@/lib/storage';
 import type {
@@ -11,7 +12,6 @@ import type {
   PlanningMode,
   ThinkingLevel,
   ModelProvider,
-  AIProfile,
   CursorModelId,
   CodexModelId,
   OpencodeModelId,
@@ -23,6 +23,7 @@ import type {
   PipelineConfig,
   PipelineStep,
   PromptCustomization,
+  ModelDefinition,
 } from '@automaker/types';
 import {
   getAllCursorModelIds,
@@ -33,6 +34,8 @@ import {
 } from '@automaker/types';
 
 const logger = createLogger('AppStore');
+const OPENCODE_BEDROCK_PROVIDER_ID = 'amazon-bedrock';
+const OPENCODE_BEDROCK_MODEL_PREFIX = `${OPENCODE_BEDROCK_PROVIDER_ID}/`;
 
 // Re-export types for convenience
 export type {
@@ -40,7 +43,6 @@ export type {
   PlanningMode,
   ThinkingLevel,
   ModelProvider,
-  AIProfile,
   FeatureTextFilePath,
   FeatureImagePath,
 };
@@ -54,7 +56,6 @@ export type ViewMode =
   | 'settings'
   | 'interview'
   | 'context'
-  | 'profiles'
   | 'running-agents'
   | 'terminal'
   | 'wiki'
@@ -81,6 +82,9 @@ export type ThemeMode =
 
 // LocalStorage key for theme persistence (fallback when server settings aren't available)
 export const THEME_STORAGE_KEY = 'automaker:theme';
+
+// Maximum number of output lines to keep in init script state (prevents unbounded memory growth)
+export const MAX_INIT_OUTPUT_LINES = 500;
 
 /**
  * Get the theme from localStorage as a fallback
@@ -116,7 +120,11 @@ function saveThemeToStorage(theme: ThemeMode): void {
   setItem(THEME_STORAGE_KEY, theme);
 }
 
-export type KanbanCardDetailLevel = 'minimal' | 'standard' | 'detailed';
+function persistEffectiveThemeForProject(project: Project | null, fallbackTheme: ThemeMode): void {
+  const projectTheme = project?.theme as ThemeMode | undefined;
+  const themeToStore = projectTheme ?? fallbackTheme;
+  saveThemeToStorage(themeToStore);
+}
 
 export type BoardViewMode = 'kanban' | 'graph';
 
@@ -214,11 +222,12 @@ export function formatShortcut(shortcut: string | undefined | null, forDisplay =
 export interface KeyboardShortcuts {
   // Navigation shortcuts
   board: string;
+  graph: string;
   agent: string;
   spec: string;
   context: string;
+  memory: string;
   settings: string;
-  profiles: string;
   terminal: string;
   ideation: string;
   githubIssues: string;
@@ -236,7 +245,6 @@ export interface KeyboardShortcuts {
   projectPicker: string;
   cyclePrevProject: string;
   cycleNextProject: string;
-  addProfile: string;
 
   // Terminal shortcuts
   splitTerminalRight: string;
@@ -249,11 +257,12 @@ export interface KeyboardShortcuts {
 export const DEFAULT_KEYBOARD_SHORTCUTS: KeyboardShortcuts = {
   // Navigation
   board: 'K',
+  graph: 'H',
   agent: 'A',
   spec: 'D',
   context: 'C',
+  memory: 'Y',
   settings: 'S',
-  profiles: 'M',
   terminal: 'T',
   ideation: 'I',
   githubIssues: 'G',
@@ -263,7 +272,7 @@ export const DEFAULT_KEYBOARD_SHORTCUTS: KeyboardShortcuts = {
   toggleSidebar: '`',
 
   // Actions
-  // Note: Some shortcuts share the same key (e.g., "N" for addFeature, newSession, addProfile)
+  // Note: Some shortcuts share the same key (e.g., "N" for addFeature, newSession)
   // This is intentional as they are context-specific and only active in their respective views
   addFeature: 'N', // Only active in board view
   addContextFile: 'N', // Only active in context view
@@ -273,7 +282,6 @@ export const DEFAULT_KEYBOARD_SHORTCUTS: KeyboardShortcuts = {
   projectPicker: 'P', // Global shortcut
   cyclePrevProject: 'Q', // Global shortcut
   cycleNextProject: 'E', // Global shortcut
-  addProfile: 'N', // Only active in profiles view
 
   // Terminal shortcuts (only active in terminal view)
   // Using Alt modifier to avoid conflicts with both terminal signals AND browser shortcuts
@@ -332,7 +340,7 @@ export type ClaudeModel = 'opus' | 'sonnet' | 'haiku';
 
 export interface Feature extends Omit<
   BaseFeature,
-  'steps' | 'imagePaths' | 'textFilePaths' | 'status'
+  'steps' | 'imagePaths' | 'textFilePaths' | 'status' | 'planSpec'
 > {
   id: string;
   title?: string;
@@ -346,6 +354,7 @@ export interface Feature extends Omit<
   textFilePaths?: FeatureTextFilePath[]; // Text file attachments for context
   justFinishedAt?: string; // UI-specific: ISO timestamp when agent just finished
   prUrl?: string; // UI-specific: Pull request URL
+  planSpec?: PlanSpec; // Explicit planSpec type to override BaseFeature's index signature
 }
 
 // Parsed task from spec (for spec and full planning modes)
@@ -467,6 +476,14 @@ export interface PersistedTerminalSettings {
   maxSessions: number;
 }
 
+/** State for worktree init script execution */
+export interface InitScriptState {
+  status: 'idle' | 'running' | 'success' | 'failed';
+  branch: string;
+  output: string[];
+  error?: string;
+}
+
 export interface AppState {
   // Project state
   projects: Project[];
@@ -514,13 +531,15 @@ export interface AppState {
   maxConcurrency: number; // Maximum number of concurrent agent tasks
 
   // Kanban Card Display Settings
-  kanbanCardDetailLevel: KanbanCardDetailLevel; // Level of detail shown on kanban cards
   boardViewMode: BoardViewMode; // Whether to show kanban or dependency graph view
 
   // Feature Default Settings
   defaultSkipTests: boolean; // Default value for skip tests when creating new features
   enableDependencyBlocking: boolean; // When true, show blocked badges and warnings for features with incomplete dependencies (default: true)
   skipVerificationInAutoMode: boolean; // When true, auto-mode grabs features even if dependencies are not verified (only checks they're not running)
+  enableAiCommitMessages: boolean; // When true, auto-generate commit messages using AI when opening commit dialog
+  planUseSelectedWorktreeBranch: boolean; // When true, Plan dialog creates features on the currently selected worktree branch
+  addFeatureUseSelectedWorktreeBranch: boolean; // When true, Add Feature dialog defaults to custom mode with selected worktree branch
 
   // Worktree Settings
   useWorktrees: boolean; // Whether to use git worktree isolation for features (default: true)
@@ -538,12 +557,6 @@ export interface AppState {
       changedFilesCount?: number;
     }>
   >;
-
-  // AI Profiles
-  aiProfiles: AIProfile[];
-
-  // Profile Display Settings
-  showProfilesOnly: boolean; // When true, hide model tweaking options and show only profile selection
 
   // Keyboard Shortcuts
   keyboardShortcuts: KeyboardShortcuts; // User-defined keyboard shortcuts
@@ -575,8 +588,23 @@ export interface AppState {
   codexEnableImages: boolean; // Enable image processing
 
   // OpenCode CLI Settings (global)
-  enabledOpencodeModels: OpencodeModelId[]; // Which OpenCode models are available in feature modal
+  // Static OpenCode settings are persisted via SETTINGS_FIELDS_TO_SYNC
+  enabledOpencodeModels: OpencodeModelId[]; // Which static OpenCode models are available
   opencodeDefaultModel: OpencodeModelId; // Default OpenCode model selection
+  // Dynamic models are session-only (not persisted) because they're discovered at runtime
+  // from `opencode models` CLI and depend on current provider authentication state
+  dynamicOpencodeModels: ModelDefinition[]; // Dynamically discovered models from OpenCode CLI
+  enabledDynamicModelIds: string[]; // Which dynamic models are enabled
+  cachedOpencodeProviders: Array<{
+    id: string;
+    name: string;
+    authenticated: boolean;
+    authMethod?: string;
+  }>; // Cached providers
+  opencodeModelsLoading: boolean; // Whether OpenCode models are being fetched
+  opencodeModelsError: string | null; // Error message if fetch failed
+  opencodeModelsLastFetched: number | null; // Timestamp of last successful fetch
+  opencodeModelsLastFailedAt: number | null; // Timestamp of last failed fetch
 
   // Claude Agent SDK Settings
   autoLoadClaudeMd: boolean; // Auto-load CLAUDE.md files using SDK's settingSources option
@@ -584,6 +612,9 @@ export interface AppState {
 
   // MCP Servers
   mcpServers: MCPServerConfig[]; // List of configured MCP servers for agent use
+
+  // Editor Configuration
+  defaultEditorCommand: string | null; // Default editor for "Open In" action
 
   // Skills Configuration
   enableSkills: boolean; // Enable Skills functionality (loads from .claude/skills/ directories)
@@ -632,7 +663,7 @@ export interface AppState {
 
   defaultPlanningMode: PlanningMode;
   defaultRequirePlanApproval: boolean;
-  defaultAIProfileId: string | null;
+  defaultFeatureModel: PhaseModelEntry;
 
   // Plan Approval State
   // When a plan requires user approval, this holds the pending approval details
@@ -652,8 +683,39 @@ export interface AppState {
   codexUsage: CodexUsage | null;
   codexUsageLastUpdated: number | null;
 
+  // Codex Models (dynamically fetched)
+  codexModels: Array<{
+    id: string;
+    label: string;
+    description: string;
+    hasThinking: boolean;
+    supportsVision: boolean;
+    tier: 'premium' | 'standard' | 'basic';
+    isDefault: boolean;
+  }>;
+  codexModelsLoading: boolean;
+  codexModelsError: string | null;
+  codexModelsLastFetched: number | null;
+  codexModelsLastFailedAt: number | null;
+
   // Pipeline Configuration (per-project, keyed by project path)
   pipelineConfigByProject: Record<string, PipelineConfig>;
+
+  // Worktree Panel Visibility (per-project, keyed by project path)
+  // Whether the worktree panel row is visible (default: true)
+  worktreePanelVisibleByProject: Record<string, boolean>;
+
+  // Init Script Indicator Visibility (per-project, keyed by project path)
+  // Whether to show the floating init script indicator panel (default: true)
+  showInitScriptIndicatorByProject: Record<string, boolean>;
+
+  // Default Delete Branch With Worktree (per-project, keyed by project path)
+  // Whether to default the "delete branch" checkbox when deleting a worktree (default: false)
+  defaultDeleteBranchByProject: Record<string, boolean>;
+
+  // Auto-dismiss Init Script Indicator (per-project, keyed by project path)
+  // Whether to auto-dismiss the indicator after completion (default: true)
+  autoDismissInitScriptIndicatorByProject: Record<string, boolean>;
 
   // UI State (previously in localStorage, now synced via API)
   /** Whether worktree panel is collapsed in board view */
@@ -662,6 +724,9 @@ export interface AppState {
   lastProjectDir: string;
   /** Recently accessed folders for quick access */
   recentFolders: string[];
+
+  // Init Script State (keyed by "projectPath::branch" to support concurrent scripts)
+  initScriptState: Record<string, InitScriptState>;
 }
 
 // Claude Usage interface matching the server response
@@ -704,12 +769,6 @@ export type CodexPlanType =
   | 'edu'
   | 'unknown';
 
-export interface CodexCreditsSnapshot {
-  balance?: string;
-  unlimited?: boolean;
-  hasCredits?: boolean;
-}
-
 export interface CodexRateLimitWindow {
   limit: number;
   used: number;
@@ -723,7 +782,6 @@ export interface CodexUsage {
   rateLimits: {
     primary?: CodexRateLimitWindow;
     secondary?: CodexRateLimitWindow;
-    credits?: CodexCreditsSnapshot;
     planType?: CodexPlanType;
   } | null;
   lastUpdated: string;
@@ -822,6 +880,10 @@ export interface AppActions {
   cyclePrevProject: () => void; // Cycle back through project history (Q)
   cycleNextProject: () => void; // Cycle forward through project history (E)
   clearProjectHistory: () => void; // Clear history, keeping only current project
+  toggleProjectFavorite: (projectId: string) => void; // Toggle project favorite status
+  setProjectIcon: (projectId: string, icon: string | null) => void; // Set project icon (null to clear)
+  setProjectCustomIcon: (projectId: string, customIconPath: string | null) => void; // Set custom project icon image path (null to clear)
+  setProjectName: (projectId: string, name: string) => void; // Update project name
 
   // View actions
   setCurrentView: (view: ViewMode) => void;
@@ -875,13 +937,15 @@ export interface AppActions {
   setMaxConcurrency: (max: number) => void;
 
   // Kanban Card Settings actions
-  setKanbanCardDetailLevel: (level: KanbanCardDetailLevel) => void;
   setBoardViewMode: (mode: BoardViewMode) => void;
 
   // Feature Default Settings actions
   setDefaultSkipTests: (skip: boolean) => void;
   setEnableDependencyBlocking: (enabled: boolean) => void;
   setSkipVerificationInAutoMode: (enabled: boolean) => Promise<void>;
+  setEnableAiCommitMessages: (enabled: boolean) => Promise<void>;
+  setPlanUseSelectedWorktreeBranch: (enabled: boolean) => Promise<void>;
+  setAddFeatureUseSelectedWorktreeBranch: (enabled: boolean) => Promise<void>;
 
   // Worktree Settings actions
   setUseWorktrees: (enabled: boolean) => void;
@@ -906,9 +970,6 @@ export interface AppActions {
   }>;
   isPrimaryWorktreeBranch: (projectPath: string, branchName: string) => boolean;
   getPrimaryWorktreeBranch: (projectPath: string) => string | null;
-
-  // Profile Display Settings actions
-  setShowProfilesOnly: (enabled: boolean) => void;
 
   // Keyboard Shortcuts actions
   setKeyboardShortcut: (key: keyof KeyboardShortcuts, value: string) => void;
@@ -953,20 +1014,22 @@ export interface AppActions {
   setEnabledOpencodeModels: (models: OpencodeModelId[]) => void;
   setOpencodeDefaultModel: (model: OpencodeModelId) => void;
   toggleOpencodeModel: (model: OpencodeModelId, enabled: boolean) => void;
+  setDynamicOpencodeModels: (models: ModelDefinition[]) => void;
+  setEnabledDynamicModelIds: (ids: string[]) => void;
+  toggleDynamicModel: (modelId: string, enabled: boolean) => void;
+  setCachedOpencodeProviders: (
+    providers: Array<{ id: string; name: string; authenticated: boolean; authMethod?: string }>
+  ) => void;
 
   // Claude Agent SDK Settings actions
   setAutoLoadClaudeMd: (enabled: boolean) => Promise<void>;
   setSkipSandboxWarning: (skip: boolean) => Promise<void>;
 
+  // Editor Configuration actions
+  setDefaultEditorCommand: (command: string | null) => void;
+
   // Prompt Customization actions
   setPromptCustomization: (customization: PromptCustomization) => Promise<void>;
-
-  // AI Profile actions
-  addAIProfile: (profile: Omit<AIProfile, 'id'>) => void;
-  updateAIProfile: (id: string, updates: Partial<AIProfile>) => void;
-  removeAIProfile: (id: string) => void;
-  reorderAIProfiles: (oldIndex: number, newIndex: number) => void;
-  resetAIProfiles: () => void;
 
   // MCP Server actions
   addMCPServer: (server: Omit<MCPServerConfig, 'id'>) => void;
@@ -1052,7 +1115,7 @@ export interface AppActions {
 
   setDefaultPlanningMode: (mode: PlanningMode) => void;
   setDefaultRequirePlanApproval: (require: boolean) => void;
-  setDefaultAIProfileId: (profileId: string | null) => void;
+  setDefaultFeatureModel: (entry: PhaseModelEntry) => void;
 
   // Plan Approval actions
   setPendingPlanApproval: (
@@ -1079,6 +1142,22 @@ export interface AppActions {
   deletePipelineStep: (projectPath: string, stepId: string) => void;
   reorderPipelineSteps: (projectPath: string, stepIds: string[]) => void;
 
+  // Worktree Panel Visibility actions (per-project)
+  setWorktreePanelVisible: (projectPath: string, visible: boolean) => void;
+  getWorktreePanelVisible: (projectPath: string) => boolean;
+
+  // Init Script Indicator Visibility actions (per-project)
+  setShowInitScriptIndicator: (projectPath: string, visible: boolean) => void;
+  getShowInitScriptIndicator: (projectPath: string) => boolean;
+
+  // Default Delete Branch actions (per-project)
+  setDefaultDeleteBranch: (projectPath: string, deleteBranch: boolean) => void;
+  getDefaultDeleteBranch: (projectPath: string) => boolean;
+
+  // Auto-dismiss Init Script Indicator actions (per-project)
+  setAutoDismissInitScriptIndicator: (projectPath: string, autoDismiss: boolean) => void;
+  getAutoDismissInitScriptIndicator: (projectPath: string) => boolean;
+
   // UI State actions (previously in localStorage, now synced via API)
   setWorktreePanelCollapsed: (collapsed: boolean) => void;
   setLastProjectDir: (dir: string) => void;
@@ -1093,55 +1172,39 @@ export interface AppActions {
   // Codex Usage Tracking actions
   setCodexUsage: (usage: CodexUsage | null) => void;
 
+  // Codex Models actions
+  fetchCodexModels: (forceRefresh?: boolean) => Promise<void>;
+  setCodexModels: (
+    models: Array<{
+      id: string;
+      label: string;
+      description: string;
+      hasThinking: boolean;
+      supportsVision: boolean;
+      tier: 'premium' | 'standard' | 'basic';
+      isDefault: boolean;
+    }>
+  ) => void;
+
+  // OpenCode Models actions
+  fetchOpencodeModels: (forceRefresh?: boolean) => Promise<void>;
+
+  // Init Script State actions (keyed by projectPath::branch to support concurrent scripts)
+  setInitScriptState: (
+    projectPath: string,
+    branch: string,
+    state: Partial<InitScriptState>
+  ) => void;
+  appendInitScriptOutput: (projectPath: string, branch: string, content: string) => void;
+  clearInitScriptState: (projectPath: string, branch: string) => void;
+  getInitScriptState: (projectPath: string, branch: string) => InitScriptState | null;
+  getInitScriptStatesForProject: (
+    projectPath: string
+  ) => Array<{ key: string; state: InitScriptState }>;
+
   // Reset
   reset: () => void;
 }
-
-// Default built-in AI profiles
-const DEFAULT_AI_PROFILES: AIProfile[] = [
-  // Claude profiles
-  {
-    id: 'profile-heavy-task',
-    name: 'Heavy Task',
-    description:
-      'Claude Opus with Ultrathink for complex architecture, migrations, or deep debugging.',
-    model: 'opus',
-    thinkingLevel: 'ultrathink',
-    provider: 'claude',
-    isBuiltIn: true,
-    icon: 'Brain',
-  },
-  {
-    id: 'profile-balanced',
-    name: 'Balanced',
-    description: 'Claude Sonnet with medium thinking for typical development tasks.',
-    model: 'sonnet',
-    thinkingLevel: 'medium',
-    provider: 'claude',
-    isBuiltIn: true,
-    icon: 'Scale',
-  },
-  {
-    id: 'profile-quick-edit',
-    name: 'Quick Edit',
-    description: 'Claude Haiku for fast, simple edits and minor fixes.',
-    model: 'haiku',
-    thinkingLevel: 'none',
-    provider: 'claude',
-    isBuiltIn: true,
-    icon: 'Zap',
-  },
-  // Cursor profiles
-  {
-    id: 'profile-cursor-refactoring',
-    name: 'Cursor Refactoring',
-    description: 'Cursor Composer 1 for refactoring tasks.',
-    provider: 'cursor',
-    cursorModel: 'composer-1',
-    isBuiltIn: true,
-    icon: 'Sparkles',
-  },
-];
 
 const initialState: AppState = {
   projects: [],
@@ -1167,15 +1230,16 @@ const initialState: AppState = {
   autoModeByProject: {},
   autoModeActivityLog: [],
   maxConcurrency: 3, // Default to 3 concurrent agents
-  kanbanCardDetailLevel: 'standard', // Default to standard detail level
   boardViewMode: 'kanban', // Default to kanban view
   defaultSkipTests: true, // Default to manual verification (tests disabled)
   enableDependencyBlocking: true, // Default to enabled (show dependency blocking UI)
   skipVerificationInAutoMode: false, // Default to disabled (require dependencies to be verified)
+  enableAiCommitMessages: true, // Default to enabled (auto-generate commit messages)
+  planUseSelectedWorktreeBranch: true, // Default to enabled (Plan creates features on selected worktree branch)
+  addFeatureUseSelectedWorktreeBranch: false, // Default to disabled (Add Feature uses normal defaults)
   useWorktrees: true, // Default to enabled (git worktree isolation)
   currentWorktreeByProject: {},
   worktreesByProject: {},
-  showProfilesOnly: false, // Default to showing all options (not profiles only)
   keyboardShortcuts: DEFAULT_KEYBOARD_SHORTCUTS, // Default keyboard shortcuts
   muteDoneSound: false, // Default to sound enabled (not muted)
   enhancementModel: 'sonnet', // Default to sonnet for feature enhancement
@@ -1192,16 +1256,23 @@ const initialState: AppState = {
   codexEnableWebSearch: false, // Default to disabled
   codexEnableImages: false, // Default to disabled
   enabledOpencodeModels: getAllOpencodeModelIds(), // All OpenCode models enabled by default
-  opencodeDefaultModel: DEFAULT_OPENCODE_MODEL, // Default to Claude Sonnet 4.5
+  opencodeDefaultModel: DEFAULT_OPENCODE_MODEL, // Default to OpenCode free tier
+  dynamicOpencodeModels: [], // Empty until fetched from OpenCode CLI
+  enabledDynamicModelIds: [], // Empty until user enables dynamic models
+  cachedOpencodeProviders: [], // Empty until fetched from OpenCode CLI
+  opencodeModelsLoading: false,
+  opencodeModelsError: null,
+  opencodeModelsLastFetched: null,
+  opencodeModelsLastFailedAt: null,
   autoLoadClaudeMd: false, // Default to disabled (user must opt-in)
   skipSandboxWarning: false, // Default to disabled (show sandbox warning dialog)
   mcpServers: [], // No MCP servers configured by default
+  defaultEditorCommand: null, // Auto-detect: Cursor > VS Code > first available
   enableSkills: true, // Skills enabled by default
   skillsSources: ['user', 'project'] as Array<'user' | 'project'>, // Load from both sources by default
   enableSubagents: true, // Subagents enabled by default
   subagentsSources: ['user', 'project'] as Array<'user' | 'project'>, // Load from both sources by default
   promptCustomization: {}, // Empty by default - all prompts use built-in defaults
-  aiProfiles: DEFAULT_AI_PROFILES,
   projectAnalysis: null,
   isAnalyzing: false,
   boardBackgroundByProject: {},
@@ -1226,18 +1297,28 @@ const initialState: AppState = {
   specCreatingForProject: null,
   defaultPlanningMode: 'skip' as PlanningMode,
   defaultRequirePlanApproval: false,
-  defaultAIProfileId: null,
+  defaultFeatureModel: { model: 'opus' } as PhaseModelEntry,
   pendingPlanApproval: null,
   claudeRefreshInterval: 60,
   claudeUsage: null,
   claudeUsageLastUpdated: null,
   codexUsage: null,
   codexUsageLastUpdated: null,
+  codexModels: [],
+  codexModelsLoading: false,
+  codexModelsError: null,
+  codexModelsLastFetched: null,
+  codexModelsLastFailedAt: null,
   pipelineConfigByProject: {},
+  worktreePanelVisibleByProject: {},
+  showInitScriptIndicatorByProject: {},
+  defaultDeleteBranchByProject: {},
+  autoDismissInitScriptIndicatorByProject: {},
   // UI State (previously in localStorage, now synced via API)
   worktreePanelCollapsed: false,
   lastProjectDir: '',
   recentFolders: [],
+  initScriptState: {},
 };
 
 export const useAppStore = create<AppState & AppActions>()((set, get) => ({
@@ -1280,13 +1361,16 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     };
 
     const isCurrent = get().currentProject?.id === projectId;
+    const nextCurrentProject = isCurrent ? null : get().currentProject;
 
     set({
       projects: remainingProjects,
       trashedProjects: [trashedProject, ...existingTrash],
-      currentProject: isCurrent ? null : get().currentProject,
+      currentProject: nextCurrentProject,
       currentView: isCurrent ? 'welcome' : get().currentView,
     });
+
+    persistEffectiveThemeForProject(nextCurrentProject, get().theme);
   },
 
   restoreTrashedProject: (projectId) => {
@@ -1305,6 +1389,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
         currentProject: samePathProject,
         currentView: 'board',
       });
+      persistEffectiveThemeForProject(samePathProject, get().theme);
       return;
     }
 
@@ -1322,6 +1407,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
       currentProject: restoredProject,
       currentView: 'board',
     });
+    persistEffectiveThemeForProject(restoredProject, get().theme);
   },
 
   deleteTrashedProject: (projectId) => {
@@ -1341,6 +1427,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
 
   setCurrentProject: (project) => {
     set({ currentProject: project });
+    persistEffectiveThemeForProject(project, get().theme);
     if (project) {
       set({ currentView: 'board' });
       // Add to project history (MRU order)
@@ -1424,6 +1511,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
         projectHistoryIndex: newIndex,
         currentView: 'board',
       });
+      persistEffectiveThemeForProject(targetProject, get().theme);
     }
   },
 
@@ -1457,6 +1545,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
         projectHistoryIndex: newIndex,
         currentView: 'board',
       });
+      persistEffectiveThemeForProject(targetProject, get().theme);
     }
   },
 
@@ -1473,6 +1562,74 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
       set({
         projectHistory: [],
         projectHistoryIndex: -1,
+      });
+    }
+  },
+
+  toggleProjectFavorite: (projectId) => {
+    const { projects, currentProject } = get();
+    const updatedProjects = projects.map((p) =>
+      p.id === projectId ? { ...p, isFavorite: !p.isFavorite } : p
+    );
+    set({ projects: updatedProjects });
+    // Also update currentProject if it matches
+    if (currentProject?.id === projectId) {
+      set({
+        currentProject: {
+          ...currentProject,
+          isFavorite: !currentProject.isFavorite,
+        },
+      });
+    }
+  },
+
+  setProjectIcon: (projectId, icon) => {
+    const { projects, currentProject } = get();
+    const updatedProjects = projects.map((p) =>
+      p.id === projectId ? { ...p, icon: icon === null ? undefined : icon } : p
+    );
+    set({ projects: updatedProjects });
+    // Also update currentProject if it matches
+    if (currentProject?.id === projectId) {
+      set({
+        currentProject: {
+          ...currentProject,
+          icon: icon === null ? undefined : icon,
+        },
+      });
+    }
+  },
+
+  setProjectCustomIcon: (projectId, customIconPath) => {
+    const { projects, currentProject } = get();
+    const updatedProjects = projects.map((p) =>
+      p.id === projectId
+        ? { ...p, customIconPath: customIconPath === null ? undefined : customIconPath }
+        : p
+    );
+    set({ projects: updatedProjects });
+    // Also update currentProject if it matches
+    if (currentProject?.id === projectId) {
+      set({
+        currentProject: {
+          ...currentProject,
+          customIconPath: customIconPath === null ? undefined : customIconPath,
+        },
+      });
+    }
+  },
+
+  setProjectName: (projectId, name) => {
+    const { projects, currentProject } = get();
+    const updatedProjects = projects.map((p) => (p.id === projectId ? { ...p, name } : p));
+    set({ projects: updatedProjects });
+    // Also update currentProject if it matches
+    if (currentProject?.id === projectId) {
+      set({
+        currentProject: {
+          ...currentProject,
+          name,
+        },
       });
     }
   },
@@ -1499,12 +1656,14 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     // Also update currentProject if it's the same project
     const currentProject = get().currentProject;
     if (currentProject?.id === projectId) {
+      const updatedTheme = theme === null ? undefined : theme;
       set({
         currentProject: {
           ...currentProject,
-          theme: theme === null ? undefined : theme,
+          theme: updatedTheme,
         },
       });
+      persistEffectiveThemeForProject({ ...currentProject, theme: updatedTheme }, get().theme);
     }
   },
 
@@ -1752,7 +1911,6 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
   setMaxConcurrency: (max) => set({ maxConcurrency: max }),
 
   // Kanban Card Settings actions
-  setKanbanCardDetailLevel: (level) => set({ kanbanCardDetailLevel: level }),
   setBoardViewMode: (mode) => set({ boardViewMode: mode }),
 
   // Feature Default Settings actions
@@ -1763,6 +1921,41 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     // Sync to server settings file
     const { syncSettingsToServer } = await import('@/hooks/use-settings-migration');
     await syncSettingsToServer();
+  },
+  setEnableAiCommitMessages: async (enabled) => {
+    const previous = get().enableAiCommitMessages;
+    set({ enableAiCommitMessages: enabled });
+    // Sync to server settings file
+    const { syncSettingsToServer } = await import('@/hooks/use-settings-migration');
+    const ok = await syncSettingsToServer();
+    if (!ok) {
+      logger.error('Failed to sync enableAiCommitMessages setting to server - reverting');
+      set({ enableAiCommitMessages: previous });
+    }
+  },
+  setPlanUseSelectedWorktreeBranch: async (enabled) => {
+    const previous = get().planUseSelectedWorktreeBranch;
+    set({ planUseSelectedWorktreeBranch: enabled });
+    // Sync to server settings file
+    const { syncSettingsToServer } = await import('@/hooks/use-settings-migration');
+    const ok = await syncSettingsToServer();
+    if (!ok) {
+      logger.error('Failed to sync planUseSelectedWorktreeBranch setting to server - reverting');
+      set({ planUseSelectedWorktreeBranch: previous });
+    }
+  },
+  setAddFeatureUseSelectedWorktreeBranch: async (enabled) => {
+    const previous = get().addFeatureUseSelectedWorktreeBranch;
+    set({ addFeatureUseSelectedWorktreeBranch: enabled });
+    // Sync to server settings file
+    const { syncSettingsToServer } = await import('@/hooks/use-settings-migration');
+    const ok = await syncSettingsToServer();
+    if (!ok) {
+      logger.error(
+        'Failed to sync addFeatureUseSelectedWorktreeBranch setting to server - reverting'
+      );
+      set({ addFeatureUseSelectedWorktreeBranch: previous });
+    }
   },
 
   // Worktree Settings actions
@@ -1807,9 +2000,6 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     const primary = worktrees.find((w) => w.isMain);
     return primary?.branch ?? null;
   },
-
-  // Profile Display Settings actions
-  setShowProfilesOnly: (enabled) => set({ showProfilesOnly: enabled }),
 
   // Keyboard Shortcuts actions
   setKeyboardShortcut: (key, value) => {
@@ -1935,6 +2125,34 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
         ? [...state.enabledOpencodeModels, model]
         : state.enabledOpencodeModels.filter((m) => m !== model),
     })),
+  setDynamicOpencodeModels: (models) => {
+    // Dynamic models depend on CLI authentication state and are re-discovered each session.
+    // Persist enabled model IDs, but do not auto-enable new models.
+    const filteredModels = models.filter(
+      (model) =>
+        model.provider !== OPENCODE_BEDROCK_PROVIDER_ID &&
+        !model.id.startsWith(OPENCODE_BEDROCK_MODEL_PREFIX)
+    );
+    const currentEnabled = get().enabledDynamicModelIds;
+    const newModelIds = filteredModels.map((m) => m.id);
+    const filteredEnabled = currentEnabled.filter((modelId) => newModelIds.includes(modelId));
+
+    const nextEnabled = currentEnabled.length === 0 ? [] : filteredEnabled;
+    set({ dynamicOpencodeModels: filteredModels, enabledDynamicModelIds: nextEnabled });
+  },
+  setEnabledDynamicModelIds: (ids) => set({ enabledDynamicModelIds: ids }),
+  toggleDynamicModel: (modelId, enabled) =>
+    set((state) => ({
+      enabledDynamicModelIds: enabled
+        ? [...state.enabledDynamicModelIds, modelId]
+        : state.enabledDynamicModelIds.filter((id) => id !== modelId),
+    })),
+  setCachedOpencodeProviders: (providers) =>
+    set({
+      cachedOpencodeProviders: providers.filter(
+        (provider) => provider.id !== OPENCODE_BEDROCK_PROVIDER_ID
+      ),
+    }),
 
   // Claude Agent SDK Settings actions
   setAutoLoadClaudeMd: async (enabled) => {
@@ -1959,52 +2177,15 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
       set({ skipSandboxWarning: previous });
     }
   },
+
+  // Editor Configuration actions
+  setDefaultEditorCommand: (command) => set({ defaultEditorCommand: command }),
   // Prompt Customization actions
   setPromptCustomization: async (customization) => {
     set({ promptCustomization: customization });
     // Sync to server settings file
     const { syncSettingsToServer } = await import('@/hooks/use-settings-migration');
     await syncSettingsToServer();
-  },
-
-  // AI Profile actions
-  addAIProfile: (profile) => {
-    const id = `profile-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    set({ aiProfiles: [...get().aiProfiles, { ...profile, id }] });
-  },
-
-  updateAIProfile: (id, updates) => {
-    set({
-      aiProfiles: get().aiProfiles.map((p) => (p.id === id ? { ...p, ...updates } : p)),
-    });
-  },
-
-  removeAIProfile: (id) => {
-    // Only allow removing non-built-in profiles
-    const profile = get().aiProfiles.find((p) => p.id === id);
-    if (profile && !profile.isBuiltIn) {
-      // Clear default if this profile was selected
-      if (get().defaultAIProfileId === id) {
-        set({ defaultAIProfileId: null });
-      }
-      set({ aiProfiles: get().aiProfiles.filter((p) => p.id !== id) });
-    }
-  },
-
-  reorderAIProfiles: (oldIndex, newIndex) => {
-    const profiles = [...get().aiProfiles];
-    const [movedProfile] = profiles.splice(oldIndex, 1);
-    profiles.splice(newIndex, 0, movedProfile);
-    set({ aiProfiles: profiles });
-  },
-
-  resetAIProfiles: () => {
-    // Merge: keep user-created profiles, but refresh all built-in profiles to latest defaults
-    const defaultProfileIds = new Set(DEFAULT_AI_PROFILES.map((p) => p.id));
-    const userProfiles = get().aiProfiles.filter(
-      (p) => !p.isBuiltIn && !defaultProfileIds.has(p.id)
-    );
-    set({ aiProfiles: [...DEFAULT_AI_PROFILES, ...userProfiles] });
   },
 
   // MCP Server actions
@@ -2995,7 +3176,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
 
   setDefaultPlanningMode: (mode) => set({ defaultPlanningMode: mode }),
   setDefaultRequirePlanApproval: (require) => set({ defaultRequirePlanApproval: require }),
-  setDefaultAIProfileId: (profileId) => set({ defaultAIProfileId: profileId }),
+  setDefaultFeatureModel: (entry) => set({ defaultFeatureModel: entry }),
 
   // Plan Approval actions
   setPendingPlanApproval: (approval) => set({ pendingPlanApproval: approval }),
@@ -3015,6 +3196,130 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
       codexUsage: usage,
       codexUsageLastUpdated: usage ? Date.now() : null,
     }),
+
+  // Codex Models actions
+  fetchCodexModels: async (forceRefresh = false) => {
+    const FAILURE_COOLDOWN_MS = 30 * 1000; // 30 seconds
+    const SUCCESS_CACHE_MS = 5 * 60 * 1000; // 5 minutes
+
+    const { codexModelsLastFetched, codexModelsLoading, codexModelsLastFailedAt } = get();
+
+    // Skip if already loading
+    if (codexModelsLoading) return;
+
+    // Skip if recently failed and not forcing refresh
+    if (
+      !forceRefresh &&
+      codexModelsLastFailedAt &&
+      Date.now() - codexModelsLastFailedAt < FAILURE_COOLDOWN_MS
+    ) {
+      return;
+    }
+
+    // Skip if recently fetched successfully and not forcing refresh
+    if (
+      !forceRefresh &&
+      codexModelsLastFetched &&
+      Date.now() - codexModelsLastFetched < SUCCESS_CACHE_MS
+    ) {
+      return;
+    }
+
+    set({ codexModelsLoading: true, codexModelsError: null });
+
+    try {
+      const api = getElectronAPI();
+      if (!api.codex) {
+        throw new Error('Codex API not available');
+      }
+
+      const result = await api.codex.getModels(forceRefresh);
+
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to fetch Codex models');
+      }
+
+      set({
+        codexModels: result.models || [],
+        codexModelsLastFetched: Date.now(),
+        codexModelsLoading: false,
+        codexModelsError: null,
+        codexModelsLastFailedAt: null, // Clear failure on success
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      set({
+        codexModelsError: errorMessage,
+        codexModelsLoading: false,
+        codexModelsLastFailedAt: Date.now(), // Record failure time for cooldown
+      });
+    }
+  },
+
+  setCodexModels: (models) =>
+    set({
+      codexModels: models,
+      codexModelsLastFetched: Date.now(),
+    }),
+
+  // OpenCode Models actions
+  fetchOpencodeModels: async (forceRefresh = false) => {
+    const FAILURE_COOLDOWN_MS = 30 * 1000; // 30 seconds
+    const SUCCESS_CACHE_MS = 5 * 60 * 1000; // 5 minutes
+
+    const { opencodeModelsLastFetched, opencodeModelsLoading, opencodeModelsLastFailedAt } = get();
+
+    // Skip if already loading
+    if (opencodeModelsLoading) return;
+
+    // Skip if recently failed and not forcing refresh
+    if (
+      !forceRefresh &&
+      opencodeModelsLastFailedAt &&
+      Date.now() - opencodeModelsLastFailedAt < FAILURE_COOLDOWN_MS
+    ) {
+      return;
+    }
+
+    // Skip if recently fetched successfully and not forcing refresh
+    if (
+      !forceRefresh &&
+      opencodeModelsLastFetched &&
+      Date.now() - opencodeModelsLastFetched < SUCCESS_CACHE_MS
+    ) {
+      return;
+    }
+
+    set({ opencodeModelsLoading: true, opencodeModelsError: null });
+
+    try {
+      const api = getElectronAPI();
+      if (!api.setup) {
+        throw new Error('Setup API not available');
+      }
+
+      const result = await api.setup.getOpencodeModels(forceRefresh);
+
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to fetch OpenCode models');
+      }
+
+      set({
+        dynamicOpencodeModels: result.models || [],
+        opencodeModelsLastFetched: Date.now(),
+        opencodeModelsLoading: false,
+        opencodeModelsError: null,
+        opencodeModelsLastFailedAt: null, // Clear failure on success
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      set({
+        opencodeModelsError: errorMessage,
+        opencodeModelsLoading: false,
+        opencodeModelsLastFailedAt: Date.now(), // Record failure time for cooldown
+      });
+    }
+  },
 
   // Pipeline actions
   setPipelineConfig: (projectPath, config) => {
@@ -3115,6 +3420,66 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     });
   },
 
+  // Worktree Panel Visibility actions (per-project)
+  setWorktreePanelVisible: (projectPath, visible) => {
+    set({
+      worktreePanelVisibleByProject: {
+        ...get().worktreePanelVisibleByProject,
+        [projectPath]: visible,
+      },
+    });
+  },
+
+  getWorktreePanelVisible: (projectPath) => {
+    // Default to true (visible) if not set
+    return get().worktreePanelVisibleByProject[projectPath] ?? true;
+  },
+
+  // Init Script Indicator Visibility actions (per-project)
+  setShowInitScriptIndicator: (projectPath, visible) => {
+    set({
+      showInitScriptIndicatorByProject: {
+        ...get().showInitScriptIndicatorByProject,
+        [projectPath]: visible,
+      },
+    });
+  },
+
+  getShowInitScriptIndicator: (projectPath) => {
+    // Default to true (visible) if not set
+    return get().showInitScriptIndicatorByProject[projectPath] ?? true;
+  },
+
+  // Default Delete Branch actions (per-project)
+  setDefaultDeleteBranch: (projectPath, deleteBranch) => {
+    set({
+      defaultDeleteBranchByProject: {
+        ...get().defaultDeleteBranchByProject,
+        [projectPath]: deleteBranch,
+      },
+    });
+  },
+
+  getDefaultDeleteBranch: (projectPath) => {
+    // Default to false (don't delete branch) if not set
+    return get().defaultDeleteBranchByProject[projectPath] ?? false;
+  },
+
+  // Auto-dismiss Init Script Indicator actions (per-project)
+  setAutoDismissInitScriptIndicator: (projectPath, autoDismiss) => {
+    set({
+      autoDismissInitScriptIndicatorByProject: {
+        ...get().autoDismissInitScriptIndicatorByProject,
+        [projectPath]: autoDismiss,
+      },
+    });
+  },
+
+  getAutoDismissInitScriptIndicator: (projectPath) => {
+    // Default to true (auto-dismiss enabled) if not set
+    return get().autoDismissInitScriptIndicatorByProject[projectPath] ?? true;
+  },
+
   // UI State actions (previously in localStorage, now synced via API)
   setWorktreePanelCollapsed: (collapsed) => set({ worktreePanelCollapsed: collapsed }),
   setLastProjectDir: (dir) => set({ lastProjectDir: dir }),
@@ -3126,6 +3491,62 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     // Keep max 10 recent folders
     const updated = [folder, ...filtered].slice(0, 10);
     set({ recentFolders: updated });
+  },
+
+  // Init Script State actions (keyed by "projectPath::branch")
+  setInitScriptState: (projectPath, branch, state) => {
+    const key = `${projectPath}::${branch}`;
+    const current = get().initScriptState[key] || {
+      status: 'idle',
+      branch,
+      output: [],
+    };
+    set({
+      initScriptState: {
+        ...get().initScriptState,
+        [key]: { ...current, ...state },
+      },
+    });
+  },
+
+  appendInitScriptOutput: (projectPath, branch, content) => {
+    const key = `${projectPath}::${branch}`;
+    // Initialize state if absent to avoid dropping output due to event-order races
+    const current = get().initScriptState[key] || {
+      status: 'idle' as const,
+      branch,
+      output: [],
+    };
+    // Append new content and enforce fixed-size buffer to prevent memory bloat
+    const newOutput = [...current.output, content].slice(-MAX_INIT_OUTPUT_LINES);
+    set({
+      initScriptState: {
+        ...get().initScriptState,
+        [key]: {
+          ...current,
+          output: newOutput,
+        },
+      },
+    });
+  },
+
+  clearInitScriptState: (projectPath, branch) => {
+    const key = `${projectPath}::${branch}`;
+    const { [key]: _, ...rest } = get().initScriptState;
+    set({ initScriptState: rest });
+  },
+
+  getInitScriptState: (projectPath, branch) => {
+    const key = `${projectPath}::${branch}`;
+    return get().initScriptState[key] || null;
+  },
+
+  getInitScriptStatesForProject: (projectPath) => {
+    const prefix = `${projectPath}::`;
+    const states = get().initScriptState;
+    return Object.entries(states)
+      .filter(([key]) => key.startsWith(prefix))
+      .map(([key, state]) => ({ key, state }));
   },
 
   // Reset

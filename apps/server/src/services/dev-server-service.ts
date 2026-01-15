@@ -12,8 +12,16 @@ import * as secureFs from '../lib/secure-fs.js';
 import path from 'path';
 import net from 'net';
 import { createLogger } from '@automaker/utils';
+import type { EventEmitter } from '../lib/events.js';
 
 const logger = createLogger('DevServerService');
+
+// Maximum scrollback buffer size (characters) - matches TerminalService pattern
+const MAX_SCROLLBACK_SIZE = 50000; // ~50KB per dev server
+
+// Throttle output to prevent overwhelming WebSocket under heavy load
+const OUTPUT_THROTTLE_MS = 4; // ~250fps max update rate for responsive feedback
+const OUTPUT_BATCH_SIZE = 4096; // Smaller batches for lower latency
 
 export interface DevServerInfo {
   worktreePath: string;
@@ -21,15 +29,106 @@ export interface DevServerInfo {
   url: string;
   process: ChildProcess | null;
   startedAt: Date;
+  // Scrollback buffer for log history (replay on reconnect)
+  scrollbackBuffer: string;
+  // Pending output to be flushed to subscribers
+  outputBuffer: string;
+  // Throttle timer for batching output
+  flushTimeout: NodeJS.Timeout | null;
+  // Flag to indicate server is stopping (prevents output after stop)
+  stopping: boolean;
 }
 
 // Port allocation starts at 3001 to avoid conflicts with common dev ports
 const BASE_PORT = 3001;
 const MAX_PORT = 3099; // Safety limit
 
+// Common livereload ports that may need cleanup when stopping dev servers
+const LIVERELOAD_PORTS = [35729, 35730, 35731] as const;
+
 class DevServerService {
   private runningServers: Map<string, DevServerInfo> = new Map();
   private allocatedPorts: Set<number> = new Set();
+  private emitter: EventEmitter | null = null;
+
+  /**
+   * Set the event emitter for streaming log events
+   * Called during service initialization with the global event emitter
+   */
+  setEventEmitter(emitter: EventEmitter): void {
+    this.emitter = emitter;
+  }
+
+  /**
+   * Append data to scrollback buffer with size limit enforcement
+   * Evicts oldest data when buffer exceeds MAX_SCROLLBACK_SIZE
+   */
+  private appendToScrollback(server: DevServerInfo, data: string): void {
+    server.scrollbackBuffer += data;
+    if (server.scrollbackBuffer.length > MAX_SCROLLBACK_SIZE) {
+      server.scrollbackBuffer = server.scrollbackBuffer.slice(-MAX_SCROLLBACK_SIZE);
+    }
+  }
+
+  /**
+   * Flush buffered output to WebSocket subscribers
+   * Sends batched output to prevent overwhelming clients under heavy load
+   */
+  private flushOutput(server: DevServerInfo): void {
+    // Skip flush if server is stopping or buffer is empty
+    if (server.stopping || server.outputBuffer.length === 0) {
+      server.flushTimeout = null;
+      return;
+    }
+
+    let dataToSend = server.outputBuffer;
+    if (dataToSend.length > OUTPUT_BATCH_SIZE) {
+      // Send in batches if buffer is large
+      dataToSend = server.outputBuffer.slice(0, OUTPUT_BATCH_SIZE);
+      server.outputBuffer = server.outputBuffer.slice(OUTPUT_BATCH_SIZE);
+      // Schedule another flush for remaining data
+      server.flushTimeout = setTimeout(() => this.flushOutput(server), OUTPUT_THROTTLE_MS);
+    } else {
+      server.outputBuffer = '';
+      server.flushTimeout = null;
+    }
+
+    // Emit output event for WebSocket streaming
+    if (this.emitter) {
+      this.emitter.emit('dev-server:output', {
+        worktreePath: server.worktreePath,
+        content: dataToSend,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+
+  /**
+   * Handle incoming stdout/stderr data from dev server process
+   * Buffers data for scrollback replay and schedules throttled emission
+   */
+  private handleProcessOutput(server: DevServerInfo, data: Buffer): void {
+    // Skip output if server is stopping
+    if (server.stopping) {
+      return;
+    }
+
+    const content = data.toString();
+
+    // Append to scrollback buffer for replay on reconnect
+    this.appendToScrollback(server, content);
+
+    // Buffer output for throttled live delivery
+    server.outputBuffer += content;
+
+    // Schedule flush if not already scheduled
+    if (!server.flushTimeout) {
+      server.flushTimeout = setTimeout(() => this.flushOutput(server), OUTPUT_THROTTLE_MS);
+    }
+
+    // Also log for debugging (existing behavior)
+    logger.debug(`[Port${server.port}] ${content.trim()}`);
+  }
 
   /**
    * Check if a port is available (not in use by system or by us)
@@ -244,10 +343,9 @@ class DevServerService {
     // Reserve the port (port was already force-killed in findAvailablePort)
     this.allocatedPorts.add(port);
 
-    // Also kill common related ports (livereload uses 35729 by default)
+    // Also kill common related ports (livereload, etc.)
     // Some dev servers use fixed ports for HMR/livereload regardless of main port
-    const commonRelatedPorts = [35729, 35730, 35731];
-    for (const relatedPort of commonRelatedPorts) {
+    for (const relatedPort of LIVERELOAD_PORTS) {
       this.killProcessOnPort(relatedPort);
     }
 
@@ -259,9 +357,14 @@ class DevServerService {
     logger.debug(`Command: ${devCommand.cmd} ${devCommand.args.join(' ')} with PORT=${port}`);
 
     // Spawn the dev process with PORT environment variable
+    // FORCE_COLOR enables colored output even when not running in a TTY
     const env = {
       ...process.env,
       PORT: String(port),
+      FORCE_COLOR: '1',
+      // Some tools use these additional env vars for color detection
+      COLORTERM: 'truecolor',
+      TERM: 'xterm-256color',
     };
 
     const devProcess = spawn(devCommand.cmd, devCommand.args, {
@@ -274,32 +377,66 @@ class DevServerService {
     // Track if process failed early using object to work around TypeScript narrowing
     const status = { error: null as string | null, exited: false };
 
-    // Log output for debugging
+    // Create server info early so we can reference it in handlers
+    // We'll add it to runningServers after verifying the process started successfully
+    const serverInfo: DevServerInfo = {
+      worktreePath,
+      port,
+      url: `http://localhost:${port}`,
+      process: devProcess,
+      startedAt: new Date(),
+      scrollbackBuffer: '',
+      outputBuffer: '',
+      flushTimeout: null,
+      stopping: false,
+    };
+
+    // Capture stdout with buffer management and event emission
     if (devProcess.stdout) {
       devProcess.stdout.on('data', (data: Buffer) => {
-        logger.debug(`[Port${port}] ${data.toString().trim()}`);
+        this.handleProcessOutput(serverInfo, data);
       });
     }
 
+    // Capture stderr with buffer management and event emission
     if (devProcess.stderr) {
       devProcess.stderr.on('data', (data: Buffer) => {
-        const msg = data.toString().trim();
-        logger.debug(`[Port${port}] ${msg}`);
+        this.handleProcessOutput(serverInfo, data);
       });
     }
+
+    // Helper to clean up resources and emit stop event
+    const cleanupAndEmitStop = (exitCode: number | null, errorMessage?: string) => {
+      if (serverInfo.flushTimeout) {
+        clearTimeout(serverInfo.flushTimeout);
+        serverInfo.flushTimeout = null;
+      }
+
+      // Emit stopped event (only if not already stopping - prevents duplicate events)
+      if (this.emitter && !serverInfo.stopping) {
+        this.emitter.emit('dev-server:stopped', {
+          worktreePath,
+          port,
+          exitCode,
+          error: errorMessage,
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      this.allocatedPorts.delete(port);
+      this.runningServers.delete(worktreePath);
+    };
 
     devProcess.on('error', (error) => {
       logger.error(`Process error:`, error);
       status.error = error.message;
-      this.allocatedPorts.delete(port);
-      this.runningServers.delete(worktreePath);
+      cleanupAndEmitStop(null, error.message);
     });
 
     devProcess.on('exit', (code) => {
       logger.info(`Process for ${worktreePath} exited with code ${code}`);
       status.exited = true;
-      this.allocatedPorts.delete(port);
-      this.runningServers.delete(worktreePath);
+      cleanupAndEmitStop(code);
     });
 
     // Wait a moment to see if the process fails immediately
@@ -319,15 +456,18 @@ class DevServerService {
       };
     }
 
-    const serverInfo: DevServerInfo = {
-      worktreePath,
-      port,
-      url: `http://localhost:${port}`,
-      process: devProcess,
-      startedAt: new Date(),
-    };
-
+    // Server started successfully - add to running servers map
     this.runningServers.set(worktreePath, serverInfo);
+
+    // Emit started event for WebSocket subscribers
+    if (this.emitter) {
+      this.emitter.emit('dev-server:started', {
+        worktreePath,
+        port,
+        url: serverInfo.url,
+        timestamp: new Date().toISOString(),
+      });
+    }
 
     return {
       success: true,
@@ -364,6 +504,28 @@ class DevServerService {
     }
 
     logger.info(`Stopping dev server for ${worktreePath}`);
+
+    // Mark as stopping to prevent further output events
+    server.stopping = true;
+
+    // Clean up flush timeout to prevent memory leaks
+    if (server.flushTimeout) {
+      clearTimeout(server.flushTimeout);
+      server.flushTimeout = null;
+    }
+
+    // Clear any pending output buffer
+    server.outputBuffer = '';
+
+    // Emit stopped event immediately so UI updates right away
+    if (this.emitter) {
+      this.emitter.emit('dev-server:stopped', {
+        worktreePath,
+        port: server.port,
+        exitCode: null, // Will be populated by exit handler if process exits normally
+        timestamp: new Date().toISOString(),
+      });
+    }
 
     // Kill the process
     if (server.process && !server.process.killed) {
@@ -420,6 +582,41 @@ class DevServerService {
    */
   getServerInfo(worktreePath: string): DevServerInfo | undefined {
     return this.runningServers.get(worktreePath);
+  }
+
+  /**
+   * Get buffered logs for a worktree's dev server
+   * Returns the scrollback buffer containing historical log output
+   * Used by the API to serve logs to clients on initial connection
+   */
+  getServerLogs(worktreePath: string): {
+    success: boolean;
+    result?: {
+      worktreePath: string;
+      port: number;
+      logs: string;
+      startedAt: string;
+    };
+    error?: string;
+  } {
+    const server = this.runningServers.get(worktreePath);
+
+    if (!server) {
+      return {
+        success: false,
+        error: `No dev server running for worktree: ${worktreePath}`,
+      };
+    }
+
+    return {
+      success: true,
+      result: {
+        worktreePath: server.worktreePath,
+        port: server.port,
+        logs: server.scrollbackBuffer,
+        startedAt: server.startedAt.toISOString(),
+      },
+    };
   }
 
   /**

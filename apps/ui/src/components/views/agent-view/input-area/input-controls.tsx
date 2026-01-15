@@ -79,7 +79,7 @@ export function InputControls({
       {/* Text Input and Controls */}
       <div
         className={cn(
-          'flex gap-2 transition-all duration-200 rounded-xl p-1',
+          'flex flex-col gap-2 transition-all duration-200 rounded-xl p-1',
           isDragOver && 'bg-primary/5 ring-2 ring-primary/30'
         )}
         onDragEnter={onDragEnter}
@@ -87,7 +87,8 @@ export function InputControls({
         onDragOver={onDragOver}
         onDrop={onDrop}
       >
-        <div className="flex-1 relative">
+        {/* Textarea - full width on mobile */}
+        <div className="relative w-full">
           <Textarea
             ref={inputRef}
             placeholder={
@@ -105,14 +106,14 @@ export function InputControls({
             data-testid="agent-input"
             rows={1}
             className={cn(
-              'min-h-11 bg-background border-border rounded-xl pl-4 pr-20 text-sm transition-all resize-none max-h-36 overflow-y-auto py-2.5',
+              'min-h-11 w-full bg-background border-border rounded-xl pl-4 pr-4 sm:pr-20 text-sm transition-all resize-none max-h-36 overflow-y-auto py-2.5',
               'focus:ring-2 focus:ring-primary/20 focus:border-primary/50',
               hasFiles && 'border-primary/30',
               isDragOver && 'border-primary bg-primary/5'
             )}
           />
           {hasFiles && !isDragOver && (
-            <div className="absolute right-3 top-1/2 -translate-y-1/2 text-xs bg-primary text-primary-foreground px-2 py-0.5 rounded-full font-medium">
+            <div className="hidden sm:block absolute right-3 top-1/2 -translate-y-1/2 text-xs bg-primary text-primary-foreground px-2 py-0.5 rounded-full font-medium">
               files attached
             </div>
           )}
@@ -124,58 +125,64 @@ export function InputControls({
           )}
         </div>
 
-        {/* Model Selector */}
-        <AgentModelSelector
-          value={modelSelection}
-          onChange={onModelSelect}
-          disabled={!isConnected}
-        />
-
-        {/* File Attachment Button */}
-        <Button
-          variant="outline"
-          size="icon"
-          onClick={onToggleImageDropZone}
-          disabled={!isConnected}
-          className={cn(
-            'h-11 w-11 rounded-xl border-border',
-            showImageDropZone && 'bg-primary/10 text-primary border-primary/30',
-            hasFiles && 'border-primary/30 text-primary'
-          )}
-          title="Attach files (images, .txt, .md)"
-        >
-          <Paperclip className="w-4 h-4" />
-        </Button>
-
-        {/* Stop Button (only when processing) */}
-        {isProcessing && (
-          <Button
-            onClick={onStop}
+        {/* Controls row - responsive layout */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Model Selector */}
+          <AgentModelSelector
+            value={modelSelection}
+            onChange={onModelSelect}
             disabled={!isConnected}
-            className="h-11 px-4 rounded-xl"
-            variant="destructive"
-            data-testid="stop-agent"
-            title="Stop generation"
-          >
-            <Square className="w-4 h-4 fill-current" />
-          </Button>
-        )}
+          />
 
-        {/* Send / Queue Button */}
-        <Button
-          onClick={onSend}
-          disabled={!canSend}
-          className="h-11 px-4 rounded-xl"
-          variant={isProcessing ? 'outline' : 'default'}
-          data-testid="send-message"
-          title={isProcessing ? 'Add to queue' : 'Send message'}
-        >
-          {isProcessing ? <ListOrdered className="w-4 h-4" /> : <Send className="w-4 h-4" />}
-        </Button>
+          {/* File Attachment Button */}
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={onToggleImageDropZone}
+            disabled={!isConnected}
+            className={cn(
+              'h-11 w-11 rounded-xl border-border shrink-0',
+              showImageDropZone && 'bg-primary/10 text-primary border-primary/30',
+              hasFiles && 'border-primary/30 text-primary'
+            )}
+            title="Attach files (images, .txt, .md)"
+          >
+            <Paperclip className="w-4 h-4" />
+          </Button>
+
+          {/* Spacer to push action buttons to the right */}
+          <div className="flex-1" />
+
+          {/* Stop Button (only when processing) */}
+          {isProcessing && (
+            <Button
+              onClick={onStop}
+              disabled={!isConnected}
+              className="h-11 px-4 rounded-xl shrink-0"
+              variant="destructive"
+              data-testid="stop-agent"
+              title="Stop generation"
+            >
+              <Square className="w-4 h-4 fill-current" />
+            </Button>
+          )}
+
+          {/* Send / Queue Button */}
+          <Button
+            onClick={onSend}
+            disabled={!canSend}
+            className="h-11 px-4 rounded-xl shrink-0"
+            variant={isProcessing ? 'outline' : 'default'}
+            data-testid="send-message"
+            title={isProcessing ? 'Add to queue' : 'Send message'}
+          >
+            {isProcessing ? <ListOrdered className="w-4 h-4" /> : <Send className="w-4 h-4" />}
+          </Button>
+        </div>
       </div>
 
       {/* Keyboard hint */}
-      <p className="text-[11px] text-muted-foreground mt-2 text-center">
+      <p className="text-[11px] text-muted-foreground mt-2 text-center hidden sm:block">
         Press <kbd className="px-1.5 py-0.5 bg-muted rounded text-[10px] font-medium">Enter</kbd> to
         send,{' '}
         <kbd className="px-1.5 py-0.5 bg-muted rounded text-[10px] font-medium">Shift+Enter</kbd>{' '}

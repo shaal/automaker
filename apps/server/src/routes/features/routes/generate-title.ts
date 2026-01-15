@@ -1,13 +1,14 @@
 /**
  * POST /features/generate-title endpoint - Generate a concise title from description
  *
- * Uses Claude Haiku to generate a short, descriptive title from feature description.
+ * Uses the provider abstraction to generate a short, descriptive title
+ * from a feature description. Works with any configured provider (Claude, Cursor, etc.).
  */
 
 import type { Request, Response } from 'express';
-import { query } from '@anthropic-ai/claude-agent-sdk';
 import { createLogger } from '@automaker/utils';
 import { CLAUDE_MODEL_MAP } from '@automaker/model-resolver';
+import { simpleQuery } from '../../../providers/simple-query-service.js';
 
 const logger = createLogger('GenerateTitle');
 
@@ -33,33 +34,6 @@ Rules:
 - Start with a verb when possible (Add, Fix, Update, Implement, Create, etc.)
 - No quotes, periods, or extra formatting
 - Capture the essence of the feature in a scannable way`;
-
-async function extractTextFromStream(
-  stream: AsyncIterable<{
-    type: string;
-    subtype?: string;
-    result?: string;
-    message?: {
-      content?: Array<{ type: string; text?: string }>;
-    };
-  }>
-): Promise<string> {
-  let responseText = '';
-
-  for await (const msg of stream) {
-    if (msg.type === 'assistant' && msg.message?.content) {
-      for (const block of msg.message.content) {
-        if (block.type === 'text' && block.text) {
-          responseText += block.text;
-        }
-      }
-    } else if (msg.type === 'result' && msg.subtype === 'success') {
-      responseText = msg.result || responseText;
-    }
-  }
-
-  return responseText;
-}
 
 export function createGenerateTitleHandler(): (req: Request, res: Response) => Promise<void> {
   return async (req: Request, res: Response): Promise<void> => {
@@ -89,21 +63,19 @@ export function createGenerateTitleHandler(): (req: Request, res: Response) => P
 
       const userPrompt = `Generate a concise title for this feature:\n\n${trimmedDescription}`;
 
-      const stream = query({
-        prompt: userPrompt,
-        options: {
-          model: CLAUDE_MODEL_MAP.haiku,
-          systemPrompt: SYSTEM_PROMPT,
-          maxTurns: 1,
-          allowedTools: [],
-          permissionMode: 'default',
-        },
+      // Use simpleQuery - provider abstraction handles all the streaming/extraction
+      const result = await simpleQuery({
+        prompt: `${SYSTEM_PROMPT}\n\n${userPrompt}`,
+        model: CLAUDE_MODEL_MAP.haiku,
+        cwd: process.cwd(),
+        maxTurns: 1,
+        allowedTools: [],
       });
 
-      const title = await extractTextFromStream(stream);
+      const title = result.text;
 
       if (!title || title.trim().length === 0) {
-        logger.warn('Received empty response from Claude');
+        logger.warn('Received empty response from AI');
         const response: GenerateTitleErrorResponse = {
           success: false,
           error: 'Failed to generate title - empty response',

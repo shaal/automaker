@@ -5,7 +5,7 @@
  * Each provider shows: `{ configured: boolean, masked: string }`
  * Masked shows first 4 and last 4 characters for verification.
  *
- * Response: `{ "success": true, "credentials": { anthropic } }`
+ * Response: `{ "success": true, "credentials": { anthropic, google, openai } }`
  */
 
 import type { Request, Response } from 'express';

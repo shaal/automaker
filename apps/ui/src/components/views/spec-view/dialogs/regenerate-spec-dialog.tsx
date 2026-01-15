@@ -51,7 +51,7 @@ export function RegenerateSpecDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4 py-4">
+        <div className="space-y-4 py-4 overflow-y-auto">
           <div className="space-y-2">
             <label className="text-sm font-medium">Describe your project</label>
             <p className="text-xs text-muted-foreground">

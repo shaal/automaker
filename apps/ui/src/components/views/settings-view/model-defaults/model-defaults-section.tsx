@@ -28,6 +28,11 @@ const QUICK_TASKS: PhaseConfig[] = [
     label: 'Image Descriptions',
     description: 'Analyzes and describes context images',
   },
+  {
+    key: 'commitMessageModel',
+    label: 'Commit Messages',
+    description: 'Generates git commit messages from diffs',
+  },
 ];
 
 const VALIDATION_TASKS: PhaseConfig[] = [

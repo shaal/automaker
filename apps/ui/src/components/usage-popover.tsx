@@ -14,6 +14,7 @@ const ERROR_CODES = {
   API_BRIDGE_UNAVAILABLE: 'API_BRIDGE_UNAVAILABLE',
   AUTH_ERROR: 'AUTH_ERROR',
   NOT_AVAILABLE: 'NOT_AVAILABLE',
+  TRUST_PROMPT: 'TRUST_PROMPT',
   UNKNOWN: 'UNKNOWN',
 } as const;
 
@@ -72,18 +73,17 @@ export function UsagePopover() {
   const [codexError, setCodexError] = useState<UsageError | null>(null);
 
   // Check authentication status
-  const isClaudeCliVerified =
-    claudeAuthStatus?.authenticated && claudeAuthStatus?.method === 'cli_authenticated';
+  const isClaudeAuthenticated = !!claudeAuthStatus?.authenticated;
   const isCodexAuthenticated = codexAuthStatus?.authenticated;
 
   // Determine which tab to show by default
   useEffect(() => {
-    if (isClaudeCliVerified) {
+    if (isClaudeAuthenticated) {
       setActiveTab('claude');
     } else if (isCodexAuthenticated) {
       setActiveTab('codex');
     }
-  }, [isClaudeCliVerified, isCodexAuthenticated]);
+  }, [isClaudeAuthenticated, isCodexAuthenticated]);
 
   // Check if data is stale (older than 2 minutes)
   const isClaudeStale = useMemo(() => {
@@ -109,8 +109,12 @@ export function UsagePopover() {
         }
         const data = await api.claude.getUsage();
         if ('error' in data) {
+          // Detect trust prompt error
+          const isTrustPrompt =
+            data.error === 'Trust prompt pending' ||
+            (data.message && data.message.includes('folder permission'));
           setClaudeError({
-            code: ERROR_CODES.AUTH_ERROR,
+            code: isTrustPrompt ? ERROR_CODES.TRUST_PROMPT : ERROR_CODES.AUTH_ERROR,
             message: data.message || data.error,
           });
           return;
@@ -174,10 +178,10 @@ export function UsagePopover() {
 
   // Auto-fetch on mount if data is stale
   useEffect(() => {
-    if (isClaudeStale && isClaudeCliVerified) {
+    if (isClaudeStale && isClaudeAuthenticated) {
       fetchClaudeUsage(true);
     }
-  }, [isClaudeStale, isClaudeCliVerified, fetchClaudeUsage]);
+  }, [isClaudeStale, isClaudeAuthenticated, fetchClaudeUsage]);
 
   useEffect(() => {
     if (isCodexStale && isCodexAuthenticated) {
@@ -190,7 +194,7 @@ export function UsagePopover() {
     if (!open) return;
 
     // Fetch based on active tab
-    if (activeTab === 'claude' && isClaudeCliVerified) {
+    if (activeTab === 'claude' && isClaudeAuthenticated) {
       if (!claudeUsage || isClaudeStale) {
         fetchClaudeUsage();
       }
@@ -214,7 +218,7 @@ export function UsagePopover() {
     activeTab,
     claudeUsage,
     isClaudeStale,
-    isClaudeCliVerified,
+    isClaudeAuthenticated,
     codexUsage,
     isCodexStale,
     isCodexAuthenticated,
@@ -349,7 +353,7 @@ export function UsagePopover() {
   );
 
   // Determine which tabs to show
-  const showClaudeTab = isClaudeCliVerified;
+  const showClaudeTab = isClaudeAuthenticated;
   const showCodexTab = isCodexAuthenticated;
 
   return (
@@ -405,6 +409,11 @@ export function UsagePopover() {
                     <p className="text-xs text-muted-foreground">
                       {claudeError.code === ERROR_CODES.API_BRIDGE_UNAVAILABLE ? (
                         'Ensure the Electron bridge is running or restart the app'
+                      ) : claudeError.code === ERROR_CODES.TRUST_PROMPT ? (
+                        <>
+                          Run <code className="font-mono bg-muted px-1 rounded">claude</code> in
+                          your terminal and approve access to continue
+                        </>
                       ) : (
                         <>
                           Make sure Claude CLI is installed and authenticated via{' '}

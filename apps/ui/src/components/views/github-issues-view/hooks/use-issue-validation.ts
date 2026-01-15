@@ -9,7 +9,7 @@ import {
   IssueValidationEvent,
   StoredValidation,
 } from '@/lib/electron';
-import type { LinkedPRInfo, PhaseModelEntry, ModelAlias, CursorModelId } from '@automaker/types';
+import type { LinkedPRInfo, PhaseModelEntry, ModelId } from '@automaker/types';
 import { useAppStore } from '@/store/app-store';
 import { toast } from 'sonner';
 import { isValidationStale } from '../utils';
@@ -19,12 +19,10 @@ const logger = createLogger('IssueValidation');
 /**
  * Extract model string from PhaseModelEntry or string (handles both formats)
  */
-function extractModel(
-  entry: PhaseModelEntry | string | undefined
-): ModelAlias | CursorModelId | undefined {
+function extractModel(entry: PhaseModelEntry | string | undefined): ModelId | undefined {
   if (!entry) return undefined;
   if (typeof entry === 'string') {
-    return entry as ModelAlias | CursorModelId;
+    return entry as ModelId;
   }
   return entry.model;
 }
@@ -228,8 +226,8 @@ export function useIssueValidation({
       issue: GitHubIssue,
       options: {
         forceRevalidate?: boolean;
-        model?: string | PhaseModelEntry; // Accept either string (backward compat) or PhaseModelEntry
-        modelEntry?: PhaseModelEntry; // New preferred way to pass model with thinking level
+        model?: ModelId | PhaseModelEntry; // Accept either model ID (backward compat) or PhaseModelEntry
+        modelEntry?: PhaseModelEntry; // New preferred way to pass model with thinking/reasoning
         comments?: GitHubComment[];
         linkedPRs?: LinkedPRInfo[];
       } = {}
@@ -267,15 +265,16 @@ export function useIssueValidation({
         ? modelEntry
         : model
           ? typeof model === 'string'
-            ? { model: model as ModelAlias | CursorModelId }
+            ? { model: model as ModelId }
             : model
           : phaseModels.validationModel;
       const normalizedEntry =
         typeof effectiveModelEntry === 'string'
-          ? { model: effectiveModelEntry as ModelAlias | CursorModelId }
+          ? { model: effectiveModelEntry as ModelId }
           : effectiveModelEntry;
       const modelToUse = normalizedEntry.model;
       const thinkingLevelToUse = normalizedEntry.thinkingLevel;
+      const reasoningEffortToUse = normalizedEntry.reasoningEffort;
 
       try {
         const api = getElectronAPI();
@@ -292,7 +291,8 @@ export function useIssueValidation({
             currentProject.path,
             validationInput,
             modelToUse,
-            thinkingLevelToUse
+            thinkingLevelToUse,
+            reasoningEffortToUse
           );
 
           if (!result.success) {

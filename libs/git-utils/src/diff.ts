@@ -98,7 +98,7 @@ Binary file ${cleanPath} added
     const lines = content.split('\n');
 
     // Remove trailing empty line if the file ends with newline
-    if (lines.length > 0 && lines.at(-1) === '') {
+    if (lines.length > 0 && lines[lines.length - 1] === '') {
       lines.pop();
     }
 

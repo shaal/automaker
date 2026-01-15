@@ -8,7 +8,6 @@
 import type { Request, Response } from 'express';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import path from 'path';
 import { getErrorMessage, logError } from '../common.js';
 
 const execAsync = promisify(exec);
@@ -16,28 +15,31 @@ const execAsync = promisify(exec);
 export function createMergeHandler() {
   return async (req: Request, res: Response): Promise<void> => {
     try {
-      const { projectPath, featureId, options } = req.body as {
+      const { projectPath, branchName, worktreePath, options } = req.body as {
         projectPath: string;
-        featureId: string;
+        branchName: string;
+        worktreePath: string;
         options?: { squash?: boolean; message?: string };
       };
 
-      if (!projectPath || !featureId) {
+      if (!projectPath || !branchName || !worktreePath) {
         res.status(400).json({
           success: false,
-          error: 'projectPath and featureId required',
+          error: 'projectPath, branchName, and worktreePath are required',
         });
         return;
       }
 
-      const branchName = `feature/${featureId}`;
-      // Git worktrees are stored in project directory
-      const worktreePath = path.join(projectPath, '.worktrees', featureId);
-
-      // Get current branch
-      const { stdout: currentBranch } = await execAsync('git rev-parse --abbrev-ref HEAD', {
-        cwd: projectPath,
-      });
+      // Validate branch exists
+      try {
+        await execAsync(`git rev-parse --verify ${branchName}`, { cwd: projectPath });
+      } catch {
+        res.status(400).json({
+          success: false,
+          error: `Branch "${branchName}" does not exist`,
+        });
+        return;
+      }
 
       // Merge the feature branch
       const mergeCmd = options?.squash

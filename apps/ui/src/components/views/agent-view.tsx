@@ -16,11 +16,32 @@ import {
 import { NoProjectState, AgentHeader, ChatArea } from './agent-view/components';
 import { AgentInputArea } from './agent-view/input-area';
 
+/** Tailwind lg breakpoint in pixels */
+const LG_BREAKPOINT = 1024;
+
 export function AgentView() {
   const { currentProject } = useAppStore();
   const [input, setInput] = useState('');
   const [currentTool, setCurrentTool] = useState<string | null>(null);
+  // Initialize session manager state - starts as true to match SSR
+  // Then updates on mount based on actual screen size to prevent hydration mismatch
   const [showSessionManager, setShowSessionManager] = useState(true);
+
+  // Update session manager visibility based on screen size after mount and on resize
+  useEffect(() => {
+    const updateVisibility = () => {
+      const isDesktop = window.innerWidth >= LG_BREAKPOINT;
+      setShowSessionManager(isDesktop);
+    };
+
+    // Set initial value
+    updateVisibility();
+
+    // Listen for resize events
+    window.addEventListener('resize', updateVisibility);
+    return () => window.removeEventListener('resize', updateVisibility);
+  }, []);
+
   const [modelSelection, setModelSelection] = useState<PhaseModelEntry>({ model: 'sonnet' });
 
   // Input ref for auto-focus
@@ -119,6 +140,13 @@ export function AgentView() {
     }
   }, [currentSessionId]);
 
+  // Auto-close session manager on mobile when a session is selected
+  useEffect(() => {
+    if (currentSessionId && typeof window !== 'undefined' && window.innerWidth < 1024) {
+      setShowSessionManager(false);
+    }
+  }, [currentSessionId]);
+
   // Show welcome message if no messages yet
   const displayMessages =
     messages.length === 0
@@ -139,9 +167,18 @@ export function AgentView() {
 
   return (
     <div className="flex-1 flex overflow-hidden bg-background" data-testid="agent-view">
+      {/* Mobile backdrop overlay for Session Manager */}
+      {showSessionManager && currentProject && (
+        <div
+          className="fixed inset-0 bg-black/50 z-20 lg:hidden"
+          onClick={() => setShowSessionManager(false)}
+          data-testid="session-manager-backdrop"
+        />
+      )}
+
       {/* Session Manager Sidebar */}
       {showSessionManager && currentProject && (
-        <div className="w-80 border-r border-border shrink-0 bg-card/50">
+        <div className="fixed inset-y-0 left-0 w-72 z-30 lg:relative lg:w-80 lg:z-auto border-r border-border shrink-0 bg-card">
           <SessionManager
             currentSessionId={currentSessionId}
             onSelectSession={handleSelectSession}

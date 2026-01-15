@@ -137,6 +137,8 @@ export function Autocomplete({
           width: Math.max(triggerWidth, 200),
         }}
         data-testid={testId ? `${testId}-list` : undefined}
+        onWheel={(e) => e.stopPropagation()}
+        onTouchMove={(e) => e.stopPropagation()}
       >
         <Command shouldFilter={false}>
           <CommandInput

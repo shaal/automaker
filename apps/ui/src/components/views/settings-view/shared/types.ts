@@ -26,6 +26,8 @@ export interface Project {
   name: string;
   path: string;
   theme?: string;
+  icon?: string;
+  customIconPath?: string;
 }
 
 export interface ApiKeys {

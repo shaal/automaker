@@ -2,17 +2,16 @@ import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
   FlaskConical,
-  Settings2,
   TestTube,
-  GitBranch,
   AlertCircle,
   Zap,
   ClipboardList,
   FileText,
   ScrollText,
   ShieldCheck,
-  User,
   FastForward,
+  Sparkles,
+  Cpu,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
@@ -22,53 +21,44 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import type { AIProfile } from '@/store/app-store';
+import type { PhaseModelEntry } from '@automaker/types';
+import { PhaseModelSelector } from '../model-defaults/phase-model-selector';
 
 type PlanningMode = 'skip' | 'lite' | 'spec' | 'full';
 
 interface FeatureDefaultsSectionProps {
-  showProfilesOnly: boolean;
   defaultSkipTests: boolean;
   enableDependencyBlocking: boolean;
   skipVerificationInAutoMode: boolean;
-  useWorktrees: boolean;
   defaultPlanningMode: PlanningMode;
   defaultRequirePlanApproval: boolean;
-  defaultAIProfileId: string | null;
-  aiProfiles: AIProfile[];
-  onShowProfilesOnlyChange: (value: boolean) => void;
+  enableAiCommitMessages: boolean;
+  defaultFeatureModel: PhaseModelEntry;
   onDefaultSkipTestsChange: (value: boolean) => void;
   onEnableDependencyBlockingChange: (value: boolean) => void;
   onSkipVerificationInAutoModeChange: (value: boolean) => void;
-  onUseWorktreesChange: (value: boolean) => void;
   onDefaultPlanningModeChange: (value: PlanningMode) => void;
   onDefaultRequirePlanApprovalChange: (value: boolean) => void;
-  onDefaultAIProfileIdChange: (value: string | null) => void;
+  onEnableAiCommitMessagesChange: (value: boolean) => void;
+  onDefaultFeatureModelChange: (value: PhaseModelEntry) => void;
 }
 
 export function FeatureDefaultsSection({
-  showProfilesOnly,
   defaultSkipTests,
   enableDependencyBlocking,
   skipVerificationInAutoMode,
-  useWorktrees,
   defaultPlanningMode,
   defaultRequirePlanApproval,
-  defaultAIProfileId,
-  aiProfiles,
-  onShowProfilesOnlyChange,
+  enableAiCommitMessages,
+  defaultFeatureModel,
   onDefaultSkipTestsChange,
   onEnableDependencyBlockingChange,
   onSkipVerificationInAutoModeChange,
-  onUseWorktreesChange,
   onDefaultPlanningModeChange,
   onDefaultRequirePlanApprovalChange,
-  onDefaultAIProfileIdChange,
+  onEnableAiCommitMessagesChange,
+  onDefaultFeatureModelChange,
 }: FeatureDefaultsSectionProps) {
-  // Find the selected profile name for display
-  const selectedProfile = defaultAIProfileId
-    ? aiProfiles.find((p) => p.id === defaultAIProfileId)
-    : null;
   return (
     <div
       className={cn(
@@ -90,6 +80,30 @@ export function FeatureDefaultsSection({
         </p>
       </div>
       <div className="p-6 space-y-5">
+        {/* Default Feature Model Setting */}
+        <div className="group flex items-start space-x-3 p-3 rounded-xl hover:bg-accent/30 transition-colors duration-200 -mx-3">
+          <div className="w-10 h-10 mt-0.5 rounded-xl flex items-center justify-center shrink-0 bg-brand-500/10">
+            <Cpu className="w-5 h-5 text-brand-500" />
+          </div>
+          <div className="flex-1 space-y-2">
+            <div className="flex items-center justify-between">
+              <Label className="text-foreground font-medium">Default Model</Label>
+              <PhaseModelSelector
+                value={defaultFeatureModel}
+                onChange={onDefaultFeatureModelChange}
+                compact
+                align="end"
+              />
+            </div>
+            <p className="text-xs text-muted-foreground/80 leading-relaxed">
+              The default AI model and thinking level used when creating new feature cards.
+            </p>
+          </div>
+        </div>
+
+        {/* Separator */}
+        <div className="border-t border-border/30" />
+
         {/* Planning Mode Default */}
         <div className="group flex items-start space-x-3 p-3 rounded-xl hover:bg-accent/30 transition-colors duration-200 -mx-3">
           <div
@@ -187,74 +201,8 @@ export function FeatureDefaultsSection({
                 </p>
               </div>
             </div>
-            <div className="border-t border-border/30" />
           </>
         )}
-
-        {/* Separator */}
-        {defaultPlanningMode === 'skip' && <div className="border-t border-border/30" />}
-
-        {/* Default AI Profile */}
-        <div className="group flex items-start space-x-3 p-3 rounded-xl hover:bg-accent/30 transition-colors duration-200 -mx-3">
-          <div className="w-10 h-10 mt-0.5 rounded-xl flex items-center justify-center shrink-0 bg-brand-500/10">
-            <User className="w-5 h-5 text-brand-500" />
-          </div>
-          <div className="flex-1 space-y-2">
-            <div className="flex items-center justify-between">
-              <Label className="text-foreground font-medium">Default AI Profile</Label>
-              <Select
-                value={defaultAIProfileId ?? 'none'}
-                onValueChange={(v: string) => onDefaultAIProfileIdChange(v === 'none' ? null : v)}
-              >
-                <SelectTrigger className="w-[180px] h-8" data-testid="default-ai-profile-select">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">
-                    <span className="text-muted-foreground">None (pick manually)</span>
-                  </SelectItem>
-                  {aiProfiles.map((profile) => (
-                    <SelectItem key={profile.id} value={profile.id}>
-                      <span>{profile.name}</span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <p className="text-xs text-muted-foreground/80 leading-relaxed">
-              {selectedProfile
-                ? `New features will use the "${selectedProfile.name}" profile (${selectedProfile.model}, ${selectedProfile.thinkingLevel} thinking).`
-                : 'Pre-select an AI profile when creating new features. Choose "None" to pick manually each time.'}
-            </p>
-          </div>
-        </div>
-
-        {/* Separator */}
-        <div className="border-t border-border/30" />
-
-        {/* Profiles Only Setting */}
-        <div className="group flex items-start space-x-3 p-3 rounded-xl hover:bg-accent/30 transition-colors duration-200 -mx-3">
-          <Checkbox
-            id="show-profiles-only"
-            checked={showProfilesOnly}
-            onCheckedChange={(checked) => onShowProfilesOnlyChange(checked === true)}
-            className="mt-1"
-            data-testid="show-profiles-only-checkbox"
-          />
-          <div className="space-y-1.5">
-            <Label
-              htmlFor="show-profiles-only"
-              className="text-foreground cursor-pointer font-medium flex items-center gap-2"
-            >
-              <Settings2 className="w-4 h-4 text-brand-500" />
-              Show profiles only by default
-            </Label>
-            <p className="text-xs text-muted-foreground/80 leading-relaxed">
-              When enabled, the Add Feature dialog will show only AI profiles and hide advanced
-              model tweaking options. This creates a cleaner, less overwhelming UI.
-            </p>
-          </div>
-        </div>
 
         {/* Separator */}
         <div className="border-t border-border/30" />
@@ -342,26 +290,27 @@ export function FeatureDefaultsSection({
         {/* Separator */}
         <div className="border-t border-border/30" />
 
-        {/* Worktree Isolation Setting */}
+        {/* AI Commit Messages Setting */}
         <div className="group flex items-start space-x-3 p-3 rounded-xl hover:bg-accent/30 transition-colors duration-200 -mx-3">
           <Checkbox
-            id="use-worktrees"
-            checked={useWorktrees}
-            onCheckedChange={(checked) => onUseWorktreesChange(checked === true)}
+            id="enable-ai-commit-messages"
+            checked={enableAiCommitMessages}
+            onCheckedChange={(checked) => onEnableAiCommitMessagesChange(checked === true)}
             className="mt-1"
-            data-testid="use-worktrees-checkbox"
+            data-testid="enable-ai-commit-messages-checkbox"
           />
           <div className="space-y-1.5">
             <Label
-              htmlFor="use-worktrees"
+              htmlFor="enable-ai-commit-messages"
               className="text-foreground cursor-pointer font-medium flex items-center gap-2"
             >
-              <GitBranch className="w-4 h-4 text-brand-500" />
-              Enable Git Worktree Isolation
+              <Sparkles className="w-4 h-4 text-brand-500" />
+              Generate AI commit messages
             </Label>
             <p className="text-xs text-muted-foreground/80 leading-relaxed">
-              Creates isolated git branches for each feature. When disabled, agents work directly in
-              the main project directory.
+              When enabled, opening the commit dialog will automatically generate a commit message
+              using AI based on your staged or unstaged changes. You can configure the model used in
+              Model Defaults.
             </p>
           </div>
         </div>

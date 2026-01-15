@@ -5,12 +5,12 @@ import {
   LayoutGrid,
   Bot,
   BookOpen,
-  UserCircle,
   Terminal,
   CircleDot,
   GitPullRequest,
-  Zap,
   Lightbulb,
+  Brain,
+  Network,
 } from 'lucide-react';
 import type { NavSection, NavItem } from '../types';
 import type { KeyboardShortcut } from '@/hooks/use-keyboard-shortcuts';
@@ -26,8 +26,9 @@ interface UseNavigationProps {
     cycleNextProject: string;
     spec: string;
     context: string;
-    profiles: string;
+    memory: string;
     board: string;
+    graph: string;
     agent: string;
     terminal: string;
     settings: string;
@@ -38,18 +39,18 @@ interface UseNavigationProps {
   hideSpecEditor: boolean;
   hideContext: boolean;
   hideTerminal: boolean;
-  hideAiProfiles: boolean;
   currentProject: Project | null;
   projects: Project[];
   projectHistory: string[];
   navigate: (opts: NavigateOptions) => void;
   toggleSidebar: () => void;
   handleOpenFolder: () => void;
-  setIsProjectPickerOpen: (value: boolean | ((prev: boolean) => boolean)) => void;
   cyclePrevProject: () => void;
   cycleNextProject: () => void;
   /** Count of unviewed validations to show on GitHub Issues nav item */
   unviewedValidationsCount?: number;
+  /** Whether spec generation is currently running for the current project */
+  isSpecGenerating?: boolean;
 }
 
 export function useNavigation({
@@ -57,17 +58,16 @@ export function useNavigation({
   hideSpecEditor,
   hideContext,
   hideTerminal,
-  hideAiProfiles,
   currentProject,
   projects,
   projectHistory,
   navigate,
   toggleSidebar,
   handleOpenFolder,
-  setIsProjectPickerOpen,
   cyclePrevProject,
   cycleNextProject,
   unviewedValidationsCount,
+  isSpecGenerating,
 }: UseNavigationProps) {
   // Track if current project has a GitHub remote
   const [hasGitHubRemote, setHasGitHubRemote] = useState(false);
@@ -107,6 +107,7 @@ export function useNavigation({
         label: 'Spec Editor',
         icon: FileText,
         shortcut: shortcuts.spec,
+        isLoading: isSpecGenerating,
       },
       {
         id: 'context',
@@ -115,10 +116,10 @@ export function useNavigation({
         shortcut: shortcuts.context,
       },
       {
-        id: 'profiles',
-        label: 'AI Profiles',
-        icon: UserCircle,
-        shortcut: shortcuts.profiles,
+        id: 'memory',
+        label: 'Memory',
+        icon: Brain,
+        shortcut: shortcuts.memory,
       },
     ];
 
@@ -128,9 +129,6 @@ export function useNavigation({
         return false;
       }
       if (item.id === 'context' && hideContext) {
-        return false;
-      }
-      if (item.id === 'profiles' && hideAiProfiles) {
         return false;
       }
       return true;
@@ -143,6 +141,12 @@ export function useNavigation({
         label: 'Kanban Board',
         icon: LayoutGrid,
         shortcut: shortcuts.board,
+      },
+      {
+        id: 'graph',
+        label: 'Graph View',
+        icon: Network,
+        shortcut: shortcuts.graph,
       },
       {
         id: 'agent',
@@ -201,9 +205,9 @@ export function useNavigation({
     hideSpecEditor,
     hideContext,
     hideTerminal,
-    hideAiProfiles,
     hasGitHubRemote,
     unviewedValidationsCount,
+    isSpecGenerating,
   ]);
 
   // Build keyboard shortcuts for navigation
@@ -223,15 +227,6 @@ export function useNavigation({
       action: () => handleOpenFolder(),
       description: 'Open folder selection dialog',
     });
-
-    // Project picker shortcut - only when we have projects
-    if (projects.length > 0) {
-      shortcutsList.push({
-        key: shortcuts.projectPicker,
-        action: () => setIsProjectPickerOpen((prev) => !prev),
-        description: 'Toggle project picker',
-      });
-    }
 
     // Project cycling shortcuts - only when we have project history
     if (projectHistory.length > 1) {
@@ -282,7 +277,6 @@ export function useNavigation({
     cyclePrevProject,
     cycleNextProject,
     navSections,
-    setIsProjectPickerOpen,
   ]);
 
   return {

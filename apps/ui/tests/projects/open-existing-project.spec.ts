@@ -113,12 +113,13 @@ test.describe('Open Project', () => {
 
     // Now navigate to the app
     await authenticateForTests(page);
-    await page.goto('/');
+    // Navigate directly to dashboard to avoid auto-open which would bypass the project selection
+    await page.goto('/dashboard');
     await page.waitForLoadState('load');
     await handleLoginScreenIfPresent(page);
 
-    // Wait for welcome view to be visible
-    await expect(page.locator('[data-testid="welcome-view"]')).toBeVisible({ timeout: 15000 });
+    // Wait for dashboard view
+    await expect(page.locator('[data-testid="dashboard-view"]')).toBeVisible({ timeout: 15000 });
 
     // Verify we see the "Recent Projects" section
     await expect(page.getByText('Recent Projects')).toBeVisible({ timeout: 5000 });
@@ -135,7 +136,7 @@ test.describe('Open Project', () => {
     if (!isOurProjectVisible) {
       // Our project isn't visible - use the first available recent project card instead
       // This tests the "open recent project" flow even if our specific project didn't get injected
-      const firstProjectCard = page.locator('[data-testid^="recent-project-"]').first();
+      const firstProjectCard = page.locator('[data-testid^="project-card-"]').first();
       await expect(firstProjectCard).toBeVisible({ timeout: 5000 });
       // Get the project name from the card to verify later
       targetProjectName = (await firstProjectCard.locator('p').first().textContent()) || '';
@@ -147,10 +148,19 @@ test.describe('Open Project', () => {
     // Wait for the board view to appear (project was opened)
     await expect(page.locator('[data-testid="board-view"]')).toBeVisible({ timeout: 15000 });
 
+    // Expand sidebar if collapsed to see project name
+    const expandSidebarButton = page.locator('button:has-text("Expand sidebar")');
+    if (await expandSidebarButton.isVisible()) {
+      await expandSidebarButton.click();
+      await page.waitForTimeout(300);
+    }
+
     // Wait for a project to be set as current and visible on the page
-    // The project name appears in multiple places: project-selector, board header paragraph, etc.
+    // The project name appears in the sidebar project selector button
     if (targetProjectName) {
-      await expect(page.getByText(targetProjectName).first()).toBeVisible({ timeout: 15000 });
+      await expect(page.getByRole('button', { name: new RegExp(targetProjectName) })).toBeVisible({
+        timeout: 15000,
+      });
     }
 
     // Only verify filesystem if we opened our specific test project

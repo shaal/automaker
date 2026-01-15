@@ -152,7 +152,8 @@ export async function navigateToSetup(page: Page): Promise<void> {
 }
 
 /**
- * Navigate to the welcome view (clear project selection)
+ * Navigate to the welcome/dashboard view (clear project selection)
+ * Note: The app redirects from / to /dashboard when no project is selected
  */
 export async function navigateToWelcome(page: Page): Promise<void> {
   // Authenticate before navigating
@@ -167,7 +168,11 @@ export async function navigateToWelcome(page: Page): Promise<void> {
   // Handle login redirect if needed
   await handleLoginScreenIfPresent(page);
 
-  await waitForElement(page, 'welcome-view', { timeout: 10000 });
+  // Wait for either welcome-view or dashboard-view (app redirects to /dashboard when no project)
+  await page
+    .locator('[data-testid="welcome-view"], [data-testid="dashboard-view"]')
+    .first()
+    .waitFor({ state: 'visible', timeout: 10000 });
 }
 
 /**

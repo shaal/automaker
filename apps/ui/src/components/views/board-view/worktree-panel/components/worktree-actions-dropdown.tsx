@@ -6,13 +6,15 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   DropdownMenuLabel,
+  DropdownMenuSub,
+  DropdownMenuSubTrigger,
+  DropdownMenuSubContent,
 } from '@/components/ui/dropdown-menu';
 import {
   Trash2,
   MoreHorizontal,
   GitCommit,
   GitPullRequest,
-  ExternalLink,
   Download,
   Upload,
   Play,
@@ -21,15 +23,20 @@ import {
   MessageSquare,
   GitMerge,
   AlertCircle,
+  RefreshCw,
+  Copy,
+  ScrollText,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import type { WorktreeInfo, DevServerInfo, PRInfo, GitRepoStatus } from '../types';
 import { TooltipWrapper } from './tooltip-wrapper';
+import { useAvailableEditors, useEffectiveDefaultEditor } from '../hooks/use-available-editors';
+import { getEditorIcon } from '@/components/icons/editor-icons';
 
 interface WorktreeActionsDropdownProps {
   worktree: WorktreeInfo;
   isSelected: boolean;
-  defaultEditorName: string;
   aheadCount: number;
   behindCount: number;
   isPulling: boolean;
@@ -38,24 +45,29 @@ interface WorktreeActionsDropdownProps {
   isDevServerRunning: boolean;
   devServerInfo?: DevServerInfo;
   gitRepoStatus: GitRepoStatus;
+  /** When true, renders as a standalone button (not attached to another element) */
+  standalone?: boolean;
   onOpenChange: (open: boolean) => void;
   onPull: (worktree: WorktreeInfo) => void;
   onPush: (worktree: WorktreeInfo) => void;
-  onOpenInEditor: (worktree: WorktreeInfo) => void;
+  onOpenInEditor: (worktree: WorktreeInfo, editorCommand?: string) => void;
   onCommit: (worktree: WorktreeInfo) => void;
   onCreatePR: (worktree: WorktreeInfo) => void;
   onAddressPRComments: (worktree: WorktreeInfo, prInfo: PRInfo) => void;
   onResolveConflicts: (worktree: WorktreeInfo) => void;
+  onMerge: (worktree: WorktreeInfo) => void;
   onDeleteWorktree: (worktree: WorktreeInfo) => void;
   onStartDevServer: (worktree: WorktreeInfo) => void;
   onStopDevServer: (worktree: WorktreeInfo) => void;
   onOpenDevServerUrl: (worktree: WorktreeInfo) => void;
+  onViewDevServerLogs: (worktree: WorktreeInfo) => void;
+  onRunInitScript: (worktree: WorktreeInfo) => void;
+  hasInitScript: boolean;
 }
 
 export function WorktreeActionsDropdown({
   worktree,
   isSelected,
-  defaultEditorName,
   aheadCount,
   behindCount,
   isPulling,
@@ -64,6 +76,7 @@ export function WorktreeActionsDropdown({
   isDevServerRunning,
   devServerInfo,
   gitRepoStatus,
+  standalone = false,
   onOpenChange,
   onPull,
   onPush,
@@ -72,11 +85,29 @@ export function WorktreeActionsDropdown({
   onCreatePR,
   onAddressPRComments,
   onResolveConflicts,
+  onMerge,
   onDeleteWorktree,
   onStartDevServer,
   onStopDevServer,
   onOpenDevServerUrl,
+  onViewDevServerLogs,
+  onRunInitScript,
+  hasInitScript,
 }: WorktreeActionsDropdownProps) {
+  // Get available editors for the "Open In" submenu
+  const { editors } = useAvailableEditors();
+
+  // Use shared hook for effective default editor
+  const effectiveDefaultEditor = useEffectiveDefaultEditor(editors);
+
+  // Get other editors (excluding the default) for the submenu
+  const otherEditors = editors.filter((e) => e.command !== effectiveDefaultEditor?.command);
+
+  // Get icon component for the effective editor (avoid IIFE in JSX)
+  const DefaultEditorIcon = effectiveDefaultEditor
+    ? getEditorIcon(effectiveDefaultEditor.command)
+    : null;
+
   // Check if there's a PR associated with this worktree from stored metadata
   const hasPR = !!worktree.pr;
 
@@ -92,15 +123,17 @@ export function WorktreeActionsDropdown({
     <DropdownMenu onOpenChange={onOpenChange}>
       <DropdownMenuTrigger asChild>
         <Button
-          variant={isSelected ? 'default' : 'outline'}
+          variant={standalone ? 'outline' : isSelected ? 'default' : 'outline'}
           size="sm"
           className={cn(
-            'h-7 w-7 p-0 rounded-l-none',
-            isSelected && 'bg-primary text-primary-foreground',
-            !isSelected && 'bg-secondary/50 hover:bg-secondary'
+            'h-7 w-7 p-0',
+            !standalone && 'rounded-l-none',
+            standalone && 'h-8 w-8 shrink-0',
+            !standalone && isSelected && 'bg-primary text-primary-foreground',
+            !standalone && !isSelected && 'bg-secondary/50 hover:bg-secondary'
           )}
         >
-          <MoreHorizontal className="w-3 h-3" />
+          <MoreHorizontal className="w-3.5 h-3.5" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-56">
@@ -120,9 +153,17 @@ export function WorktreeActionsDropdown({
               <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
               Dev Server Running (:{devServerInfo?.port})
             </DropdownMenuLabel>
-            <DropdownMenuItem onClick={() => onOpenDevServerUrl(worktree)} className="text-xs">
-              <Globe className="w-3.5 h-3.5 mr-2" />
+            <DropdownMenuItem
+              onClick={() => onOpenDevServerUrl(worktree)}
+              className="text-xs"
+              aria-label={`Open dev server on port ${devServerInfo?.port} in browser`}
+            >
+              <Globe className="w-3.5 h-3.5 mr-2" aria-hidden="true" />
               Open in Browser
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onViewDevServerLogs(worktree)} className="text-xs">
+              <ScrollText className="w-3.5 h-3.5 mr-2" />
+              View Logs
             </DropdownMenuItem>
             <DropdownMenuItem
               onClick={() => onStopDevServer(worktree)}
@@ -178,21 +219,35 @@ export function WorktreeActionsDropdown({
             )}
           </DropdownMenuItem>
         </TooltipWrapper>
+        <TooltipWrapper showTooltip={!!gitOpsDisabledReason} tooltipContent={gitOpsDisabledReason}>
+          <DropdownMenuItem
+            onClick={() => canPerformGitOps && onResolveConflicts(worktree)}
+            disabled={!canPerformGitOps}
+            className={cn(
+              'text-xs text-purple-500 focus:text-purple-600',
+              !canPerformGitOps && 'opacity-50 cursor-not-allowed'
+            )}
+          >
+            <GitMerge className="w-3.5 h-3.5 mr-2" />
+            Pull & Resolve Conflicts
+            {!canPerformGitOps && <AlertCircle className="w-3 h-3 ml-auto text-muted-foreground" />}
+          </DropdownMenuItem>
+        </TooltipWrapper>
         {!worktree.isMain && (
           <TooltipWrapper
             showTooltip={!!gitOpsDisabledReason}
             tooltipContent={gitOpsDisabledReason}
           >
             <DropdownMenuItem
-              onClick={() => canPerformGitOps && onResolveConflicts(worktree)}
+              onClick={() => canPerformGitOps && onMerge(worktree)}
               disabled={!canPerformGitOps}
               className={cn(
-                'text-xs text-purple-500 focus:text-purple-600',
+                'text-xs text-green-600 focus:text-green-700',
                 !canPerformGitOps && 'opacity-50 cursor-not-allowed'
               )}
             >
               <GitMerge className="w-3.5 h-3.5 mr-2" />
-              Pull & Resolve Conflicts
+              Merge to Main
               {!canPerformGitOps && (
                 <AlertCircle className="w-3 h-3 ml-auto text-muted-foreground" />
               )}
@@ -200,10 +255,60 @@ export function WorktreeActionsDropdown({
           </TooltipWrapper>
         )}
         <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={() => onOpenInEditor(worktree)} className="text-xs">
-          <ExternalLink className="w-3.5 h-3.5 mr-2" />
-          Open in {defaultEditorName}
-        </DropdownMenuItem>
+        {/* Open in editor - split button: click main area for default, chevron for other options */}
+        {effectiveDefaultEditor && (
+          <DropdownMenuSub>
+            <div className="flex items-center">
+              {/* Main clickable area - opens in default editor */}
+              <DropdownMenuItem
+                onClick={() => onOpenInEditor(worktree, effectiveDefaultEditor.command)}
+                className="text-xs flex-1 pr-0 rounded-r-none"
+              >
+                {DefaultEditorIcon && <DefaultEditorIcon className="w-3.5 h-3.5 mr-2" />}
+                Open in {effectiveDefaultEditor.name}
+              </DropdownMenuItem>
+              {/* Chevron trigger for submenu with other editors and Copy Path */}
+              <DropdownMenuSubTrigger className="text-xs px-1 rounded-l-none border-l border-border/30 h-8" />
+            </div>
+            <DropdownMenuSubContent>
+              {/* Other editors */}
+              {otherEditors.map((editor) => {
+                const EditorIcon = getEditorIcon(editor.command);
+                return (
+                  <DropdownMenuItem
+                    key={editor.command}
+                    onClick={() => onOpenInEditor(worktree, editor.command)}
+                    className="text-xs"
+                  >
+                    <EditorIcon className="w-3.5 h-3.5 mr-2" />
+                    {editor.name}
+                  </DropdownMenuItem>
+                );
+              })}
+              {otherEditors.length > 0 && <DropdownMenuSeparator />}
+              <DropdownMenuItem
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(worktree.path);
+                    toast.success('Path copied to clipboard');
+                  } catch {
+                    toast.error('Failed to copy path to clipboard');
+                  }
+                }}
+                className="text-xs"
+              >
+                <Copy className="w-3.5 h-3.5 mr-2" />
+                Copy Path
+              </DropdownMenuItem>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        )}
+        {!worktree.isMain && hasInitScript && (
+          <DropdownMenuItem onClick={() => onRunInitScript(worktree)} className="text-xs">
+            <RefreshCw className="w-3.5 h-3.5 mr-2" />
+            Re-run Init Script
+          </DropdownMenuItem>
+        )}
         <DropdownMenuSeparator />
         {worktree.hasChanges && (
           <TooltipWrapper
@@ -243,11 +348,11 @@ export function WorktreeActionsDropdown({
           </TooltipWrapper>
         )}
         {/* Show PR info and Address Comments button if PR exists */}
-        {!worktree.isMain && hasPR && worktree.pr && (
+        {hasPR && worktree.pr && (
           <>
             <DropdownMenuItem
               onClick={() => {
-                window.open(worktree.pr!.url, '_blank');
+                window.open(worktree.pr!.url, '_blank', 'noopener,noreferrer');
               }}
               className="text-xs"
             >

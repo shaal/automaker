@@ -79,7 +79,6 @@ export const TEST_IDS = {
   navSpec: 'nav-spec',
   navContext: 'nav-context',
   navAgent: 'nav-agent',
-  navProfiles: 'nav-profiles',
   settingsButton: 'settings-button',
   openProjectButton: 'open-project-button',
 
@@ -88,9 +87,9 @@ export const TEST_IDS = {
   specView: 'spec-view',
   contextView: 'context-view',
   agentView: 'agent-view',
-  profilesView: 'profiles-view',
   settingsView: 'settings-view',
   welcomeView: 'welcome-view',
+  dashboardView: 'dashboard-view',
   setupView: 'setup-view',
 
   // Board View Components
@@ -107,18 +106,6 @@ export const TEST_IDS = {
   // File Browser Dialog
   pathInput: 'path-input',
   goToPathButton: 'go-to-path-button',
-
-  // Profiles View
-  addProfileButton: 'add-profile-button',
-  addProfileDialog: 'add-profile-dialog',
-  editProfileDialog: 'edit-profile-dialog',
-  deleteProfileConfirmDialog: 'delete-profile-confirm-dialog',
-  saveProfileButton: 'save-profile-button',
-  confirmDeleteProfileButton: 'confirm-delete-profile-button',
-  cancelDeleteButton: 'cancel-delete-button',
-  profileNameInput: 'profile-name-input',
-  profileDescriptionInput: 'profile-description-input',
-  refreshProfilesButton: 'refresh-profiles-button',
 
   // Context View
   contextFileList: 'context-file-list',

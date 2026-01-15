@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo } from 'react';
 import { useAppStore } from '@/store/app-store';
-import type { ModelAlias, CursorModelId, PhaseModelKey, PhaseModelEntry } from '@automaker/types';
+import type { ModelId, PhaseModelKey, PhaseModelEntry } from '@automaker/types';
 import { DEFAULT_PHASE_MODELS } from '@automaker/types';
 
 export interface UseModelOverrideOptions {
@@ -14,7 +14,7 @@ export interface UseModelOverrideResult {
   /** The effective model entry (override or global default) */
   effectiveModelEntry: PhaseModelEntry;
   /** The effective model string (for backward compatibility with APIs that only accept strings) */
-  effectiveModel: ModelAlias | CursorModelId;
+  effectiveModel: ModelId;
   /** Whether the model is currently overridden */
   isOverridden: boolean;
   /** Set a model override */
@@ -32,7 +32,7 @@ export interface UseModelOverrideResult {
  */
 function normalizeEntry(entry: PhaseModelEntry | string): PhaseModelEntry {
   if (typeof entry === 'string') {
-    return { model: entry as ModelAlias | CursorModelId };
+    return { model: entry as ModelId };
   }
   return entry;
 }
@@ -40,9 +40,9 @@ function normalizeEntry(entry: PhaseModelEntry | string): PhaseModelEntry {
 /**
  * Extract model string from PhaseModelEntry or string
  */
-function extractModel(entry: PhaseModelEntry | string): ModelAlias | CursorModelId {
+function extractModel(entry: PhaseModelEntry | string): ModelId {
   if (typeof entry === 'string') {
-    return entry as ModelAlias | CursorModelId;
+    return entry as ModelId;
   }
   return entry.model;
 }

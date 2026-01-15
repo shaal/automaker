@@ -8,12 +8,28 @@ import type { Request, Response, NextFunction } from 'express';
 import { validatePath, PathNotAllowedError } from '@automaker/platform';
 
 /**
- * Creates a middleware that validates specified path parameters in req.body
+ * Helper to get parameter value from request (checks body first, then query)
+ */
+function getParamValue(req: Request, paramName: string): unknown {
+  // Check body first (for POST/PUT/PATCH requests)
+  if (req.body && req.body[paramName] !== undefined) {
+    return req.body[paramName];
+  }
+  // Fall back to query params (for GET requests)
+  if (req.query && req.query[paramName] !== undefined) {
+    return req.query[paramName];
+  }
+  return undefined;
+}
+
+/**
+ * Creates a middleware that validates specified path parameters in req.body or req.query
  * @param paramNames - Names of parameters to validate (e.g., 'projectPath', 'worktreePath')
  * @example
  * router.post('/create', validatePathParams('projectPath'), handler);
  * router.post('/delete', validatePathParams('projectPath', 'worktreePath'), handler);
  * router.post('/send', validatePathParams('workingDirectory?', 'imagePaths[]'), handler);
+ * router.get('/logs', validatePathParams('worktreePath'), handler); // Works with query params too
  *
  * Special syntax:
  * - 'paramName?' - Optional parameter (only validated if present)
@@ -26,8 +42,8 @@ export function validatePathParams(...paramNames: string[]) {
         // Handle optional parameters (paramName?)
         if (paramName.endsWith('?')) {
           const actualName = paramName.slice(0, -1);
-          const value = req.body[actualName];
-          if (value) {
+          const value = getParamValue(req, actualName);
+          if (value && typeof value === 'string') {
             validatePath(value);
           }
           continue;
@@ -36,18 +52,20 @@ export function validatePathParams(...paramNames: string[]) {
         // Handle array parameters (paramName[])
         if (paramName.endsWith('[]')) {
           const actualName = paramName.slice(0, -2);
-          const values = req.body[actualName];
+          const values = getParamValue(req, actualName);
           if (Array.isArray(values) && values.length > 0) {
             for (const value of values) {
-              validatePath(value);
+              if (typeof value === 'string') {
+                validatePath(value);
+              }
             }
           }
           continue;
         }
 
         // Handle regular parameters
-        const value = req.body[paramName];
-        if (value) {
+        const value = getParamValue(req, paramName);
+        if (value && typeof value === 'string') {
           validatePath(value);
         }
       }

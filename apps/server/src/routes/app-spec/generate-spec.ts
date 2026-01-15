@@ -5,8 +5,6 @@
  * (defaults to Opus for high-quality specification generation).
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import path from 'path';
 import * as secureFs from '../../lib/secure-fs.js';
 import type { EventEmitter } from '../../lib/events.js';
 import {
@@ -16,12 +14,10 @@ import {
   type SpecOutput,
 } from '../../lib/app-spec-format.js';
 import { createLogger } from '@automaker/utils';
-import { DEFAULT_PHASE_MODELS, isCursorModel, stripProviderPrefix } from '@automaker/types';
+import { DEFAULT_PHASE_MODELS, isCursorModel } from '@automaker/types';
 import { resolvePhaseModel } from '@automaker/model-resolver';
-import { createSpecGenerationOptions } from '../../lib/sdk-options.js';
 import { extractJson } from '../../lib/json-extractor.js';
-import { ProviderFactory } from '../../providers/provider-factory.js';
-import { logAuthStatus } from './common.js';
+import { streamingQuery } from '../../providers/simple-query-service.js';
 import { generateFeaturesFromSpec } from './generate-features-from-spec.js';
 import { ensureAutomakerDir, getAppSpecPath } from '@automaker/platform';
 import type { SettingsService } from '../../services/settings-service.js';
@@ -109,21 +105,15 @@ ${getStructuredSpecPromptInstruction()}`;
   logger.info('Using model:', model);
 
   let responseText = '';
-  let messageCount = 0;
   let structuredOutput: SpecOutput | null = null;
 
-  // Route to appropriate provider based on model type
-  if (isCursorModel(model)) {
-    // Use Cursor provider for Cursor models
-    logger.info('[SpecGeneration] Using Cursor provider');
+  // Determine if we should use structured output (Claude supports it, Cursor doesn't)
+  const useStructuredOutput = !isCursorModel(model);
 
-    const provider = ProviderFactory.getProviderForModel(model);
-    // Strip provider prefix - providers expect bare model IDs
-    const bareModel = stripProviderPrefix(model);
-
-    // For Cursor, include the JSON schema in the prompt with clear instructions
-    // to return JSON in the response (not write to a file)
-    const cursorPrompt = `${prompt}
+  // Build the final prompt - for Cursor, include JSON schema instructions
+  let finalPrompt = prompt;
+  if (!useStructuredOutput) {
+    finalPrompt = `${prompt}
 
 CRITICAL INSTRUCTIONS:
 1. DO NOT write any files. DO NOT create any files like "project_specification.json".
@@ -133,153 +123,57 @@ CRITICAL INSTRUCTIONS:
 ${JSON.stringify(specOutputSchema, null, 2)}
 
 Your entire response should be valid JSON starting with { and ending with }. No text before or after.`;
-
-    for await (const msg of provider.executeQuery({
-      prompt: cursorPrompt,
-      model: bareModel,
-      cwd: projectPath,
-      maxTurns: 250,
-      allowedTools: ['Read', 'Glob', 'Grep'],
-      abortController,
-      readOnly: true, // Spec generation only reads code, we write the spec ourselves
-    })) {
-      messageCount++;
-
-      if (msg.type === 'assistant' && msg.message?.content) {
-        for (const block of msg.message.content) {
-          if (block.type === 'text' && block.text) {
-            responseText += block.text;
-            logger.info(
-              `Text block received (${block.text.length} chars), total now: ${responseText.length} chars`
-            );
-            events.emit('spec-regeneration:event', {
-              type: 'spec_regeneration_progress',
-              content: block.text,
-              projectPath: projectPath,
-            });
-          } else if (block.type === 'tool_use') {
-            logger.info('Tool use:', block.name);
-            events.emit('spec-regeneration:event', {
-              type: 'spec_tool',
-              tool: block.name,
-              input: block.input,
-            });
-          }
-        }
-      } else if (msg.type === 'result' && msg.subtype === 'success' && msg.result) {
-        // Use result if it's a final accumulated message
-        if (msg.result.length > responseText.length) {
-          responseText = msg.result;
-        }
-      }
-    }
-
-    // Parse JSON from the response text using shared utility
-    if (responseText) {
-      structuredOutput = extractJson<SpecOutput>(responseText, { logger });
-    }
-  } else {
-    // Use Claude SDK for Claude models
-    logger.info('[SpecGeneration] Using Claude SDK');
-
-    const options = createSpecGenerationOptions({
-      cwd: projectPath,
-      abortController,
-      autoLoadClaudeMd,
-      model,
-      thinkingLevel, // Pass thinking level for extended thinking
-      outputFormat: {
-        type: 'json_schema',
-        schema: specOutputSchema,
-      },
-    });
-
-    logger.debug('SDK Options:', JSON.stringify(options, null, 2));
-    logger.info('Calling Claude Agent SDK query()...');
-
-    // Log auth status right before the SDK call
-    logAuthStatus('Right before SDK query()');
-
-    let stream;
-    try {
-      stream = query({ prompt, options });
-      logger.debug('query() returned stream successfully');
-    } catch (queryError) {
-      logger.error('❌ query() threw an exception:');
-      logger.error('Error:', queryError);
-      throw queryError;
-    }
-
-    logger.info('Starting to iterate over stream...');
-
-    try {
-      for await (const msg of stream) {
-        messageCount++;
-        logger.info(
-          `Stream message #${messageCount}: type=${msg.type}, subtype=${(msg as any).subtype}`
-        );
-
-        if (msg.type === 'assistant') {
-          const msgAny = msg as any;
-          if (msgAny.message?.content) {
-            for (const block of msgAny.message.content) {
-              if (block.type === 'text') {
-                responseText += block.text;
-                logger.info(
-                  `Text block received (${block.text.length} chars), total now: ${responseText.length} chars`
-                );
-                events.emit('spec-regeneration:event', {
-                  type: 'spec_regeneration_progress',
-                  content: block.text,
-                  projectPath: projectPath,
-                });
-              } else if (block.type === 'tool_use') {
-                logger.info('Tool use:', block.name);
-                events.emit('spec-regeneration:event', {
-                  type: 'spec_tool',
-                  tool: block.name,
-                  input: block.input,
-                });
-              }
-            }
-          }
-        } else if (msg.type === 'result' && (msg as any).subtype === 'success') {
-          logger.info('Received success result');
-          // Check for structured output - this is the reliable way to get spec data
-          const resultMsg = msg as any;
-          if (resultMsg.structured_output) {
-            structuredOutput = resultMsg.structured_output as SpecOutput;
-            logger.info('✅ Received structured output');
-            logger.debug('Structured output:', JSON.stringify(structuredOutput, null, 2));
-          } else {
-            logger.warn('⚠️ No structured output in result, will fall back to text parsing');
-          }
-        } else if (msg.type === 'result') {
-          // Handle error result types
-          const subtype = (msg as any).subtype;
-          logger.info(`Result message: subtype=${subtype}`);
-          if (subtype === 'error_max_turns') {
-            logger.error('❌ Hit max turns limit!');
-          } else if (subtype === 'error_max_structured_output_retries') {
-            logger.error('❌ Failed to produce valid structured output after retries');
-            throw new Error('Could not produce valid spec output');
-          }
-        } else if ((msg as { type: string }).type === 'error') {
-          logger.error('❌ Received error message from stream:');
-          logger.error('Error message:', JSON.stringify(msg, null, 2));
-        } else if (msg.type === 'user') {
-          // Log user messages (tool results)
-          logger.info(`User message (tool result): ${JSON.stringify(msg).substring(0, 500)}`);
-        }
-      }
-    } catch (streamError) {
-      logger.error('❌ Error while iterating stream:');
-      logger.error('Stream error:', streamError);
-      throw streamError;
-    }
   }
 
-  logger.info(`Stream iteration complete. Total messages: ${messageCount}`);
+  // Use streamingQuery with event callbacks
+  const result = await streamingQuery({
+    prompt: finalPrompt,
+    model,
+    cwd: projectPath,
+    maxTurns: 250,
+    allowedTools: ['Read', 'Glob', 'Grep'],
+    abortController,
+    thinkingLevel,
+    readOnly: true, // Spec generation only reads code, we write the spec ourselves
+    settingSources: autoLoadClaudeMd ? ['user', 'project', 'local'] : undefined,
+    outputFormat: useStructuredOutput
+      ? {
+          type: 'json_schema',
+          schema: specOutputSchema,
+        }
+      : undefined,
+    onText: (text) => {
+      responseText += text;
+      logger.info(
+        `Text block received (${text.length} chars), total now: ${responseText.length} chars`
+      );
+      events.emit('spec-regeneration:event', {
+        type: 'spec_regeneration_progress',
+        content: text,
+        projectPath: projectPath,
+      });
+    },
+    onToolUse: (tool, input) => {
+      logger.info('Tool use:', tool);
+      events.emit('spec-regeneration:event', {
+        type: 'spec_tool',
+        tool,
+        input,
+      });
+    },
+  });
+
+  // Get structured output if available
+  if (result.structured_output) {
+    structuredOutput = result.structured_output as unknown as SpecOutput;
+    logger.info('✅ Received structured output');
+    logger.debug('Structured output:', JSON.stringify(structuredOutput, null, 2));
+  } else if (!useStructuredOutput && responseText) {
+    // For non-Claude providers, parse JSON from response text
+    structuredOutput = extractJson<SpecOutput>(responseText, { logger });
+  }
+
+  logger.info(`Stream iteration complete.`);
   logger.info(`Response text length: ${responseText.length} chars`);
 
   // Determine XML content to save

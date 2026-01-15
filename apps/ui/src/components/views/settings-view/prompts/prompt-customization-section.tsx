@@ -12,6 +12,7 @@ import {
   RotateCcw,
   Info,
   AlertTriangle,
+  GitCommitHorizontal,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { PromptCustomization, CustomPrompt } from '@automaker/types';
@@ -20,6 +21,7 @@ import {
   DEFAULT_AGENT_PROMPTS,
   DEFAULT_BACKLOG_PLAN_PROMPTS,
   DEFAULT_ENHANCEMENT_PROMPTS,
+  DEFAULT_COMMIT_MESSAGE_PROMPTS,
 } from '@automaker/prompts';
 
 interface PromptCustomizationSectionProps {
@@ -219,7 +221,7 @@ export function PromptCustomizationSection({
       {/* Tabs */}
       <div className="p-6">
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="grid grid-cols-4 w-full">
+          <TabsList className="grid grid-cols-5 w-full">
             <TabsTrigger value="auto-mode" className="gap-2">
               <Bot className="w-4 h-4" />
               Auto Mode
@@ -235,6 +237,10 @@ export function PromptCustomizationSection({
             <TabsTrigger value="enhancement" className="gap-2">
               <Sparkles className="w-4 h-4" />
               Enhancement
+            </TabsTrigger>
+            <TabsTrigger value="commit-message" className="gap-2">
+              <GitCommitHorizontal className="w-4 h-4" />
+              Commit
             </TabsTrigger>
           </TabsList>
 
@@ -429,6 +435,44 @@ export function PromptCustomizationSection({
                 customValue={promptCustomization?.enhancement?.acceptanceSystemPrompt}
                 onCustomValueChange={(value) =>
                   updatePrompt('enhancement', 'acceptanceSystemPrompt', value)
+                }
+              />
+
+              <PromptField
+                label="User Experience Mode"
+                description="Review and enhance from a user experience and design perspective"
+                defaultValue={DEFAULT_ENHANCEMENT_PROMPTS.uxReviewerSystemPrompt}
+                customValue={promptCustomization?.enhancement?.uxReviewerSystemPrompt}
+                onCustomValueChange={(value) =>
+                  updatePrompt('enhancement', 'uxReviewerSystemPrompt', value)
+                }
+              />
+            </div>
+          </TabsContent>
+
+          {/* Commit Message Tab */}
+          <TabsContent value="commit-message" className="space-y-6 mt-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-medium text-foreground">Commit Message Prompts</h3>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => resetToDefaults('commitMessage')}
+                className="gap-2"
+              >
+                <RotateCcw className="w-3 h-3" />
+                Reset Section
+              </Button>
+            </div>
+
+            <div className="space-y-4">
+              <PromptField
+                label="System Prompt"
+                description="Instructions for generating git commit messages from diffs. The AI will receive the git diff and generate a conventional commit message."
+                defaultValue={DEFAULT_COMMIT_MESSAGE_PROMPTS.systemPrompt}
+                customValue={promptCustomization?.commitMessage?.systemPrompt}
+                onCustomValueChange={(value) =>
+                  updatePrompt('commitMessage', 'systemPrompt', value)
                 }
               />
             </div>

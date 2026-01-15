@@ -48,7 +48,7 @@ export function AddEditServerDialog({
             Configure an MCP server to extend agent capabilities with custom tools.
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-4 py-4">
+        <div className="space-y-4 py-4 overflow-y-auto">
           <div className="space-y-2">
             <Label htmlFor="server-name">Name</Label>
             <Input

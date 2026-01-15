@@ -2,6 +2,7 @@ import { spawn } from 'child_process';
 import * as os from 'os';
 import * as pty from 'node-pty';
 import { ClaudeUsage } from '../routes/claude/types.js';
+import { createLogger } from '@automaker/utils';
 
 /**
  * Claude Usage Service
@@ -14,6 +15,8 @@ import { ClaudeUsage } from '../routes/claude/types.js';
  * - macOS: Uses 'expect' command for PTY
  * - Windows/Linux: Uses node-pty for PTY
  */
+const logger = createLogger('ClaudeUsage');
+
 export class ClaudeUsageService {
   private claudeBinary = 'claude';
   private timeout = 30000; // 30 second timeout
@@ -46,13 +49,11 @@ export class ClaudeUsageService {
 
   /**
    * Execute the claude /usage command and return the output
-   * Uses platform-specific PTY implementation
+   * Uses node-pty on all platforms for consistency
    */
   private executeClaudeUsageCommand(): Promise<string> {
-    if (this.isWindows || this.isLinux) {
-      return this.executeClaudeUsageCommandPty();
-    }
-    return this.executeClaudeUsageCommandMac();
+    // Use node-pty on all platforms - it's more reliable than expect on macOS
+    return this.executeClaudeUsageCommandPty();
   }
 
   /**
@@ -64,24 +65,36 @@ export class ClaudeUsageService {
       let stderr = '';
       let settled = false;
 
-      // Use a simple working directory (home or tmp)
-      const workingDirectory = process.env.HOME || '/tmp';
+      // Use current working directory - likely already trusted by Claude CLI
+      const workingDirectory = process.cwd();
 
       // Use 'expect' with an inline script to run claude /usage with a PTY
-      // Wait for "Current session" header, then wait for full output before exiting
+      // Running from cwd which should already be trusted
       const expectScript = `
-        set timeout 20
+        set timeout 30
         spawn claude /usage
+
+        # Wait for usage data or handle trust prompt if needed
         expect {
-          "Current session" {
-            sleep 2
-            send "\\x1b"
+          -re "Ready to code|permission to work|Do you want to work" {
+            # Trust prompt appeared - send Enter to approve
+            sleep 1
+            send "\\r"
+            exp_continue
           }
-          "Esc to cancel" {
+          "Current session" {
+            # Usage data appeared - wait for full output, then exit
             sleep 3
             send "\\x1b"
           }
-          timeout {}
+          "% left" {
+            # Usage percentage appeared
+            sleep 3
+            send "\\x1b"
+          }
+          timeout {
+            send "\\x1b"
+          }
           eof {}
         }
         expect eof
@@ -155,77 +168,190 @@ export class ClaudeUsageService {
       let output = '';
       let settled = false;
       let hasSeenUsageData = false;
+      let hasSeenTrustPrompt = false;
 
-      const workingDirectory = this.isWindows
-        ? process.env.USERPROFILE || os.homedir() || 'C:\\'
-        : process.env.HOME || os.homedir() || '/tmp';
+      // Use current working directory (project dir) - most likely already trusted by Claude CLI
+      const workingDirectory = process.cwd();
 
       // Use platform-appropriate shell and command
       const shell = this.isWindows ? 'cmd.exe' : '/bin/sh';
-      const args = this.isWindows ? ['/c', 'claude', '/usage'] : ['-c', 'claude /usage'];
+      // Use --add-dir to whitelist the current directory and bypass the trust prompt
+      // We don't pass /usage here, we'll type it into the REPL
+      const args = this.isWindows
+        ? ['/c', 'claude', '--add-dir', workingDirectory]
+        : ['-c', `claude --add-dir "${workingDirectory}"`];
 
-      const ptyProcess = pty.spawn(shell, args, {
-        name: 'xterm-256color',
-        cols: 120,
-        rows: 30,
-        cwd: workingDirectory,
-        env: {
-          ...process.env,
-          TERM: 'xterm-256color',
-        } as Record<string, string>,
-      });
+      let ptyProcess: any = null;
+
+      try {
+        ptyProcess = pty.spawn(shell, args, {
+          name: 'xterm-256color',
+          cols: 120,
+          rows: 30,
+          cwd: workingDirectory,
+          env: {
+            ...process.env,
+            TERM: 'xterm-256color',
+          } as Record<string, string>,
+        });
+      } catch (spawnError) {
+        const errorMessage = spawnError instanceof Error ? spawnError.message : String(spawnError);
+        logger.error('[executeClaudeUsageCommandPty] Failed to spawn PTY:', errorMessage);
+
+        // Return a user-friendly error instead of crashing
+        reject(
+          new Error(
+            `Unable to access terminal: ${errorMessage}. Claude CLI may not be available or PTY support is limited in this environment.`
+          )
+        );
+        return;
+      }
 
       const timeoutId = setTimeout(() => {
         if (!settled) {
           settled = true;
-          ptyProcess.kill();
+          if (ptyProcess && !ptyProcess.killed) {
+            ptyProcess.kill();
+          }
           // Don't fail if we have data - return it instead
           if (output.includes('Current session')) {
             resolve(output);
+          } else if (hasSeenTrustPrompt) {
+            // Trust prompt was shown but we couldn't auto-approve it
+            reject(
+              new Error(
+                'TRUST_PROMPT_PENDING: Claude CLI is waiting for folder permission. Please run "claude" in your terminal and approve access to continue.'
+              )
+            );
           } else {
-            reject(new Error('Command timed out'));
+            reject(
+              new Error(
+                'The Claude CLI took too long to respond. This can happen if the CLI is waiting for a trust prompt or is otherwise busy.'
+              )
+            );
           }
         }
-      }, this.timeout);
+      }, 45000); // 45 second timeout
 
-      ptyProcess.onData((data) => {
+      let hasSentCommand = false;
+      let hasApprovedTrust = false;
+
+      ptyProcess.onData((data: string) => {
         output += data;
 
-        // Check if we've seen the usage data (look for "Current session")
-        if (!hasSeenUsageData && output.includes('Current session')) {
+        // Strip ANSI codes for easier matching
+        // eslint-disable-next-line no-control-regex
+        const cleanOutput = output.replace(/\x1B\[[0-9;]*[A-Za-z]/g, '');
+
+        // Check for specific authentication/permission errors
+        if (
+          cleanOutput.includes('OAuth token does not meet scope requirement') ||
+          cleanOutput.includes('permission_error') ||
+          cleanOutput.includes('token_expired') ||
+          cleanOutput.includes('authentication_error')
+        ) {
+          if (!settled) {
+            settled = true;
+            if (ptyProcess && !ptyProcess.killed) {
+              ptyProcess.kill();
+            }
+            reject(
+              new Error(
+                "Claude CLI authentication issue. Please run 'claude logout' and then 'claude login' in your terminal to refresh permissions."
+              )
+            );
+          }
+          return;
+        }
+
+        // Check if we've seen the usage data (look for "Current session" or the TUI Usage header)
+        if (
+          !hasSeenUsageData &&
+          (cleanOutput.includes('Current session') ||
+            (cleanOutput.includes('Usage') && cleanOutput.includes('% left')))
+        ) {
           hasSeenUsageData = true;
           // Wait for full output, then send escape to exit
           setTimeout(() => {
-            if (!settled) {
+            if (!settled && ptyProcess && !ptyProcess.killed) {
               ptyProcess.write('\x1b'); // Send escape key
 
               // Fallback: if ESC doesn't exit (Linux), use SIGTERM after 2s
               setTimeout(() => {
-                if (!settled) {
+                if (!settled && ptyProcess && !ptyProcess.killed) {
                   ptyProcess.kill('SIGTERM');
                 }
               }, 2000);
             }
-          }, 2000);
+          }, 3000);
+        }
+
+        // Handle Trust Dialog - multiple variants:
+        // - "Do you want to work in this folder?"
+        // - "Ready to code here?" / "I'll need permission to work with your files"
+        // Since we are running in cwd (project dir), it is safe to approve.
+        if (
+          !hasApprovedTrust &&
+          (cleanOutput.includes('Do you want to work in this folder?') ||
+            cleanOutput.includes('Ready to code here') ||
+            cleanOutput.includes('permission to work with your files'))
+        ) {
+          hasApprovedTrust = true;
+          hasSeenTrustPrompt = true;
+          // Wait a tiny bit to ensure prompt is ready, then send Enter
+          setTimeout(() => {
+            if (!settled && ptyProcess && !ptyProcess.killed) {
+              ptyProcess.write('\r');
+            }
+          }, 1000);
+        }
+
+        // Detect REPL prompt and send /usage command
+        if (
+          !hasSentCommand &&
+          (cleanOutput.includes('❯') || cleanOutput.includes('? for shortcuts'))
+        ) {
+          hasSentCommand = true;
+          // Wait for REPL to fully settle
+          setTimeout(() => {
+            if (!settled && ptyProcess && !ptyProcess.killed) {
+              // Send command with carriage return
+              ptyProcess.write('/usage\r');
+
+              // Send another enter after 1 second to confirm selection if autocomplete menu appeared
+              setTimeout(() => {
+                if (!settled && ptyProcess && !ptyProcess.killed) {
+                  ptyProcess.write('\r');
+                }
+              }, 1200);
+            }
+          }, 1500);
         }
 
         // Fallback: if we see "Esc to cancel" but haven't seen usage data yet
-        if (!hasSeenUsageData && output.includes('Esc to cancel')) {
+        if (
+          !hasSeenUsageData &&
+          cleanOutput.includes('Esc to cancel') &&
+          !cleanOutput.includes('Do you want to work in this folder?')
+        ) {
           setTimeout(() => {
-            if (!settled) {
+            if (!settled && ptyProcess && !ptyProcess.killed) {
               ptyProcess.write('\x1b'); // Send escape key
             }
-          }, 3000);
+          }, 5000);
         }
       });
 
-      ptyProcess.onExit(({ exitCode }) => {
+      ptyProcess.onExit(({ exitCode }: { exitCode: number }) => {
         clearTimeout(timeoutId);
         if (settled) return;
         settled = true;
 
-        // Check for authentication errors in output
-        if (output.includes('token_expired') || output.includes('authentication_error')) {
+        if (
+          output.includes('token_expired') ||
+          output.includes('authentication_error') ||
+          output.includes('permission_error')
+        ) {
           reject(new Error("Authentication required - please run 'claude login'"));
           return;
         }

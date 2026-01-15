@@ -10,7 +10,9 @@ import type {
   IssueValidationResponse,
   IssueValidationEvent,
   StoredValidation,
-  AgentModel,
+  ModelId,
+  ThinkingLevel,
+  ReasoningEffort,
   GitHubComment,
   IssueCommentsResult,
   Idea,
@@ -314,7 +316,9 @@ export interface GitHubAPI {
   validateIssue: (
     projectPath: string,
     issue: IssueValidationInput,
-    model?: AgentModel
+    model?: ModelId,
+    thinkingLevel?: ThinkingLevel,
+    reasoningEffort?: ReasoningEffort
   ) => Promise<{ success: boolean; message?: string; issueNumber?: number; error?: string }>;
   /** Check validation status for an issue or all issues */
   getValidationStatus: (
@@ -433,11 +437,12 @@ export interface SpecRegenerationAPI {
     success: boolean;
     error?: string;
   }>;
-  stop: () => Promise<{ success: boolean; error?: string }>;
-  status: () => Promise<{
+  stop: (projectPath?: string) => Promise<{ success: boolean; error?: string }>;
+  status: (projectPath?: string) => Promise<{
     success: boolean;
     isRunning?: boolean;
     currentPhase?: string;
+    projectPath?: string;
     error?: string;
   }>;
   onEvent: (callback: (event: SpecRegenerationEvent) => void) => () => void;
@@ -461,7 +466,8 @@ export interface FeaturesAPI {
     featureId: string,
     updates: Partial<Feature>,
     descriptionHistorySource?: 'enhance' | 'edit',
-    enhancementMode?: 'improve' | 'technical' | 'simplify' | 'acceptance'
+    enhancementMode?: 'improve' | 'technical' | 'simplify' | 'acceptance' | 'ux-reviewer',
+    preEnhancementDescription?: string
   ) => Promise<{ success: boolean; feature?: Feature; error?: string }>;
   delete: (projectPath: string, featureId: string) => Promise<{ success: boolean; error?: string }>;
   getAgentOutput: (
@@ -518,7 +524,7 @@ export interface AutoModeAPI {
     featureId: string,
     prompt: string,
     imagePaths?: string[],
-    worktreePath?: string
+    useWorktrees?: boolean
   ) => Promise<{ success: boolean; passes?: boolean; error?: string }>;
   commitFeature: (
     projectPath: string,
@@ -532,6 +538,9 @@ export interface AutoModeAPI {
     editedPlan?: string,
     feedback?: string
   ) => Promise<{ success: boolean; error?: string }>;
+  resumeInterrupted: (
+    projectPath: string
+  ) => Promise<{ success: boolean; message?: string; error?: string }>;
   onEvent: (callback: (event: AutoModeEvent) => void) => () => void;
 }
 
@@ -608,7 +617,8 @@ export interface ElectronAPI {
     enhance: (
       originalText: string,
       enhancementMode: string,
-      model?: string
+      model?: string,
+      thinkingLevel?: string
     ) => Promise<{
       success: boolean;
       enhancedText?: string;
@@ -645,7 +655,8 @@ export interface ElectronAPI {
           removedDependencies: string[];
           addedDependencies: string[];
         }>;
-      }
+      },
+      branchName?: string
     ) => Promise<{ success: boolean; appliedChanges?: string[]; error?: string }>;
     onEvent: (callback: (data: unknown) => void) => () => void;
   };
@@ -727,6 +738,20 @@ export interface ElectronAPI {
   ideation?: IdeationAPI;
   codex?: {
     getUsage: () => Promise<CodexUsageResponse>;
+    getModels: (refresh?: boolean) => Promise<{
+      success: boolean;
+      models?: Array<{
+        id: string;
+        label: string;
+        description: string;
+        hasThinking: boolean;
+        supportsVision: boolean;
+        tier: 'premium' | 'standard' | 'basic';
+        isDefault: boolean;
+      }>;
+      cachedAt?: number;
+      error?: string;
+    }>;
   };
   settings?: {
     getStatus: () => Promise<{
@@ -1273,6 +1298,7 @@ interface SetupAPI {
     success: boolean;
     hasAnthropicKey: boolean;
     hasGoogleKey: boolean;
+    hasOpenaiKey: boolean;
   }>;
   deleteApiKey: (
     provider: string
@@ -1356,6 +1382,7 @@ function createMockSetupAPI(): SetupAPI {
         success: true,
         hasAnthropicKey: false,
         hasGoogleKey: false,
+        hasOpenaiKey: false,
       };
     },
 
@@ -1413,13 +1440,19 @@ function createMockSetupAPI(): SetupAPI {
 // Mock Worktree API implementation
 function createMockWorktreeAPI(): WorktreeAPI {
   return {
-    mergeFeature: async (projectPath: string, featureId: string, options?: object) => {
+    mergeFeature: async (
+      projectPath: string,
+      branchName: string,
+      worktreePath: string,
+      options?: object
+    ) => {
       console.log('[Mock] Merging feature:', {
         projectPath,
-        featureId,
+        branchName,
+        worktreePath,
         options,
       });
-      return { success: true, mergedBranch: `feature/${featureId}` };
+      return { success: true, mergedBranch: branchName };
     },
 
     getInfo: async (projectPath: string, featureId: string) => {
@@ -1513,6 +1546,14 @@ function createMockWorktreeAPI(): WorktreeAPI {
           branch: 'feature-branch',
           message,
         },
+      };
+    },
+
+    generateCommitMessage: async (worktreePath: string) => {
+      console.log('[Mock] Generating commit message for:', worktreePath);
+      return {
+        success: true,
+        message: 'feat: Add mock commit message generation',
       };
     },
 
@@ -1625,13 +1666,34 @@ function createMockWorktreeAPI(): WorktreeAPI {
       };
     },
 
-    openInEditor: async (worktreePath: string) => {
-      console.log('[Mock] Opening in editor:', worktreePath);
+    openInEditor: async (worktreePath: string, editorCommand?: string) => {
+      const ANTIGRAVITY_EDITOR_COMMAND = 'antigravity';
+      const ANTIGRAVITY_LEGACY_COMMAND = 'agy';
+      // Map editor commands to display names
+      const editorNameMap: Record<string, string> = {
+        cursor: 'Cursor',
+        code: 'VS Code',
+        zed: 'Zed',
+        subl: 'Sublime Text',
+        windsurf: 'Windsurf',
+        trae: 'Trae',
+        rider: 'Rider',
+        webstorm: 'WebStorm',
+        xed: 'Xcode',
+        studio: 'Android Studio',
+        [ANTIGRAVITY_EDITOR_COMMAND]: 'Antigravity',
+        [ANTIGRAVITY_LEGACY_COMMAND]: 'Antigravity',
+        open: 'Finder',
+        explorer: 'Explorer',
+        'xdg-open': 'File Manager',
+      };
+      const editorName = editorCommand ? (editorNameMap[editorCommand] ?? 'Editor') : 'VS Code';
+      console.log('[Mock] Opening in editor:', worktreePath, 'using:', editorName);
       return {
         success: true,
         result: {
-          message: `Opened ${worktreePath} in VS Code`,
-          editorName: 'VS Code',
+          message: `Opened ${worktreePath} in ${editorName}`,
+          editorName,
         },
       };
     },
@@ -1643,6 +1705,32 @@ function createMockWorktreeAPI(): WorktreeAPI {
         result: {
           editorName: 'VS Code',
           editorCommand: 'code',
+        },
+      };
+    },
+
+    getAvailableEditors: async () => {
+      console.log('[Mock] Getting available editors');
+      return {
+        success: true,
+        result: {
+          editors: [
+            { name: 'VS Code', command: 'code' },
+            { name: 'Finder', command: 'open' },
+          ],
+        },
+      };
+    },
+    refreshEditors: async () => {
+      console.log('[Mock] Refreshing available editors');
+      return {
+        success: true,
+        result: {
+          editors: [
+            { name: 'VS Code', command: 'code' },
+            { name: 'Finder', command: 'open' },
+          ],
+          message: 'Found 2 available editors',
         },
       };
     },
@@ -1692,6 +1780,22 @@ function createMockWorktreeAPI(): WorktreeAPI {
       };
     },
 
+    getDevServerLogs: async (worktreePath: string) => {
+      console.log('[Mock] Getting dev server logs:', { worktreePath });
+      return {
+        success: false,
+        error: 'No dev server running for this worktree',
+      };
+    },
+
+    onDevServerLogEvent: (callback) => {
+      console.log('[Mock] Subscribing to dev server log events');
+      // Return unsubscribe function
+      return () => {
+        console.log('[Mock] Unsubscribing from dev server log events');
+      };
+    },
+
     getPRInfo: async (worktreePath: string, branchName: string) => {
       console.log('[Mock] Getting PR info:', { worktreePath, branchName });
       return {
@@ -1700,6 +1804,47 @@ function createMockWorktreeAPI(): WorktreeAPI {
           hasPR: false,
           ghCliAvailable: false,
         },
+      };
+    },
+
+    getInitScript: async (projectPath: string) => {
+      console.log('[Mock] Getting init script:', { projectPath });
+      return {
+        success: true,
+        exists: false,
+        content: '',
+        path: `${projectPath}/.automaker/worktree-init.sh`,
+      };
+    },
+
+    setInitScript: async (projectPath: string, content: string) => {
+      console.log('[Mock] Setting init script:', { projectPath, content });
+      return {
+        success: true,
+        path: `${projectPath}/.automaker/worktree-init.sh`,
+      };
+    },
+
+    deleteInitScript: async (projectPath: string) => {
+      console.log('[Mock] Deleting init script:', { projectPath });
+      return {
+        success: true,
+      };
+    },
+
+    runInitScript: async (projectPath: string, worktreePath: string, branch: string) => {
+      console.log('[Mock] Running init script:', { projectPath, worktreePath, branch });
+      return {
+        success: true,
+        message: 'Init script started (mock)',
+      };
+    },
+
+    onInitScriptEvent: (callback) => {
+      console.log('[Mock] Subscribing to init script events');
+      // Return unsubscribe function
+      return () => {
+        console.log('[Mock] Unsubscribing from init script events');
       };
     },
   };
@@ -1974,7 +2119,7 @@ function createMockAutoModeAPI(): AutoModeAPI {
       featureId: string,
       prompt: string,
       imagePaths?: string[],
-      worktreePath?: string
+      useWorktrees?: boolean
     ) => {
       if (mockRunningFeatures.has(featureId)) {
         return {
@@ -2053,6 +2198,11 @@ function createMockAutoModeAPI(): AutoModeAPI {
         feedback,
       });
       return { success: true };
+    },
+
+    resumeInterrupted: async (projectPath: string) => {
+      console.log('[Mock] Resume interrupted features for:', projectPath);
+      return { success: true, message: 'Mock: no interrupted features' };
     },
 
     onEvent: (callback: (event: AutoModeEvent) => void) => {
@@ -2484,7 +2634,7 @@ function createMockSpecRegenerationAPI(): SpecRegenerationAPI {
       return { success: true };
     },
 
-    stop: async () => {
+    stop: async (_projectPath?: string) => {
       mockSpecRegenerationRunning = false;
       mockSpecRegenerationPhase = '';
       if (mockSpecRegenerationTimeout) {
@@ -2494,7 +2644,7 @@ function createMockSpecRegenerationAPI(): SpecRegenerationAPI {
       return { success: true };
     },
 
-    status: async () => {
+    status: async (_projectPath?: string) => {
       return {
         success: true,
         isRunning: mockSpecRegenerationRunning,
@@ -2894,8 +3044,20 @@ function createMockGitHubAPI(): GitHubAPI {
         mergedPRs: [],
       };
     },
-    validateIssue: async (projectPath: string, issue: IssueValidationInput, model?: AgentModel) => {
-      console.log('[Mock] Starting async validation:', { projectPath, issue, model });
+    validateIssue: async (
+      projectPath: string,
+      issue: IssueValidationInput,
+      model?: ModelId,
+      thinkingLevel?: ThinkingLevel,
+      reasoningEffort?: ReasoningEffort
+    ) => {
+      console.log('[Mock] Starting async validation:', {
+        projectPath,
+        issue,
+        model,
+        thinkingLevel,
+        reasoningEffort,
+      });
 
       // Simulate async validation in background
       setTimeout(() => {
@@ -2989,6 +3151,9 @@ export interface Project {
   path: string;
   lastOpened?: string;
   theme?: string; // Per-project theme override (uses ThemeMode from app-store)
+  isFavorite?: boolean; // Pin project to top of dashboard
+  icon?: string; // Lucide icon name for project identification
+  customIconPath?: string; // Path to custom uploaded icon image in .automaker/images/
 }
 
 export interface TrashedProject extends Project {

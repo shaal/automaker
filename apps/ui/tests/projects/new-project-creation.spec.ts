@@ -33,27 +33,29 @@ test.describe('Project Creation', () => {
     const projectName = `test-project-${Date.now()}`;
 
     await setupWelcomeView(page, { workspaceDir: TEST_TEMP_DIR });
-    await authenticateForTests(page);
 
-    // Intercept settings API to ensure it doesn't return a currentProjectId
-    // This prevents settings hydration from restoring a project
+    // Intercept settings API BEFORE authenticateForTests (which navigates to the page)
+    // This prevents settings hydration from restoring a project and disables auto-open
     await page.route('**/api/settings/global', async (route) => {
       const response = await route.fetch();
       const json = await response.json();
-      // Remove currentProjectId to prevent restoring a project
+      // Remove currentProjectId and clear projects to prevent auto-open
       if (json.settings) {
         json.settings.currentProjectId = null;
+        json.settings.projects = [];
       }
       await route.fulfill({ response, json });
     });
 
-    // Navigate to root
-    await page.goto('/');
+    await authenticateForTests(page);
+
+    // Navigate directly to dashboard to avoid auto-open logic
+    await page.goto('/dashboard');
     await page.waitForLoadState('load');
     await handleLoginScreenIfPresent(page);
 
-    // Wait for welcome view to be visible
-    await expect(page.locator('[data-testid="welcome-view"]')).toBeVisible({ timeout: 15000 });
+    // Wait for dashboard view
+    await expect(page.locator('[data-testid="dashboard-view"]')).toBeVisible({ timeout: 15000 });
 
     await page.locator('[data-testid="create-new-project"]').click();
     await page.locator('[data-testid="quick-setup-option"]').click();
@@ -67,10 +69,18 @@ test.describe('Project Creation', () => {
 
     await expect(page.locator('[data-testid="board-view"]')).toBeVisible({ timeout: 15000 });
 
+    // Expand sidebar if collapsed to see project name
+    const expandSidebarButton = page.locator('button:has-text("Expand sidebar")');
+    if (await expandSidebarButton.isVisible()) {
+      await expandSidebarButton.click();
+      await page.waitForTimeout(300);
+    }
+
     // Wait for project to be set as current and visible on the page
-    // The project name appears in multiple places: project-selector, board header paragraph, etc.
-    // Check any element containing the project name
-    await expect(page.getByText(projectName).first()).toBeVisible({ timeout: 15000 });
+    // The project name appears in the sidebar project selector button
+    await expect(page.getByRole('button', { name: new RegExp(projectName) })).toBeVisible({
+      timeout: 15000,
+    });
 
     // Project was created successfully if we're on board view with project name visible
     // Note: The actual project directory is created in the server's default workspace,
