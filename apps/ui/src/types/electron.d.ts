@@ -367,6 +367,11 @@ export interface SpecRegenerationAPI {
     error?: string;
   }>;
 
+  sync: (projectPath: string) => Promise<{
+    success: boolean;
+    error?: string;
+  }>;
+
   stop: (projectPath?: string) => Promise<{
     success: boolean;
     error?: string;
@@ -700,7 +705,8 @@ export interface WorktreeAPI {
   // List all worktrees with details (for worktree selector)
   listAll: (
     projectPath: string,
-    includeDetails?: boolean
+    includeDetails?: boolean,
+    forceRefreshGitHub?: boolean
   ) => Promise<{
     success: boolean;
     worktrees?: Array<{
@@ -994,6 +1000,7 @@ export interface WorktreeAPI {
     result?: {
       worktreePath: string;
       port: number;
+      url: string;
       logs: string;
       startedAt: string;
     };

@@ -22,10 +22,20 @@ export function RunningAgentsView() {
     try {
       const api = getElectronAPI();
       if (api.runningAgents) {
+        logger.debug('Fetching running agents list');
         const result = await api.runningAgents.getAll();
         if (result.success && result.runningAgents) {
+          logger.debug('Running agents list fetched', {
+            count: result.runningAgents.length,
+          });
           setRunningAgents(result.runningAgents);
+        } else {
+          logger.debug('Running agents list fetch returned empty/failed', {
+            success: result.success,
+          });
         }
+      } else {
+        logger.debug('Running agents API not available');
       }
     } catch (error) {
       logger.error('Error fetching running agents:', error);
@@ -52,9 +62,15 @@ export function RunningAgentsView() {
   // Subscribe to auto-mode events to update in real-time
   useEffect(() => {
     const api = getElectronAPI();
-    if (!api.autoMode) return;
+    if (!api.autoMode) {
+      logger.debug('Auto mode API not available for running agents view');
+      return;
+    }
 
     const unsubscribe = api.autoMode.onEvent((event) => {
+      logger.debug('Auto mode event in running agents view', {
+        type: event.type,
+      });
       // When a feature completes or errors, refresh the list
       if (event.type === 'auto_mode_feature_complete' || event.type === 'auto_mode_error') {
         fetchRunningAgents();
@@ -67,18 +83,29 @@ export function RunningAgentsView() {
   }, [fetchRunningAgents]);
 
   const handleRefresh = useCallback(() => {
+    logger.debug('Manual refresh requested for running agents');
     setRefreshing(true);
     fetchRunningAgents();
   }, [fetchRunningAgents]);
 
   const handleStopAgent = useCallback(
-    async (featureId: string) => {
+    async (agent: RunningAgent) => {
       try {
         const api = getElectronAPI();
+        const isBacklogPlan = agent.featureId.startsWith('backlog-plan:');
+        if (isBacklogPlan && api.backlogPlan) {
+          logger.debug('Stopping backlog plan agent', { featureId: agent.featureId });
+          await api.backlogPlan.stop();
+          fetchRunningAgents();
+          return;
+        }
         if (api.autoMode) {
-          await api.autoMode.stopFeature(featureId);
+          logger.debug('Stopping running agent', { featureId: agent.featureId });
+          await api.autoMode.stopFeature(agent.featureId);
           // Refresh list after stopping
           fetchRunningAgents();
+        } else {
+          logger.debug('Auto mode API not available to stop agent', { featureId: agent.featureId });
         }
       } catch (error) {
         logger.error('Error stopping agent:', error);
@@ -92,14 +119,27 @@ export function RunningAgentsView() {
       // Find the project by path
       const project = projects.find((p) => p.path === agent.projectPath);
       if (project) {
+        logger.debug('Navigating to running agent project', {
+          projectPath: agent.projectPath,
+          featureId: agent.featureId,
+        });
         setCurrentProject(project);
         navigate({ to: '/board' });
+      } else {
+        logger.debug('Project not found for running agent', {
+          projectPath: agent.projectPath,
+          featureId: agent.featureId,
+        });
       }
     },
     [projects, setCurrentProject, navigate]
   );
 
   const handleViewLogs = useCallback((agent: RunningAgent) => {
+    logger.debug('Opening running agent logs', {
+      featureId: agent.featureId,
+      projectPath: agent.projectPath,
+    });
     setSelectedAgent(agent);
   }, []);
 
@@ -195,7 +235,7 @@ export function RunningAgentsView() {
                 </div>
 
                 {/* Actions */}
-                <div className="flex items-center gap-2 flex-shrink-0">
+                <div className="flex items-center gap-2 shrink-0">
                   <Button
                     variant="ghost"
                     size="sm"
@@ -213,11 +253,7 @@ export function RunningAgentsView() {
                   >
                     View Project
                   </Button>
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    onClick={() => handleStopAgent(agent.featureId)}
-                  >
+                  <Button variant="destructive" size="sm" onClick={() => handleStopAgent(agent)}>
                     <Square className="h-3.5 w-3.5 mr-1.5" />
                     Stop
                   </Button>

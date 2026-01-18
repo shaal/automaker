@@ -50,9 +50,10 @@ interface KanbanBoardProps {
   onOpenPipelineSettings?: () => void;
   // Selection mode props
   isSelectionMode?: boolean;
+  selectionTarget?: 'backlog' | 'waiting_approval' | null;
   selectedFeatureIds?: Set<string>;
   onToggleFeatureSelection?: (featureId: string) => void;
-  onToggleSelectionMode?: () => void;
+  onToggleSelectionMode?: (target?: 'backlog' | 'waiting_approval') => void;
   // Empty state action props
   onAiSuggest?: () => void;
   /** Whether currently dragging (hides empty states during drag) */
@@ -95,6 +96,7 @@ export function KanbanBoard({
   pipelineConfig,
   onOpenPipelineSettings,
   isSelectionMode = false,
+  selectionTarget = null,
   selectedFeatureIds = new Set(),
   onToggleFeatureSelection,
   onToggleSelectionMode,
@@ -189,12 +191,14 @@ export function KanbanBoard({
                       <Button
                         variant="ghost"
                         size="sm"
-                        className={`h-6 px-2 text-xs ${isSelectionMode ? 'text-primary bg-primary/10' : 'text-muted-foreground hover:text-foreground'}`}
-                        onClick={onToggleSelectionMode}
-                        title={isSelectionMode ? 'Switch to Drag Mode' : 'Select Multiple'}
+                        className={`h-6 px-2 text-xs ${selectionTarget === 'backlog' ? 'text-primary bg-primary/10' : 'text-muted-foreground hover:text-foreground'}`}
+                        onClick={() => onToggleSelectionMode?.('backlog')}
+                        title={
+                          selectionTarget === 'backlog' ? 'Switch to Drag Mode' : 'Select Multiple'
+                        }
                         data-testid="selection-mode-button"
                       >
-                        {isSelectionMode ? (
+                        {selectionTarget === 'backlog' ? (
                           <>
                             <GripVertical className="w-3.5 h-3.5 mr-1" />
                             Drag
@@ -207,6 +211,31 @@ export function KanbanBoard({
                         )}
                       </Button>
                     </div>
+                  ) : column.id === 'waiting_approval' ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className={`h-6 px-2 text-xs ${selectionTarget === 'waiting_approval' ? 'text-primary bg-primary/10' : 'text-muted-foreground hover:text-foreground'}`}
+                      onClick={() => onToggleSelectionMode?.('waiting_approval')}
+                      title={
+                        selectionTarget === 'waiting_approval'
+                          ? 'Switch to Drag Mode'
+                          : 'Select Multiple'
+                      }
+                      data-testid="waiting-approval-selection-mode-button"
+                    >
+                      {selectionTarget === 'waiting_approval' ? (
+                        <>
+                          <GripVertical className="w-3.5 h-3.5 mr-1" />
+                          Drag
+                        </>
+                      ) : (
+                        <>
+                          <CheckSquare className="w-3.5 h-3.5 mr-1" />
+                          Select
+                        </>
+                      )}
+                    </Button>
                   ) : column.id === 'in_progress' ? (
                     <Button
                       variant="ghost"
@@ -305,6 +334,7 @@ export function KanbanBoard({
                         cardBorderEnabled={backgroundSettings.cardBorderEnabled}
                         cardBorderOpacity={backgroundSettings.cardBorderOpacity}
                         isSelectionMode={isSelectionMode}
+                        selectionTarget={selectionTarget}
                         isSelected={selectedFeatureIds.has(feature.id)}
                         onToggleSelect={() => onToggleFeatureSelection?.(feature.id)}
                       />

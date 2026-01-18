@@ -8,6 +8,10 @@ import { Button } from '@/components/ui/button';
 import { HotkeyButton } from '@/components/ui/hotkey-button';
 import { Card } from '@/components/ui/card';
 import {
+  HeaderActionsPanel,
+  HeaderActionsPanelTrigger,
+} from '@/components/ui/header-actions-panel';
+import {
   RefreshCw,
   FileText,
   Image as ImageIcon,
@@ -93,6 +97,9 @@ export function ContextView() {
   const [isEditDescriptionOpen, setIsEditDescriptionOpen] = useState(false);
   const [editDescriptionValue, setEditDescriptionValue] = useState('');
   const [editDescriptionFileName, setEditDescriptionFileName] = useState('');
+
+  // Actions panel state (for tablet/mobile)
+  const [showActionsPanel, setShowActionsPanel] = useState(false);
 
   // File input ref for import
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -691,29 +698,69 @@ export function ContextView() {
             </p>
           </div>
         </div>
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleImportClick}
-            disabled={isUploading}
-            data-testid="import-file-button"
-          >
-            <FileUp className="w-4 h-4 mr-2" />
-            Import File
-          </Button>
-          <HotkeyButton
-            size="sm"
-            onClick={() => setIsCreateMarkdownOpen(true)}
-            hotkey={shortcuts.addContextFile}
-            hotkeyActive={false}
-            data-testid="create-markdown-button"
-          >
-            <FilePlus className="w-4 h-4 mr-2" />
-            Create Markdown
-          </HotkeyButton>
+        <div className="flex items-center gap-2">
+          {/* Desktop: show actions inline */}
+          <div className="hidden lg:flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleImportClick}
+              disabled={isUploading}
+              data-testid="import-file-button"
+            >
+              <FileUp className="w-4 h-4 mr-2" />
+              Import File
+            </Button>
+            <HotkeyButton
+              size="sm"
+              onClick={() => setIsCreateMarkdownOpen(true)}
+              hotkey={shortcuts.addContextFile}
+              hotkeyActive={false}
+              data-testid="create-markdown-button"
+            >
+              <FilePlus className="w-4 h-4 mr-2" />
+              Create Markdown
+            </HotkeyButton>
+          </div>
+          {/* Tablet/Mobile: show trigger for actions panel */}
+          <HeaderActionsPanelTrigger
+            isOpen={showActionsPanel}
+            onToggle={() => setShowActionsPanel(!showActionsPanel)}
+          />
         </div>
       </div>
+
+      {/* Actions Panel (tablet/mobile) */}
+      <HeaderActionsPanel
+        isOpen={showActionsPanel}
+        onClose={() => setShowActionsPanel(false)}
+        title="Context Actions"
+      >
+        <Button
+          variant="outline"
+          className="w-full justify-start"
+          onClick={() => {
+            handleImportClick();
+            setShowActionsPanel(false);
+          }}
+          disabled={isUploading}
+          data-testid="import-file-button-mobile"
+        >
+          <FileUp className="w-4 h-4 mr-2" />
+          Import File
+        </Button>
+        <Button
+          className="w-full justify-start"
+          onClick={() => {
+            setIsCreateMarkdownOpen(true);
+            setShowActionsPanel(false);
+          }}
+          data-testid="create-markdown-button-mobile"
+        >
+          <FilePlus className="w-4 h-4 mr-2" />
+          Create Markdown
+        </Button>
+      </HeaderActionsPanel>
 
       {/* Main content area with file list and editor */}
       <div

@@ -17,9 +17,19 @@ import dotenv from 'dotenv';
 
 import { createEventEmitter, type EventEmitter } from './lib/events.js';
 import { initAllowedPaths } from '@automaker/platform';
-import { createLogger } from '@automaker/utils';
+import { createLogger, setLogLevel, LogLevel } from '@automaker/utils';
 
 const logger = createLogger('Server');
+
+/**
+ * Map server log level string to LogLevel enum
+ */
+const LOG_LEVEL_MAP: Record<string, LogLevel> = {
+  error: LogLevel.ERROR,
+  warn: LogLevel.WARN,
+  info: LogLevel.INFO,
+  debug: LogLevel.DEBUG,
+};
 import { authMiddleware, validateWsConnectionToken, checkRawAuthentication } from './lib/auth.js';
 import { requireJsonContentType } from './middleware/require-json-content-type.js';
 import { createAuthRoutes } from './routes/auth/index.js';
@@ -68,13 +78,37 @@ import { pipelineService } from './services/pipeline-service.js';
 import { createIdeationRoutes } from './routes/ideation/index.js';
 import { IdeationService } from './services/ideation-service.js';
 import { getDevServerService } from './services/dev-server-service.js';
+import { eventHookService } from './services/event-hook-service.js';
+import { createNotificationsRoutes } from './routes/notifications/index.js';
+import { getNotificationService } from './services/notification-service.js';
+import { createEventHistoryRoutes } from './routes/event-history/index.js';
+import { getEventHistoryService } from './services/event-history-service.js';
 
 // Load environment variables
 dotenv.config();
 
 const PORT = parseInt(process.env.PORT || '3008', 10);
+const HOST = process.env.HOST || '0.0.0.0';
+const HOSTNAME = process.env.HOSTNAME || 'localhost';
 const DATA_DIR = process.env.DATA_DIR || './data';
-const ENABLE_REQUEST_LOGGING = process.env.ENABLE_REQUEST_LOGGING !== 'false'; // Default to true
+const ENABLE_REQUEST_LOGGING_DEFAULT = process.env.ENABLE_REQUEST_LOGGING !== 'false'; // Default to true
+
+// Runtime-configurable request logging flag (can be changed via settings)
+let requestLoggingEnabled = ENABLE_REQUEST_LOGGING_DEFAULT;
+
+/**
+ * Enable or disable HTTP request logging at runtime
+ */
+export function setRequestLoggingEnabled(enabled: boolean): void {
+  requestLoggingEnabled = enabled;
+}
+
+/**
+ * Get current request logging state
+ */
+export function isRequestLoggingEnabled(): boolean {
+  return requestLoggingEnabled;
+}
 
 // Check for required environment variables
 const hasAnthropicKey = !!process.env.ANTHROPIC_API_KEY;
@@ -103,22 +137,21 @@ initAllowedPaths();
 const app = express();
 
 // Middleware
-// Custom colored logger showing only endpoint and status code (configurable via ENABLE_REQUEST_LOGGING env var)
-if (ENABLE_REQUEST_LOGGING) {
-  morgan.token('status-colored', (_req, res) => {
-    const status = res.statusCode;
-    if (status >= 500) return `\x1b[31m${status}\x1b[0m`; // Red for server errors
-    if (status >= 400) return `\x1b[33m${status}\x1b[0m`; // Yellow for client errors
-    if (status >= 300) return `\x1b[36m${status}\x1b[0m`; // Cyan for redirects
-    return `\x1b[32m${status}\x1b[0m`; // Green for success
-  });
+// Custom colored logger showing only endpoint and status code (dynamically configurable)
+morgan.token('status-colored', (_req, res) => {
+  const status = res.statusCode;
+  if (status >= 500) return `\x1b[31m${status}\x1b[0m`; // Red for server errors
+  if (status >= 400) return `\x1b[33m${status}\x1b[0m`; // Yellow for client errors
+  if (status >= 300) return `\x1b[36m${status}\x1b[0m`; // Cyan for redirects
+  return `\x1b[32m${status}\x1b[0m`; // Green for success
+});
 
-  app.use(
-    morgan(':method :url :status-colored', {
-      skip: (req) => req.url === '/api/health', // Skip health check logs
-    })
-  );
-}
+app.use(
+  morgan(':method :url :status-colored', {
+    // Skip when request logging is disabled or for health check endpoints
+    skip: (req) => !requestLoggingEnabled || req.url === '/api/health',
+  })
+);
 // CORS configuration
 // When using credentials (cookies), origin cannot be '*'
 // We dynamically allow the requesting origin for local development
@@ -181,8 +214,33 @@ const ideationService = new IdeationService(events, settingsService, featureLoad
 const devServerService = getDevServerService();
 devServerService.setEventEmitter(events);
 
+// Initialize Notification Service with event emitter for real-time updates
+const notificationService = getNotificationService();
+notificationService.setEventEmitter(events);
+
+// Initialize Event History Service
+const eventHistoryService = getEventHistoryService();
+
+// Initialize Event Hook Service for custom event triggers (with history storage)
+eventHookService.initialize(events, settingsService, eventHistoryService);
+
 // Initialize services
 (async () => {
+  // Apply logging settings from saved settings
+  try {
+    const settings = await settingsService.getGlobalSettings();
+    if (settings.serverLogLevel && LOG_LEVEL_MAP[settings.serverLogLevel] !== undefined) {
+      setLogLevel(LOG_LEVEL_MAP[settings.serverLogLevel]);
+      logger.info(`Server log level set to: ${settings.serverLogLevel}`);
+    }
+    // Apply request logging setting (default true if not set)
+    const enableRequestLog = settings.enableRequestLogging ?? true;
+    setRequestLoggingEnabled(enableRequestLog);
+    logger.info(`HTTP request logging: ${enableRequestLog ? 'enabled' : 'disabled'}`);
+  } catch (err) {
+    logger.warn('Failed to load logging settings, using defaults');
+  }
+
   await agentService.initialize();
   logger.info('Agent service initialized');
 
@@ -219,7 +277,7 @@ app.get('/api/health/detailed', createDetailedHandler());
 app.use('/api/fs', createFsRoutes(events));
 app.use('/api/agent', createAgentRoutes(agentService, events));
 app.use('/api/sessions', createSessionsRoutes(agentService));
-app.use('/api/features', createFeaturesRoutes(featureLoader));
+app.use('/api/features', createFeaturesRoutes(featureLoader, settingsService, events));
 app.use('/api/auto-mode', createAutoModeRoutes(autoModeService));
 app.use('/api/enhance-prompt', createEnhancePromptRoutes(settingsService));
 app.use('/api/worktree', createWorktreeRoutes(events, settingsService));
@@ -240,6 +298,8 @@ app.use('/api/backlog-plan', createBacklogPlanRoutes(events, settingsService));
 app.use('/api/mcp', createMCPRoutes(mcpTestService));
 app.use('/api/pipeline', createPipelineRoutes(pipelineService));
 app.use('/api/ideation', createIdeationRoutes(events, ideationService, featureLoader));
+app.use('/api/notifications', createNotificationsRoutes(notificationService));
+app.use('/api/event-history', createEventHistoryRoutes(eventHistoryService, settingsService));
 
 // Create HTTP server
 const server = createServer(app);
@@ -551,8 +611,8 @@ terminalWss.on('connection', (ws: WebSocket, req: import('http').IncomingMessage
 });
 
 // Start server with error handling for port conflicts
-const startServer = (port: number) => {
-  server.listen(port, () => {
+const startServer = (port: number, host: string) => {
+  server.listen(port, host, () => {
     const terminalStatus = isTerminalEnabled()
       ? isTerminalPasswordRequired()
         ? 'enabled (password protected)'
@@ -563,10 +623,11 @@ const startServer = (port: number) => {
 ╔═══════════════════════════════════════════════════════╗
 ║           Automaker Backend Server                    ║
 ╠═══════════════════════════════════════════════════════╣
-║  HTTP API:    http://localhost:${portStr}                 ║
-║  WebSocket:   ws://localhost:${portStr}/api/events        ║
-║  Terminal:    ws://localhost:${portStr}/api/terminal/ws   ║
-║  Health:      http://localhost:${portStr}/api/health      ║
+║  Listening:   ${host}:${port}${' '.repeat(Math.max(0, 34 - host.length - port.toString().length))}║
+║  HTTP API:    http://${HOSTNAME}:${portStr}                 ║
+║  WebSocket:   ws://${HOSTNAME}:${portStr}/api/events        ║
+║  Terminal:    ws://${HOSTNAME}:${portStr}/api/terminal/ws   ║
+║  Health:      http://${HOSTNAME}:${portStr}/api/health      ║
 ║  Terminal:    ${terminalStatus.padEnd(37)}║
 ╚═══════════════════════════════════════════════════════╝
 `);
@@ -600,7 +661,7 @@ const startServer = (port: number) => {
   });
 };
 
-startServer(PORT);
+startServer(PORT, HOST);
 
 // Global error handlers to prevent crashes from uncaught errors
 process.on('unhandledRejection', (reason: unknown, _promise: Promise<unknown>) => {

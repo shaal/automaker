@@ -22,6 +22,29 @@ export class ClaudeUsageService {
   private timeout = 30000; // 30 second timeout
   private isWindows = os.platform() === 'win32';
   private isLinux = os.platform() === 'linux';
+  // On Windows, ConPTY requires AttachConsole which fails in Electron/service mode
+  // Detect Electron by checking for electron-specific env vars or process properties
+  // When in Electron, always use winpty to avoid ConPTY's AttachConsole errors
+  private isElectron =
+    !!(process.versions && (process.versions as Record<string, string>).electron) ||
+    !!process.env.ELECTRON_RUN_AS_NODE;
+  private useConptyFallback = false; // Track if we need to use winpty fallback on Windows
+
+  /**
+   * Kill a PTY process with platform-specific handling.
+   * Windows doesn't support Unix signals like SIGTERM, so we call kill() without arguments.
+   * On Unix-like systems (macOS, Linux), we can specify the signal.
+   *
+   * @param ptyProcess - The PTY process to kill
+   * @param signal - The signal to send on Unix-like systems (default: 'SIGTERM')
+   */
+  private killPtyProcess(ptyProcess: pty.IPty, signal: string = 'SIGTERM'): void {
+    if (this.isWindows) {
+      ptyProcess.kill();
+    } else {
+      ptyProcess.kill(signal);
+    }
+  }
 
   /**
    * Check if Claude CLI is available on the system
@@ -181,37 +204,94 @@ export class ClaudeUsageService {
         ? ['/c', 'claude', '--add-dir', workingDirectory]
         : ['-c', `claude --add-dir "${workingDirectory}"`];
 
+      // Using 'any' for ptyProcess because node-pty types don't include 'killed' property
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let ptyProcess: any = null;
 
+      // Build PTY spawn options
+      const ptyOptions: pty.IPtyForkOptions = {
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 30,
+        cwd: workingDirectory,
+        env: {
+          ...process.env,
+          TERM: 'xterm-256color',
+        } as Record<string, string>,
+      };
+
+      // On Windows, always use winpty instead of ConPTY
+      // ConPTY requires AttachConsole which fails in many contexts:
+      // - Electron apps without a console
+      // - VS Code integrated terminal
+      // - Spawned from other applications
+      // The error happens in a subprocess so we can't catch it - must proactively disable
+      if (this.isWindows) {
+        (ptyOptions as pty.IWindowsPtyForkOptions).useConpty = false;
+        logger.info(
+          '[executeClaudeUsageCommandPty] Using winpty on Windows (ConPTY disabled for compatibility)'
+        );
+      }
+
       try {
-        ptyProcess = pty.spawn(shell, args, {
-          name: 'xterm-256color',
-          cols: 120,
-          rows: 30,
-          cwd: workingDirectory,
-          env: {
-            ...process.env,
-            TERM: 'xterm-256color',
-          } as Record<string, string>,
-        });
+        ptyProcess = pty.spawn(shell, args, ptyOptions);
       } catch (spawnError) {
         const errorMessage = spawnError instanceof Error ? spawnError.message : String(spawnError);
-        logger.error('[executeClaudeUsageCommandPty] Failed to spawn PTY:', errorMessage);
 
-        // Return a user-friendly error instead of crashing
-        reject(
-          new Error(
-            `Unable to access terminal: ${errorMessage}. Claude CLI may not be available or PTY support is limited in this environment.`
-          )
-        );
-        return;
+        // Check for Windows ConPTY-specific errors
+        if (this.isWindows && errorMessage.includes('AttachConsole failed')) {
+          // ConPTY failed - try winpty fallback
+          if (!this.useConptyFallback) {
+            logger.warn(
+              '[executeClaudeUsageCommandPty] ConPTY AttachConsole failed, retrying with winpty fallback'
+            );
+            this.useConptyFallback = true;
+
+            try {
+              (ptyOptions as pty.IWindowsPtyForkOptions).useConpty = false;
+              ptyProcess = pty.spawn(shell, args, ptyOptions);
+              logger.info(
+                '[executeClaudeUsageCommandPty] Successfully spawned with winpty fallback'
+              );
+            } catch (fallbackError) {
+              const fallbackMessage =
+                fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+              logger.error(
+                '[executeClaudeUsageCommandPty] Winpty fallback also failed:',
+                fallbackMessage
+              );
+              reject(
+                new Error(
+                  `Windows PTY unavailable: Both ConPTY and winpty failed. This typically happens when running in Electron without a console. ConPTY error: ${errorMessage}. Winpty error: ${fallbackMessage}`
+                )
+              );
+              return;
+            }
+          } else {
+            logger.error('[executeClaudeUsageCommandPty] Winpty fallback failed:', errorMessage);
+            reject(
+              new Error(
+                `Windows PTY unavailable: ${errorMessage}. The application is running without console access (common in Electron). Try running from a terminal window.`
+              )
+            );
+            return;
+          }
+        } else {
+          logger.error('[executeClaudeUsageCommandPty] Failed to spawn PTY:', errorMessage);
+          reject(
+            new Error(
+              `Unable to access terminal: ${errorMessage}. Claude CLI may not be available or PTY support is limited in this environment.`
+            )
+          );
+          return;
+        }
       }
 
       const timeoutId = setTimeout(() => {
         if (!settled) {
           settled = true;
           if (ptyProcess && !ptyProcess.killed) {
-            ptyProcess.kill();
+            this.killPtyProcess(ptyProcess);
           }
           // Don't fail if we have data - return it instead
           if (output.includes('Current session')) {
@@ -244,16 +324,23 @@ export class ClaudeUsageService {
         const cleanOutput = output.replace(/\x1B\[[0-9;]*[A-Za-z]/g, '');
 
         // Check for specific authentication/permission errors
-        if (
-          cleanOutput.includes('OAuth token does not meet scope requirement') ||
-          cleanOutput.includes('permission_error') ||
-          cleanOutput.includes('token_expired') ||
-          cleanOutput.includes('authentication_error')
-        ) {
+        // Must be very specific to avoid false positives from garbled terminal encoding
+        // Removed permission_error check as it was causing false positives with winpty encoding
+        const authChecks = {
+          oauth: cleanOutput.includes('OAuth token does not meet scope requirement'),
+          tokenExpired: cleanOutput.includes('token_expired'),
+          // Only match if it looks like a JSON API error response
+          authError:
+            cleanOutput.includes('"type":"authentication_error"') ||
+            cleanOutput.includes('"type": "authentication_error"'),
+        };
+        const hasAuthError = authChecks.oauth || authChecks.tokenExpired || authChecks.authError;
+
+        if (hasAuthError) {
           if (!settled) {
             settled = true;
             if (ptyProcess && !ptyProcess.killed) {
-              ptyProcess.kill();
+              this.killPtyProcess(ptyProcess);
             }
             reject(
               new Error(
@@ -265,11 +352,16 @@ export class ClaudeUsageService {
         }
 
         // Check if we've seen the usage data (look for "Current session" or the TUI Usage header)
-        if (
-          !hasSeenUsageData &&
-          (cleanOutput.includes('Current session') ||
-            (cleanOutput.includes('Usage') && cleanOutput.includes('% left')))
-        ) {
+        // Also check for percentage patterns that appear in usage output
+        const hasUsageIndicators =
+          cleanOutput.includes('Current session') ||
+          (cleanOutput.includes('Usage') && cleanOutput.includes('% left')) ||
+          // Additional patterns for winpty - look for percentage patterns
+          /\d+%\s*(left|used|remaining)/i.test(cleanOutput) ||
+          cleanOutput.includes('Resets in') ||
+          cleanOutput.includes('Current week');
+
+        if (!hasSeenUsageData && hasUsageIndicators) {
           hasSeenUsageData = true;
           // Wait for full output, then send escape to exit
           setTimeout(() => {
@@ -277,9 +369,10 @@ export class ClaudeUsageService {
               ptyProcess.write('\x1b'); // Send escape key
 
               // Fallback: if ESC doesn't exit (Linux), use SIGTERM after 2s
+              // Windows doesn't support signals, so killPtyProcess handles platform differences
               setTimeout(() => {
                 if (!settled && ptyProcess && !ptyProcess.killed) {
-                  ptyProcess.kill('SIGTERM');
+                  this.killPtyProcess(ptyProcess);
                 }
               }, 2000);
             }
@@ -307,10 +400,18 @@ export class ClaudeUsageService {
         }
 
         // Detect REPL prompt and send /usage command
-        if (
-          !hasSentCommand &&
-          (cleanOutput.includes('❯') || cleanOutput.includes('? for shortcuts'))
-        ) {
+        // On Windows with winpty, Unicode prompt char ❯ gets garbled, so also check for ASCII indicators
+        const isReplReady =
+          cleanOutput.includes('❯') ||
+          cleanOutput.includes('? for shortcuts') ||
+          // Fallback for winpty garbled encoding - detect CLI welcome screen elements
+          (cleanOutput.includes('Welcome back') && cleanOutput.includes('Claude')) ||
+          (cleanOutput.includes('Tips for getting started') && cleanOutput.includes('Claude')) ||
+          // Detect model indicator which appears when REPL is ready
+          (cleanOutput.includes('Opus') && cleanOutput.includes('Claude API')) ||
+          (cleanOutput.includes('Sonnet') && cleanOutput.includes('Claude API'));
+
+        if (!hasSentCommand && isReplReady) {
           hasSentCommand = true;
           // Wait for REPL to fully settle
           setTimeout(() => {
@@ -347,11 +448,9 @@ export class ClaudeUsageService {
         if (settled) return;
         settled = true;
 
-        if (
-          output.includes('token_expired') ||
-          output.includes('authentication_error') ||
-          output.includes('permission_error')
-        ) {
+        // Check for auth errors - must be specific to avoid false positives
+        // Removed permission_error check as it was causing false positives with winpty encoding
+        if (output.includes('token_expired') || output.includes('"type":"authentication_error"')) {
           reject(new Error("Authentication required - please run 'claude login'"));
           return;
         }

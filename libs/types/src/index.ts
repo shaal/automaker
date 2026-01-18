@@ -21,6 +21,13 @@ export type {
   ReasoningEffort,
 } from './provider.js';
 
+// Provider constants and utilities
+export {
+  DEFAULT_TIMEOUT_MS,
+  REASONING_TIMEOUT_MULTIPLIERS,
+  calculateReasoningTimeout,
+} from './provider.js';
+
 // Codex CLI types
 export type {
   CodexSandboxMode,
@@ -100,12 +107,26 @@ export type {
   BacklogPlanPrompts,
   EnhancementPrompts,
   CommitMessagePrompts,
+  TitleGenerationPrompts,
+  IssueValidationPrompts,
+  IdeationPrompts,
+  AppSpecPrompts,
+  ContextDescriptionPrompts,
+  SuggestionsPrompts,
+  TaskExecutionPrompts,
   PromptCustomization,
   ResolvedAutoModePrompts,
   ResolvedAgentPrompts,
   ResolvedBacklogPlanPrompts,
   ResolvedEnhancementPrompts,
   ResolvedCommitMessagePrompts,
+  ResolvedTitleGenerationPrompts,
+  ResolvedIssueValidationPrompts,
+  ResolvedIdeationPrompts,
+  ResolvedAppSpecPrompts,
+  ResolvedContextDescriptionPrompts,
+  ResolvedSuggestionsPrompts,
+  ResolvedTaskExecutionPrompts,
 } from './prompts.js';
 export { DEFAULT_PROMPT_CUSTOMIZATION } from './prompts.js';
 
@@ -114,6 +135,7 @@ export type {
   ThemeMode,
   PlanningMode,
   ThinkingLevel,
+  ServerLogLevel,
   ModelProvider,
   PhaseModelEntry,
   PhaseModelConfig,
@@ -129,6 +151,13 @@ export type {
   BoardBackgroundSettings,
   WorktreeInfo,
   ProjectSettings,
+  // Event hook types
+  EventHookTrigger,
+  EventHookHttpMethod,
+  EventHookShellAction,
+  EventHookHttpAction,
+  EventHookAction,
+  EventHook,
 } from './settings.js';
 export {
   DEFAULT_KEYBOARD_SHORTCUTS,
@@ -141,6 +170,8 @@ export {
   PROJECT_SETTINGS_VERSION,
   THINKING_TOKEN_BUDGET,
   getThinkingTokenBudget,
+  // Event hook constants
+  EVENT_HOOK_TRIGGER_LABELS,
 } from './settings.js';
 
 // Model display constants
@@ -246,3 +277,18 @@ export type {
   IdeationStreamEvent,
   IdeationAnalysisEvent,
 } from './ideation.js';
+
+// Notification types
+export type { NotificationType, Notification, NotificationsFile } from './notification.js';
+export { NOTIFICATIONS_VERSION, DEFAULT_NOTIFICATIONS_FILE } from './notification.js';
+
+// Event history types
+export type {
+  StoredEvent,
+  StoredEventIndex,
+  StoredEventSummary,
+  EventHistoryFilter,
+  EventReplayResult,
+  EventReplayHookResult,
+} from './event-history.js';
+export { EVENT_HISTORY_VERSION, DEFAULT_EVENT_HISTORY_INDEX } from './event-history.js';

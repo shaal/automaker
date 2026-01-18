@@ -20,7 +20,7 @@ import {
   AlertCircle,
   ListChecks,
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, generateUUID } from '@/lib/utils';
 
 const logger = createLogger('AnalysisView');
 
@@ -638,7 +638,7 @@ ${Object.entries(projectAnalysis.filesByExtension)
 
       for (const detectedFeature of detectedFeatures) {
         await api.features.create(currentProject.path, {
-          id: crypto.randomUUID(),
+          id: generateUUID(),
           category: detectedFeature.category,
           description: detectedFeature.description,
           status: 'backlog',

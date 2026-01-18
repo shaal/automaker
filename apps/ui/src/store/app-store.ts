@@ -4,6 +4,11 @@ import type { Project, TrashedProject } from '@/lib/electron';
 import { getElectronAPI } from '@/lib/electron';
 import { createLogger } from '@automaker/utils/logger';
 import { setItem, getItem } from '@/lib/storage';
+import {
+  UI_SANS_FONT_OPTIONS,
+  UI_MONO_FONT_OPTIONS,
+  DEFAULT_FONT_VALUE,
+} from '@/config/ui-font-options';
 import type {
   Feature as BaseFeature,
   FeatureImagePath,
@@ -24,6 +29,8 @@ import type {
   PipelineStep,
   PromptCustomization,
   ModelDefinition,
+  ServerLogLevel,
+  EventHook,
 } from '@automaker/types';
 import {
   getAllCursorModelIds,
@@ -43,6 +50,7 @@ export type {
   PlanningMode,
   ThinkingLevel,
   ModelProvider,
+  ServerLogLevel,
   FeatureTextFilePath,
   FeatureImagePath,
 };
@@ -62,9 +70,10 @@ export type ViewMode =
   | 'ideation';
 
 export type ThemeMode =
-  | 'light'
-  | 'dark'
+  // Special modes
   | 'system'
+  // Dark themes
+  | 'dark'
   | 'retro'
   | 'dracula'
   | 'nord'
@@ -76,12 +85,40 @@ export type ThemeMode =
   | 'onedark'
   | 'synthwave'
   | 'red'
-  | 'cream'
   | 'sunset'
-  | 'gray';
+  | 'gray'
+  | 'forest'
+  | 'ocean'
+  | 'ember'
+  | 'ayu-dark'
+  | 'ayu-mirage'
+  | 'matcha'
+  // Light themes
+  | 'light'
+  | 'cream'
+  | 'solarizedlight'
+  | 'github'
+  | 'paper'
+  | 'rose'
+  | 'mint'
+  | 'lavender'
+  | 'sand'
+  | 'sky'
+  | 'peach'
+  | 'snow'
+  | 'sepia'
+  | 'gruvboxlight'
+  | 'nordlight'
+  | 'blossom'
+  | 'ayu-light'
+  | 'onelight'
+  | 'bluloco'
+  | 'feather';
 
-// LocalStorage key for theme persistence (fallback when server settings aren't available)
+// LocalStorage keys for persistence (fallback when server settings aren't available)
 export const THEME_STORAGE_KEY = 'automaker:theme';
+export const FONT_SANS_STORAGE_KEY = 'automaker:font-sans';
+export const FONT_MONO_STORAGE_KEY = 'automaker:font-mono';
 
 // Maximum number of output lines to keep in init script state (prevents unbounded memory growth)
 export const MAX_INIT_OUTPUT_LINES = 500;
@@ -113,11 +150,70 @@ export function getStoredTheme(): ThemeMode | null {
 }
 
 /**
+ * Helper to get effective font value with validation
+ * Returns the font to use (project override -> global -> null for default)
+ * @param projectFont - The project-specific font override
+ * @param globalFont - The global font setting
+ * @param fontOptions - The list of valid font options for validation
+ */
+function getEffectiveFont(
+  projectFont: string | undefined,
+  globalFont: string | null,
+  fontOptions: readonly { value: string; label: string }[]
+): string | null {
+  const isValidFont = (font: string | null | undefined): boolean => {
+    if (!font || font === DEFAULT_FONT_VALUE) return true;
+    return fontOptions.some((opt) => opt.value === font);
+  };
+
+  if (projectFont) {
+    if (!isValidFont(projectFont)) return null; // Fallback to default if font not in list
+    return projectFont === DEFAULT_FONT_VALUE ? null : projectFont;
+  }
+  if (!isValidFont(globalFont)) return null; // Fallback to default if font not in list
+  return globalFont === DEFAULT_FONT_VALUE ? null : globalFont;
+}
+
+/**
  * Save theme to localStorage for immediate persistence
  * This is used as a fallback when server settings can't be loaded
  */
 function saveThemeToStorage(theme: ThemeMode): void {
   setItem(THEME_STORAGE_KEY, theme);
+}
+
+/**
+ * Get fonts from localStorage as a fallback
+ * Used before server settings are loaded (e.g., on login/setup pages)
+ */
+export function getStoredFontSans(): string | null {
+  return getItem(FONT_SANS_STORAGE_KEY);
+}
+
+export function getStoredFontMono(): string | null {
+  return getItem(FONT_MONO_STORAGE_KEY);
+}
+
+/**
+ * Save fonts to localStorage for immediate persistence
+ * This is used as a fallback when server settings can't be loaded
+ */
+function saveFontSansToStorage(fontFamily: string | null): void {
+  if (fontFamily) {
+    setItem(FONT_SANS_STORAGE_KEY, fontFamily);
+  } else {
+    // Remove from storage if null (using default)
+    localStorage.removeItem(FONT_SANS_STORAGE_KEY);
+  }
+}
+
+function saveFontMonoToStorage(fontFamily: string | null): void {
+  if (fontFamily) {
+    setItem(FONT_MONO_STORAGE_KEY, fontFamily);
+  } else {
+    // Remove from storage if null (using default)
+    localStorage.removeItem(FONT_MONO_STORAGE_KEY);
+  }
 }
 
 function persistEffectiveThemeForProject(project: Project | null, fallbackTheme: ThemeMode): void {
@@ -228,8 +324,10 @@ export interface KeyboardShortcuts {
   context: string;
   memory: string;
   settings: string;
+  projectSettings: string;
   terminal: string;
   ideation: string;
+  notifications: string;
   githubIssues: string;
   githubPrs: string;
 
@@ -263,8 +361,10 @@ export const DEFAULT_KEYBOARD_SHORTCUTS: KeyboardShortcuts = {
   context: 'C',
   memory: 'Y',
   settings: 'S',
+  projectSettings: 'Shift+S',
   terminal: 'T',
   ideation: 'I',
+  notifications: 'X',
   githubIssues: 'G',
   githubPrs: 'R',
 
@@ -495,12 +595,17 @@ export interface AppState {
   // View state
   currentView: ViewMode;
   sidebarOpen: boolean;
+  mobileSidebarHidden: boolean; // Completely hides sidebar on mobile
 
   // Agent Session state (per-project, keyed by project path)
   lastSelectedSessionByProject: Record<string, string>; // projectPath -> sessionId
 
   // Theme
   theme: ThemeMode;
+
+  // Fonts (global defaults)
+  fontFamilySans: string | null; // null = use default Geist Sans
+  fontFamilyMono: string | null; // null = use default Geist Mono
 
   // Features/Kanban
   features: Feature[];
@@ -564,6 +669,10 @@ export interface AppState {
   // Audio Settings
   muteDoneSound: boolean; // When true, mute the notification sound when agents complete (default: false)
 
+  // Server Log Level Settings
+  serverLogLevel: ServerLogLevel; // Log level for the API server (error, warn, info, debug)
+  enableRequestLogging: boolean; // Enable HTTP request logging (Morgan)
+
   // Enhancement Model Settings
   enhancementModel: ModelAlias; // Model used for feature enhancement (default: sonnet)
 
@@ -606,6 +715,9 @@ export interface AppState {
   opencodeModelsLastFetched: number | null; // Timestamp of last successful fetch
   opencodeModelsLastFailedAt: number | null; // Timestamp of last failed fetch
 
+  // Provider Visibility Settings
+  disabledProviders: ModelProvider[]; // Providers that are disabled and hidden from dropdowns
+
   // Claude Agent SDK Settings
   autoLoadClaudeMd: boolean; // Auto-load CLAUDE.md files using SDK's settingSources option
   skipSandboxWarning: boolean; // Skip the sandbox environment warning dialog on startup
@@ -626,6 +738,9 @@ export interface AppState {
 
   // Prompt Customization
   promptCustomization: PromptCustomization; // Custom prompts for Auto Mode, Agent, Backlog Plan, Enhancement
+
+  // Event Hooks
+  eventHooks: EventHook[]; // Event hooks for custom commands or webhooks
 
   // Project Analysis
   projectAnalysis: ProjectAnalysis | null;
@@ -716,6 +831,10 @@ export interface AppState {
   // Auto-dismiss Init Script Indicator (per-project, keyed by project path)
   // Whether to auto-dismiss the indicator after completion (default: true)
   autoDismissInitScriptIndicatorByProject: Record<string, boolean>;
+
+  // Use Worktrees Override (per-project, keyed by project path)
+  // undefined = use global setting, true/false = project-specific override
+  useWorktreesByProject: Record<string, boolean | undefined>;
 
   // UI State (previously in localStorage, now synced via API)
   /** Whether worktree panel is collapsed in board view */
@@ -889,12 +1008,22 @@ export interface AppActions {
   setCurrentView: (view: ViewMode) => void;
   toggleSidebar: () => void;
   setSidebarOpen: (open: boolean) => void;
+  toggleMobileSidebarHidden: () => void;
+  setMobileSidebarHidden: (hidden: boolean) => void;
 
   // Theme actions
   setTheme: (theme: ThemeMode) => void;
   setProjectTheme: (projectId: string, theme: ThemeMode | null) => void; // Set per-project theme (null to clear)
   getEffectiveTheme: () => ThemeMode; // Get the effective theme (project, global, or preview if set)
   setPreviewTheme: (theme: ThemeMode | null) => void; // Set preview theme for hover preview (null to clear)
+
+  // Font actions (global + per-project override)
+  setFontSans: (fontFamily: string | null) => void; // Set global UI/sans font (null to clear)
+  setFontMono: (fontFamily: string | null) => void; // Set global code/mono font (null to clear)
+  setProjectFontSans: (projectId: string, fontFamily: string | null) => void; // Set per-project UI/sans font override (null = use global)
+  setProjectFontMono: (projectId: string, fontFamily: string | null) => void; // Set per-project code/mono font override (null = use global)
+  getEffectiveFontSans: () => string | null; // Get effective UI font (project override -> global -> null for default)
+  getEffectiveFontMono: () => string | null; // Get effective code font (project override -> global -> null for default)
 
   // Feature actions
   setFeatures: (features: Feature[]) => void;
@@ -979,6 +1108,10 @@ export interface AppActions {
   // Audio Settings actions
   setMuteDoneSound: (muted: boolean) => void;
 
+  // Server Log Level actions
+  setServerLogLevel: (level: ServerLogLevel) => void;
+  setEnableRequestLogging: (enabled: boolean) => void;
+
   // Enhancement Model actions
   setEnhancementModel: (model: ModelAlias) => void;
 
@@ -1021,6 +1154,11 @@ export interface AppActions {
     providers: Array<{ id: string; name: string; authenticated: boolean; authMethod?: string }>
   ) => void;
 
+  // Provider Visibility Settings actions
+  setDisabledProviders: (providers: ModelProvider[]) => void;
+  toggleProviderDisabled: (provider: ModelProvider, disabled: boolean) => void;
+  isProviderDisabled: (provider: ModelProvider) => boolean;
+
   // Claude Agent SDK Settings actions
   setAutoLoadClaudeMd: (enabled: boolean) => Promise<void>;
   setSkipSandboxWarning: (skip: boolean) => Promise<void>;
@@ -1030,6 +1168,9 @@ export interface AppActions {
 
   // Prompt Customization actions
   setPromptCustomization: (customization: PromptCustomization) => Promise<void>;
+
+  // Event Hook actions
+  setEventHooks: (hooks: EventHook[]) => void;
 
   // MCP Server actions
   addMCPServer: (server: Omit<MCPServerConfig, 'id'>) => void;
@@ -1158,6 +1299,11 @@ export interface AppActions {
   setAutoDismissInitScriptIndicator: (projectPath: string, autoDismiss: boolean) => void;
   getAutoDismissInitScriptIndicator: (projectPath: string) => boolean;
 
+  // Use Worktrees Override actions (per-project)
+  setProjectUseWorktrees: (projectPath: string, useWorktrees: boolean | null) => void; // null = use global
+  getProjectUseWorktrees: (projectPath: string) => boolean | undefined; // undefined = using global
+  getEffectiveUseWorktrees: (projectPath: string) => boolean; // Returns actual value (project or global fallback)
+
   // UI State actions (previously in localStorage, now synced via API)
   setWorktreePanelCollapsed: (collapsed: boolean) => void;
   setLastProjectDir: (dir: string) => void;
@@ -1214,8 +1360,11 @@ const initialState: AppState = {
   projectHistoryIndex: -1,
   currentView: 'welcome',
   sidebarOpen: true,
+  mobileSidebarHidden: false, // Sidebar visible by default on mobile
   lastSelectedSessionByProject: {},
   theme: getStoredTheme() || 'dark', // Use localStorage theme as initial value, fallback to 'dark'
+  fontFamilySans: getStoredFontSans(), // Use localStorage font as initial value (null = use default Geist Sans)
+  fontFamilyMono: getStoredFontMono(), // Use localStorage font as initial value (null = use default Geist Mono)
   features: [],
   appSpec: '',
   ipcConnected: false,
@@ -1242,6 +1391,8 @@ const initialState: AppState = {
   worktreesByProject: {},
   keyboardShortcuts: DEFAULT_KEYBOARD_SHORTCUTS, // Default keyboard shortcuts
   muteDoneSound: false, // Default to sound enabled (not muted)
+  serverLogLevel: 'info', // Default to info level for server logs
+  enableRequestLogging: true, // Default to enabled for HTTP request logging
   enhancementModel: 'sonnet', // Default to sonnet for feature enhancement
   validationModel: 'opus', // Default to opus for GitHub issue validation
   phaseModels: DEFAULT_PHASE_MODELS, // Phase-specific model configuration
@@ -1264,6 +1415,7 @@ const initialState: AppState = {
   opencodeModelsError: null,
   opencodeModelsLastFetched: null,
   opencodeModelsLastFailedAt: null,
+  disabledProviders: [], // No providers disabled by default
   autoLoadClaudeMd: false, // Default to disabled (user must opt-in)
   skipSandboxWarning: false, // Default to disabled (show sandbox warning dialog)
   mcpServers: [], // No MCP servers configured by default
@@ -1273,6 +1425,7 @@ const initialState: AppState = {
   enableSubagents: true, // Subagents enabled by default
   subagentsSources: ['user', 'project'] as Array<'user' | 'project'>, // Load from both sources by default
   promptCustomization: {}, // Empty by default - all prompts use built-in defaults
+  eventHooks: [], // No event hooks configured by default
   projectAnalysis: null,
   isAnalyzing: false,
   boardBackgroundByProject: {},
@@ -1287,7 +1440,7 @@ const initialState: AppState = {
     defaultFontSize: 14,
     defaultRunScript: '',
     screenReaderMode: false,
-    fontFamily: "Menlo, Monaco, 'Courier New', monospace",
+    fontFamily: DEFAULT_FONT_VALUE,
     scrollbackLines: 5000,
     lineHeight: 1.0,
     maxSessions: 100,
@@ -1314,6 +1467,7 @@ const initialState: AppState = {
   showInitScriptIndicatorByProject: {},
   defaultDeleteBranchByProject: {},
   autoDismissInitScriptIndicatorByProject: {},
+  useWorktreesByProject: {},
   // UI State (previously in localStorage, now synced via API)
   worktreePanelCollapsed: false,
   lastProjectDir: '',
@@ -1638,6 +1792,8 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
   setCurrentView: (view) => set({ currentView: view }),
   toggleSidebar: () => set({ sidebarOpen: !get().sidebarOpen }),
   setSidebarOpen: (open) => set({ sidebarOpen: open }),
+  toggleMobileSidebarHidden: () => set({ mobileSidebarHidden: !get().mobileSidebarHidden }),
+  setMobileSidebarHidden: (hidden) => set({ mobileSidebarHidden: hidden }),
 
   // Theme actions
   setTheme: (theme) => {
@@ -1683,6 +1839,73 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
   },
 
   setPreviewTheme: (theme) => set({ previewTheme: theme }),
+
+  // Font actions (global + per-project override)
+  setFontSans: (fontFamily) => {
+    // Save to localStorage for fallback when server settings aren't available
+    saveFontSansToStorage(fontFamily);
+    set({ fontFamilySans: fontFamily });
+  },
+
+  setFontMono: (fontFamily) => {
+    // Save to localStorage for fallback when server settings aren't available
+    saveFontMonoToStorage(fontFamily);
+    set({ fontFamilyMono: fontFamily });
+  },
+
+  setProjectFontSans: (projectId, fontFamily) => {
+    // Update the project's fontFamilySans property
+    // null means "clear to use global", any string (including 'default') means explicit override
+    const projects = get().projects.map((p) =>
+      p.id === projectId
+        ? { ...p, fontFamilySans: fontFamily === null ? undefined : fontFamily }
+        : p
+    );
+    set({ projects });
+
+    // Also update currentProject if it's the same project
+    const currentProject = get().currentProject;
+    if (currentProject?.id === projectId) {
+      set({
+        currentProject: {
+          ...currentProject,
+          fontFamilySans: fontFamily === null ? undefined : fontFamily,
+        },
+      });
+    }
+  },
+
+  setProjectFontMono: (projectId, fontFamily) => {
+    // Update the project's fontFamilyMono property
+    // null means "clear to use global", any string (including 'default') means explicit override
+    const projects = get().projects.map((p) =>
+      p.id === projectId
+        ? { ...p, fontFamilyMono: fontFamily === null ? undefined : fontFamily }
+        : p
+    );
+    set({ projects });
+
+    // Also update currentProject if it's the same project
+    const currentProject = get().currentProject;
+    if (currentProject?.id === projectId) {
+      set({
+        currentProject: {
+          ...currentProject,
+          fontFamilyMono: fontFamily === null ? undefined : fontFamily,
+        },
+      });
+    }
+  },
+
+  getEffectiveFontSans: () => {
+    const { currentProject, fontFamilySans } = get();
+    return getEffectiveFont(currentProject?.fontFamilySans, fontFamilySans, UI_SANS_FONT_OPTIONS);
+  },
+
+  getEffectiveFontMono: () => {
+    const { currentProject, fontFamilyMono } = get();
+    return getEffectiveFont(currentProject?.fontFamilyMono, fontFamilyMono, UI_MONO_FONT_OPTIONS);
+  },
 
   // Feature actions
   setFeatures: (features) => set({ features }),
@@ -2027,6 +2250,10 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
   // Audio Settings actions
   setMuteDoneSound: (muted) => set({ muteDoneSound: muted }),
 
+  // Server Log Level actions
+  setServerLogLevel: (level) => set({ serverLogLevel: level }),
+  setEnableRequestLogging: (enabled) => set({ enableRequestLogging: enabled }),
+
   // Enhancement Model actions
   setEnhancementModel: (model) => set({ enhancementModel: model }),
 
@@ -2154,6 +2381,16 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
       ),
     }),
 
+  // Provider Visibility Settings actions
+  setDisabledProviders: (providers) => set({ disabledProviders: providers }),
+  toggleProviderDisabled: (provider, disabled) =>
+    set((state) => ({
+      disabledProviders: disabled
+        ? [...state.disabledProviders, provider]
+        : state.disabledProviders.filter((p) => p !== provider),
+    })),
+  isProviderDisabled: (provider) => get().disabledProviders.includes(provider),
+
   // Claude Agent SDK Settings actions
   setAutoLoadClaudeMd: async (enabled) => {
     const previous = get().autoLoadClaudeMd;
@@ -2187,6 +2424,9 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     const { syncSettingsToServer } = await import('@/hooks/use-settings-migration');
     await syncSettingsToServer();
   },
+
+  // Event Hook actions
+  setEventHooks: (hooks) => set({ eventHooks: hooks }),
 
   // MCP Server actions
   addMCPServer: (server) => {
@@ -3478,6 +3718,31 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
   getAutoDismissInitScriptIndicator: (projectPath) => {
     // Default to true (auto-dismiss enabled) if not set
     return get().autoDismissInitScriptIndicatorByProject[projectPath] ?? true;
+  },
+
+  // Use Worktrees Override actions (per-project)
+  setProjectUseWorktrees: (projectPath, useWorktrees) => {
+    const newValue = useWorktrees === null ? undefined : useWorktrees;
+    set({
+      useWorktreesByProject: {
+        ...get().useWorktreesByProject,
+        [projectPath]: newValue,
+      },
+    });
+  },
+
+  getProjectUseWorktrees: (projectPath) => {
+    // Returns undefined if using global setting, true/false if project-specific
+    return get().useWorktreesByProject[projectPath];
+  },
+
+  getEffectiveUseWorktrees: (projectPath) => {
+    // Returns the actual value to use (project override or global fallback)
+    const projectSetting = get().useWorktreesByProject[projectPath];
+    if (projectSetting !== undefined) {
+      return projectSetting;
+    }
+    return get().useWorktrees;
   },
 
   // UI State actions (previously in localStorage, now synced via API)

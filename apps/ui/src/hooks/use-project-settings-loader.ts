@@ -93,8 +93,11 @@ export function useProjectSettingsLoader() {
           }
 
           // Apply defaultDeleteBranch if present
-          if (result.settings.defaultDeleteBranch !== undefined) {
-            setDefaultDeleteBranch(requestedProjectPath, result.settings.defaultDeleteBranch);
+          if (result.settings.defaultDeleteBranchWithWorktree !== undefined) {
+            setDefaultDeleteBranch(
+              requestedProjectPath,
+              result.settings.defaultDeleteBranchWithWorktree
+            );
           }
 
           // Apply autoDismissInitScriptIndicator if present

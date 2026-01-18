@@ -160,6 +160,7 @@ export function parseLocalStorageSettings(): Partial<GlobalSettings> | null {
       opencodeDefaultModel: state.opencodeDefaultModel as GlobalSettings['opencodeDefaultModel'],
       enabledDynamicModelIds:
         state.enabledDynamicModelIds as GlobalSettings['enabledDynamicModelIds'],
+      disabledProviders: (state.disabledProviders ?? []) as GlobalSettings['disabledProviders'],
       autoLoadClaudeMd: state.autoLoadClaudeMd as boolean,
       keyboardShortcuts: state.keyboardShortcuts as GlobalSettings['keyboardShortcuts'],
       mcpServers: state.mcpServers as GlobalSettings['mcpServers'],
@@ -532,6 +533,8 @@ export function hydrateStoreFromSettings(settings: GlobalSettings): void {
     path: ref.path,
     lastOpened: ref.lastOpened,
     theme: ref.theme,
+    fontFamilySans: ref.fontFamilySans,
+    fontFamilyMono: ref.fontFamilyMono,
     isFavorite: ref.isFavorite,
     icon: ref.icon,
     customIconPath: ref.customIconPath,
@@ -555,6 +558,8 @@ export function hydrateStoreFromSettings(settings: GlobalSettings): void {
 
   useAppStore.setState({
     theme: settings.theme as unknown as import('@/store/app-store').ThemeMode,
+    fontFamilySans: settings.fontFamilySans ?? null,
+    fontFamilyMono: settings.fontFamilyMono ?? null,
     sidebarOpen: settings.sidebarOpen ?? true,
     chatHistoryOpen: settings.chatHistoryOpen ?? false,
     maxConcurrency: settings.maxConcurrency ?? 3,
@@ -566,6 +571,8 @@ export function hydrateStoreFromSettings(settings: GlobalSettings): void {
     defaultRequirePlanApproval: settings.defaultRequirePlanApproval ?? false,
     defaultFeatureModel: settings.defaultFeatureModel ?? { model: 'opus' },
     muteDoneSound: settings.muteDoneSound ?? false,
+    serverLogLevel: settings.serverLogLevel ?? 'info',
+    enableRequestLogging: settings.enableRequestLogging ?? true,
     enhancementModel: settings.enhancementModel ?? 'sonnet',
     validationModel: settings.validationModel ?? 'opus',
     phaseModels: settings.phaseModels ?? current.phaseModels,
@@ -574,6 +581,7 @@ export function hydrateStoreFromSettings(settings: GlobalSettings): void {
     enabledOpencodeModels: sanitizedEnabledOpencodeModels,
     opencodeDefaultModel: sanitizedOpencodeDefaultModel,
     enabledDynamicModelIds: sanitizedDynamicModelIds,
+    disabledProviders: settings.disabledProviders ?? [],
     autoLoadClaudeMd: settings.autoLoadClaudeMd ?? false,
     skipSandboxWarning: settings.skipSandboxWarning ?? false,
     keyboardShortcuts: {
@@ -592,6 +600,13 @@ export function hydrateStoreFromSettings(settings: GlobalSettings): void {
     worktreePanelCollapsed: settings.worktreePanelCollapsed ?? false,
     lastProjectDir: settings.lastProjectDir ?? '',
     recentFolders: settings.recentFolders ?? [],
+    // Terminal font (nested in terminalState)
+    ...(settings.terminalFontFamily && {
+      terminalState: {
+        ...current.terminalState,
+        fontFamily: settings.terminalFontFamily,
+      },
+    }),
   });
 
   // Hydrate setup wizard state from global settings (API-backed)
@@ -624,10 +639,13 @@ function buildSettingsUpdateFromStore(): Record<string, unknown> {
     defaultPlanningMode: state.defaultPlanningMode,
     defaultRequirePlanApproval: state.defaultRequirePlanApproval,
     muteDoneSound: state.muteDoneSound,
+    serverLogLevel: state.serverLogLevel,
+    enableRequestLogging: state.enableRequestLogging,
     enhancementModel: state.enhancementModel,
     validationModel: state.validationModel,
     phaseModels: state.phaseModels,
     enabledDynamicModelIds: state.enabledDynamicModelIds,
+    disabledProviders: state.disabledProviders,
     autoLoadClaudeMd: state.autoLoadClaudeMd,
     skipSandboxWarning: state.skipSandboxWarning,
     keyboardShortcuts: state.keyboardShortcuts,
@@ -642,6 +660,7 @@ function buildSettingsUpdateFromStore(): Record<string, unknown> {
     worktreePanelCollapsed: state.worktreePanelCollapsed,
     lastProjectDir: state.lastProjectDir,
     recentFolders: state.recentFolders,
+    terminalFontFamily: state.terminalState.fontFamily,
   };
 }
 

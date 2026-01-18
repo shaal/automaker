@@ -32,7 +32,10 @@ import type {
   CreateIdeaInput,
   UpdateIdeaInput,
   ConvertToFeatureOptions,
+  NotificationsAPI,
+  EventHistoryAPI,
 } from './electron';
+import type { EventHistoryFilter } from '@automaker/types';
 import type { Message, SessionListItem } from '@/types/electron';
 import type { Feature, ClaudeUsageResponse, CodexUsageResponse } from '@/store/app-store';
 import type { WorktreeAPI, GitAPI, ModelDefinition, ProviderStatus } from '@/types/electron';
@@ -154,7 +157,9 @@ const getServerUrl = (): string => {
     const envUrl = import.meta.env.VITE_SERVER_URL;
     if (envUrl) return envUrl;
   }
-  return 'http://localhost:3008';
+  // Use VITE_HOSTNAME if set, otherwise default to localhost
+  const hostname = import.meta.env.VITE_HOSTNAME || 'localhost';
+  return `http://${hostname}:3008`;
 };
 
 /**
@@ -478,6 +483,7 @@ export const verifySession = async (): Promise<boolean> => {
  */
 export const checkSandboxEnvironment = async (): Promise<{
   isContainerized: boolean;
+  skipSandboxWarning?: boolean;
   error?: string;
 }> => {
   try {
@@ -493,7 +499,10 @@ export const checkSandboxEnvironment = async (): Promise<{
     }
 
     const data = await response.json();
-    return { isContainerized: data.isContainerized ?? false };
+    return {
+      isContainerized: data.isContainerized ?? false,
+      skipSandboxWarning: data.skipSandboxWarning ?? false,
+    };
   } catch (error) {
     logger.error('Sandbox environment check failed:', error);
     return { isContainerized: false, error: 'Network error' };
@@ -514,7 +523,8 @@ type EventType =
   | 'worktree:init-completed'
   | 'dev-server:started'
   | 'dev-server:output'
-  | 'dev-server:stopped';
+  | 'dev-server:stopped'
+  | 'notification:created';
 
 /**
  * Dev server log event payloads for WebSocket streaming
@@ -553,6 +563,7 @@ export interface DevServerLogsResponse {
   result?: {
     worktreePath: string;
     port: number;
+    url: string;
     logs: string;
     startedAt: string;
   };
@@ -1717,8 +1728,8 @@ export class HttpApiClient implements ElectronAPI {
     getStatus: (projectPath: string, featureId: string) =>
       this.post('/api/worktree/status', { projectPath, featureId }),
     list: (projectPath: string) => this.post('/api/worktree/list', { projectPath }),
-    listAll: (projectPath: string, includeDetails?: boolean) =>
-      this.post('/api/worktree/list', { projectPath, includeDetails }),
+    listAll: (projectPath: string, includeDetails?: boolean, forceRefreshGitHub?: boolean) =>
+      this.post('/api/worktree/list', { projectPath, includeDetails, forceRefreshGitHub }),
     create: (projectPath: string, branchName: string, baseBranch?: string) =>
       this.post('/api/worktree/create', {
         projectPath,
@@ -1875,6 +1886,7 @@ export class HttpApiClient implements ElectronAPI {
         projectPath,
         maxFeatures,
       }),
+    sync: (projectPath: string) => this.post('/api/spec-regeneration/sync', { projectPath }),
     stop: (projectPath?: string) => this.post('/api/spec-regeneration/stop', { projectPath }),
     status: (projectPath?: string) =>
       this.get(
@@ -2171,6 +2183,9 @@ export class HttpApiClient implements ElectronAPI {
           hideScrollbar: boolean;
         };
         worktreePanelVisible?: boolean;
+        showInitScriptIndicator?: boolean;
+        defaultDeleteBranchWithWorktree?: boolean;
+        autoDismissInitScriptIndicator?: boolean;
         lastSelectedSessionId?: string;
       };
       error?: string;
@@ -2325,8 +2340,32 @@ export class HttpApiClient implements ElectronAPI {
     stop: (): Promise<{ success: boolean; error?: string }> =>
       this.post('/api/backlog-plan/stop', {}),
 
-    status: (): Promise<{ success: boolean; isRunning?: boolean; error?: string }> =>
-      this.get('/api/backlog-plan/status'),
+    status: (
+      projectPath: string
+    ): Promise<{
+      success: boolean;
+      isRunning?: boolean;
+      savedPlan?: {
+        savedAt: string;
+        prompt: string;
+        model?: string;
+        result: {
+          changes: Array<{
+            type: 'add' | 'update' | 'delete';
+            featureId?: string;
+            feature?: Record<string, unknown>;
+            reason: string;
+          }>;
+          summary: string;
+          dependencyUpdates: Array<{
+            featureId: string;
+            removedDependencies: string[];
+            addedDependencies: string[];
+          }>;
+        };
+      } | null;
+      error?: string;
+    }> => this.get(`/api/backlog-plan/status?projectPath=${encodeURIComponent(projectPath)}`),
 
     apply: (
       projectPath: string,
@@ -2347,6 +2386,9 @@ export class HttpApiClient implements ElectronAPI {
       branchName?: string
     ): Promise<{ success: boolean; appliedChanges?: string[]; error?: string }> =>
       this.post('/api/backlog-plan/apply', { projectPath, plan, branchName }),
+
+    clear: (projectPath: string): Promise<{ success: boolean; error?: string }> =>
+      this.post('/api/backlog-plan/clear', { projectPath }),
 
     onEvent: (callback: (data: unknown) => void): (() => void) => {
       return this.subscribeToEvent('backlog-plan:event', callback as EventCallback);
@@ -2411,6 +2453,43 @@ export class HttpApiClient implements ElectronAPI {
     onAnalysisEvent: (callback: (event: any) => void): (() => void) => {
       return this.subscribeToEvent('ideation:analysis', callback as EventCallback);
     },
+  };
+
+  // Notifications API - project-level notifications
+  notifications: NotificationsAPI & {
+    onNotificationCreated: (callback: (notification: any) => void) => () => void;
+  } = {
+    list: (projectPath: string) => this.post('/api/notifications/list', { projectPath }),
+
+    getUnreadCount: (projectPath: string) =>
+      this.post('/api/notifications/unread-count', { projectPath }),
+
+    markAsRead: (projectPath: string, notificationId?: string) =>
+      this.post('/api/notifications/mark-read', { projectPath, notificationId }),
+
+    dismiss: (projectPath: string, notificationId?: string) =>
+      this.post('/api/notifications/dismiss', { projectPath, notificationId }),
+
+    onNotificationCreated: (callback: (notification: any) => void): (() => void) => {
+      return this.subscribeToEvent('notification:created', callback as EventCallback);
+    },
+  };
+
+  // Event History API - stored events for debugging and replay
+  eventHistory: EventHistoryAPI = {
+    list: (projectPath: string, filter?: EventHistoryFilter) =>
+      this.post('/api/event-history/list', { projectPath, filter }),
+
+    get: (projectPath: string, eventId: string) =>
+      this.post('/api/event-history/get', { projectPath, eventId }),
+
+    delete: (projectPath: string, eventId: string) =>
+      this.post('/api/event-history/delete', { projectPath, eventId }),
+
+    clear: (projectPath: string) => this.post('/api/event-history/clear', { projectPath }),
+
+    replay: (projectPath: string, eventId: string, hookIds?: string[]) =>
+      this.post('/api/event-history/replay', { projectPath, eventId, hookIds }),
   };
 
   // MCP API - Test MCP server connections and list tools

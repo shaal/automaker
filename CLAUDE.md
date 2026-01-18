@@ -166,7 +166,10 @@ Use `resolveModelString()` from `@automaker/model-resolver` to convert model ali
 ## Environment Variables
 
 - `ANTHROPIC_API_KEY` - Anthropic API key (or use Claude Code CLI auth)
+- `HOST` - Host to bind server to (default: 0.0.0.0)
+- `HOSTNAME` - Hostname for user-facing URLs (default: localhost)
 - `PORT` - Server port (default: 3008)
 - `DATA_DIR` - Data storage directory (default: ./data)
 - `ALLOWED_ROOT_DIRECTORY` - Restrict file operations to specific directory
 - `AUTOMAKER_MOCK_AGENT=true` - Enable mock agent mode for CI testing
+- `VITE_HOSTNAME` - Hostname for frontend API URLs (default: localhost)

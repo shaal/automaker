@@ -25,8 +25,17 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
+import { Switch } from '@/components/ui/switch';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { TERMINAL_FONT_OPTIONS } from '@/config/terminal-themes';
+import { DEFAULT_FONT_VALUE } from '@/config/ui-font-options';
 import { toast } from 'sonner';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { TerminalPanel } from './terminal-view/terminal-panel';
@@ -232,6 +241,8 @@ export function TerminalView() {
     setTerminalDefaultRunScript,
     setTerminalFontFamily,
     setTerminalLineHeight,
+    setTerminalScrollbackLines,
+    setTerminalScreenReaderMode,
     updateTerminalPanelSizes,
   } = useAppStore();
 
@@ -1457,9 +1468,9 @@ export function TerminalView() {
                   <Settings className="h-4 w-4" />
                 </Button>
               </PopoverTrigger>
-              <PopoverContent className="w-80" align="end">
+              <PopoverContent className="w-72" align="end">
                 <div className="space-y-4">
-                  <div className="space-y-2">
+                  <div className="space-y-1">
                     <h4 className="font-medium text-sm">Terminal Settings</h4>
                     <p className="text-xs text-muted-foreground">
                       Configure global terminal appearance
@@ -1469,15 +1480,15 @@ export function TerminalView() {
                   {/* Default Font Size */}
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <Label className="text-sm">Default Font Size</Label>
-                      <span className="text-sm text-muted-foreground">
+                      <Label className="text-xs font-medium">Default Font Size</Label>
+                      <span className="text-xs text-muted-foreground">
                         {terminalState.defaultFontSize}px
                       </span>
                     </div>
                     <Slider
                       value={[terminalState.defaultFontSize]}
                       min={8}
-                      max={24}
+                      max={32}
                       step={1}
                       onValueChange={([value]) => setTerminalDefaultFontSize(value)}
                       onValueCommit={() => {
@@ -1488,37 +1499,79 @@ export function TerminalView() {
                     />
                   </div>
 
+                  {/* Default Run Script */}
+                  <div className="space-y-2">
+                    <Label className="text-xs font-medium">Run on New Terminal</Label>
+                    <Input
+                      value={terminalState.defaultRunScript}
+                      onChange={(e) => setTerminalDefaultRunScript(e.target.value)}
+                      placeholder="e.g., claude"
+                      className="h-7 text-xs"
+                    />
+                    <p className="text-[10px] text-muted-foreground">
+                      Command to run when creating a new terminal
+                    </p>
+                  </div>
+
                   {/* Font Family */}
                   <div className="space-y-2">
-                    <Label className="text-sm">Font Family</Label>
-                    <select
-                      value={terminalState.fontFamily}
-                      onChange={(e) => {
-                        setTerminalFontFamily(e.target.value);
+                    <Label className="text-xs font-medium">Font Family</Label>
+                    <Select
+                      value={terminalState.fontFamily || DEFAULT_FONT_VALUE}
+                      onValueChange={(value) => {
+                        setTerminalFontFamily(value);
                         toast.info('Font family changed', {
                           description: 'Restart terminal for changes to take effect',
                         });
                       }}
-                      className={cn(
-                        'w-full px-2 py-1.5 rounded-md text-sm',
-                        'bg-accent/50 border border-border',
-                        'text-foreground',
-                        'focus:outline-none focus:ring-2 focus:ring-ring'
-                      )}
                     >
-                      {TERMINAL_FONT_OPTIONS.map((font) => (
-                        <option key={font.value} value={font.value}>
-                          {font.label}
-                        </option>
-                      ))}
-                    </select>
+                      <SelectTrigger className="w-full h-8 text-xs">
+                        <SelectValue placeholder="Default (Menlo / Monaco)" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {TERMINAL_FONT_OPTIONS.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>
+                            <span
+                              style={{
+                                fontFamily:
+                                  option.value === DEFAULT_FONT_VALUE ? undefined : option.value,
+                              }}
+                            >
+                              {option.label}
+                            </span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* Scrollback */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs font-medium">Scrollback</Label>
+                      <span className="text-xs text-muted-foreground">
+                        {(terminalState.scrollbackLines / 1000).toFixed(0)}k lines
+                      </span>
+                    </div>
+                    <Slider
+                      value={[terminalState.scrollbackLines]}
+                      min={1000}
+                      max={100000}
+                      step={1000}
+                      onValueChange={([value]) => setTerminalScrollbackLines(value)}
+                      onValueCommit={() => {
+                        toast.info('Scrollback changed', {
+                          description: 'Restart terminal for changes to take effect',
+                        });
+                      }}
+                    />
                   </div>
 
                   {/* Line Height */}
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <Label className="text-sm">Line Height</Label>
-                      <span className="text-sm text-muted-foreground">
+                      <Label className="text-xs font-medium">Line Height</Label>
+                      <span className="text-xs text-muted-foreground">
                         {terminalState.lineHeight.toFixed(1)}
                       </span>
                     </div>
@@ -1536,18 +1589,21 @@ export function TerminalView() {
                     />
                   </div>
 
-                  {/* Default Run Script */}
-                  <div className="space-y-2">
-                    <Label className="text-sm">Default Run Script</Label>
-                    <Input
-                      value={terminalState.defaultRunScript}
-                      onChange={(e) => setTerminalDefaultRunScript(e.target.value)}
-                      placeholder="e.g., claude, npm run dev"
-                      className="h-8 text-sm"
+                  {/* Screen Reader */}
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label className="text-xs font-medium">Screen Reader</Label>
+                      <p className="text-[10px] text-muted-foreground">Enable accessibility mode</p>
+                    </div>
+                    <Switch
+                      checked={terminalState.screenReaderMode}
+                      onCheckedChange={(checked) => {
+                        setTerminalScreenReaderMode(checked);
+                        toast.info(checked ? 'Screen reader enabled' : 'Screen reader disabled', {
+                          description: 'Restart terminal for changes to take effect',
+                        });
+                      }}
                     />
-                    <p className="text-xs text-muted-foreground">
-                      Command to run when opening new terminals
-                    </p>
                   </div>
                 </div>
               </PopoverContent>

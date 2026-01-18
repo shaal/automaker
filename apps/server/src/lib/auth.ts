@@ -142,6 +142,8 @@ if (process.env.AUTOMAKER_HIDE_API_KEY !== 'true') {
 ║    ${API_KEY}
 ║                                                                       ║
 ║  In Electron mode, authentication is handled automatically.          ║
+║                                                                       ║
+║  💡 Tip: Set AUTOMAKER_API_KEY env var to use a fixed key for dev    ║
 ╚═══════════════════════════════════════════════════════════════════════╝
 `);
 } else {

@@ -6,7 +6,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Bot, Send, User, Loader2, Sparkles, FileText, ArrowLeft, CheckCircle } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, generateUUID } from '@/lib/utils';
 import { getElectronAPI } from '@/lib/electron';
 import { Markdown } from '@/components/ui/markdown';
 import { useFileBrowser } from '@/contexts/file-browser-context';
@@ -345,7 +345,7 @@ export function InterviewView() {
 
       // Create initial feature in the features folder
       const initialFeature: Feature = {
-        id: crypto.randomUUID(),
+        id: generateUUID(),
         category: 'Core',
         description: 'Initial project setup',
         status: 'backlog' as const,

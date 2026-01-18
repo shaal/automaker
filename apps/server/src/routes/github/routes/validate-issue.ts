@@ -30,11 +30,11 @@ import { writeValidation } from '../../../lib/validation-storage.js';
 import { streamingQuery } from '../../../providers/simple-query-service.js';
 import {
   issueValidationSchema,
-  ISSUE_VALIDATION_SYSTEM_PROMPT,
   buildValidationPrompt,
   ValidationComment,
   ValidationLinkedPR,
 } from './validation-schema.js';
+import { getPromptCustomization } from '../../../lib/settings-helpers.js';
 import {
   trySetValidationRunning,
   clearValidationStatus,
@@ -117,13 +117,17 @@ async function runValidation(
 
     let responseText = '';
 
+    // Get customized prompts from settings
+    const prompts = await getPromptCustomization(settingsService, '[ValidateIssue]');
+    const issueValidationSystemPrompt = prompts.issueValidation.systemPrompt;
+
     // Determine if we should use structured output (Claude/Codex support it, Cursor/OpenCode don't)
     const useStructuredOutput = isClaudeModel(model) || isCodexModel(model);
 
     // Build the final prompt - for Cursor, include system prompt and JSON schema instructions
     let finalPrompt = basePrompt;
     if (!useStructuredOutput) {
-      finalPrompt = `${ISSUE_VALIDATION_SYSTEM_PROMPT}
+      finalPrompt = `${issueValidationSystemPrompt}
 
 CRITICAL INSTRUCTIONS:
 1. DO NOT write any files. Return the JSON in your response only.
@@ -167,7 +171,7 @@ ${basePrompt}`;
       prompt: finalPrompt,
       model: model as string,
       cwd: projectPath,
-      systemPrompt: useStructuredOutput ? ISSUE_VALIDATION_SYSTEM_PROMPT : undefined,
+      systemPrompt: useStructuredOutput ? issueValidationSystemPrompt : undefined,
       abortController,
       thinkingLevel: effectiveThinkingLevel,
       reasoningEffort: effectiveReasoningEffort,

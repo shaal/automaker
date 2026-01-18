@@ -18,20 +18,21 @@ export function useSpecLoading() {
     try {
       const api = getElectronAPI();
 
-      // Check if spec generation is running before trying to load
-      // This prevents showing "No App Specification Found" during generation
+      // Check if spec generation is running
       if (api.specRegeneration) {
         const status = await api.specRegeneration.status(currentProject.path);
         if (status.success && status.isRunning) {
-          logger.debug('Spec generation is running for this project, skipping load');
+          logger.debug('Spec generation is running for this project');
           setIsGenerationRunning(true);
-          setIsLoading(false);
-          return;
+        } else {
+          setIsGenerationRunning(false);
         }
+      } else {
+        setIsGenerationRunning(false);
       }
-      // Always reset when generation is not running (handles edge case where api.specRegeneration might not be available)
-      setIsGenerationRunning(false);
 
+      // Always try to load the spec file, even if generation is running
+      // This allows users to view their existing spec while generating features
       const result = await api.readFile(`${currentProject.path}/.automaker/app_spec.txt`);
 
       if (result.success && result.content) {

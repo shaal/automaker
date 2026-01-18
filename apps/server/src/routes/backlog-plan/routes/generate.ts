@@ -4,7 +4,13 @@
 
 import type { Request, Response } from 'express';
 import type { EventEmitter } from '../../../lib/events.js';
-import { getBacklogPlanStatus, setRunningState, getErrorMessage, logError } from '../common.js';
+import {
+  getBacklogPlanStatus,
+  setRunningState,
+  setRunningDetails,
+  getErrorMessage,
+  logError,
+} from '../common.js';
 import { generateBacklogPlan } from '../generate-plan.js';
 import type { SettingsService } from '../../../services/settings-service.js';
 
@@ -37,6 +43,12 @@ export function createGenerateHandler(events: EventEmitter, settingsService?: Se
       }
 
       setRunningState(true);
+      setRunningDetails({
+        projectPath,
+        prompt,
+        model,
+        startedAt: new Date().toISOString(),
+      });
       const abortController = new AbortController();
       setRunningState(true, abortController);
 
@@ -51,6 +63,7 @@ export function createGenerateHandler(events: EventEmitter, settingsService?: Se
         })
         .finally(() => {
           setRunningState(false, null);
+          setRunningDetails(null);
         });
 
       res.json({ success: true });

@@ -29,7 +29,7 @@ export function ProjectSwitcherItem({
   // Get the icon component from lucide-react
   const getIconComponent = (): LucideIcon => {
     if (project.icon && project.icon in LucideIcons) {
-      return (LucideIcons as Record<string, LucideIcon>)[project.icon];
+      return (LucideIcons as unknown as Record<string, LucideIcon>)[project.icon];
     }
     return Folder;
   };

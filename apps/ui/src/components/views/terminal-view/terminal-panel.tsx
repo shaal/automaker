@@ -30,6 +30,13 @@ import { Slider } from '@/components/ui/slider';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { useDraggable, useDroppable } from '@dnd-kit/core';
 import { useAppStore, DEFAULT_KEYBOARD_SHORTCUTS, type KeyboardShortcuts } from '@/store/app-store';
 import { useShallow } from 'zustand/react/shallow';
@@ -38,7 +45,9 @@ import {
   getTerminalTheme,
   TERMINAL_FONT_OPTIONS,
   DEFAULT_TERMINAL_FONT,
+  getTerminalFontFamily,
 } from '@/config/terminal-themes';
+import { DEFAULT_FONT_VALUE } from '@/config/ui-font-options';
 import { toast } from 'sonner';
 import { getElectronAPI } from '@/lib/electron';
 import { getApiKey, getSessionToken, getServerUrlSync } from '@/lib/http-api-client';
@@ -567,7 +576,7 @@ export function TerminalPanel({
       // Get settings from store (read at initialization time)
       const terminalSettings = useAppStore.getState().terminalState;
       const screenReaderEnabled = terminalSettings.screenReaderMode;
-      const terminalFontFamily = terminalSettings.fontFamily || DEFAULT_TERMINAL_FONT;
+      const terminalFontFamily = getTerminalFontFamily(terminalSettings.fontFamily);
       const terminalScrollback = terminalSettings.scrollbackLines || 5000;
       const terminalLineHeight = terminalSettings.lineHeight || 1.0;
 
@@ -1269,7 +1278,7 @@ export function TerminalPanel({
 
   useEffect(() => {
     if (xtermRef.current && isTerminalReady) {
-      xtermRef.current.options.fontFamily = fontFamily;
+      xtermRef.current.options.fontFamily = getTerminalFontFamily(fontFamily);
       fitAddonRef.current?.fit();
     }
   }, [fontFamily, isTerminalReady]);
@@ -1902,22 +1911,33 @@ export function TerminalPanel({
 
                 <div className="space-y-2">
                   <Label className="text-xs font-medium">Font Family</Label>
-                  <select
-                    value={fontFamily}
-                    onChange={(e) => {
-                      setTerminalFontFamily(e.target.value);
+                  <Select
+                    value={fontFamily || DEFAULT_FONT_VALUE}
+                    onValueChange={(value) => {
+                      setTerminalFontFamily(value);
                       toast.info('Font family changed', {
                         description: 'Restart terminal for changes to take effect',
                       });
                     }}
-                    className="w-full h-7 text-xs bg-background border border-input rounded-md px-2"
                   >
-                    {TERMINAL_FONT_OPTIONS.map((font) => (
-                      <option key={font.value} value={font.value}>
-                        {font.label}
-                      </option>
-                    ))}
-                  </select>
+                    <SelectTrigger className="w-full h-8 text-xs">
+                      <SelectValue placeholder="Default (Menlo / Monaco)" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {TERMINAL_FONT_OPTIONS.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          <span
+                            style={{
+                              fontFamily:
+                                option.value === DEFAULT_FONT_VALUE ? undefined : option.value,
+                            }}
+                          >
+                            {option.label}
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
 
                 <div className="space-y-2">

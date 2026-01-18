@@ -39,7 +39,10 @@ export function useWorktrees({
           logger.warn('Worktree API not available');
           return;
         }
-        const result = await api.worktree.listAll(projectPath, true);
+        // Pass forceRefreshGitHub when this is a manual refresh (not silent polling)
+        // This clears the GitHub remote cache so users can re-detect after adding a remote
+        const forceRefreshGitHub = !silent;
+        const result = await api.worktree.listAll(projectPath, true, forceRefreshGitHub);
         if (result.success && result.worktrees) {
           setWorktrees(result.worktrees);
           setWorktreesInStore(projectPath, result.worktrees);

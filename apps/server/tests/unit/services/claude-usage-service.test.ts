@@ -91,7 +91,7 @@ describe('claude-usage-service.ts', () => {
 
     it("should use 'where' command on Windows", async () => {
       vi.mocked(os.platform).mockReturnValue('win32');
-      const windowsService = new ClaudeUsageService(); // Create new service after platform mock
+      const ptyService = new ClaudeUsageService(); // Create new service after platform mock
 
       mockSpawnProcess.on.mockImplementation((event: string, callback: Function) => {
         if (event === 'close') {
@@ -100,7 +100,7 @@ describe('claude-usage-service.ts', () => {
         return mockSpawnProcess;
       });
 
-      await windowsService.isAvailable();
+      await ptyService.isAvailable();
 
       expect(spawn).toHaveBeenCalledWith('where', ['claude']);
     });
@@ -403,120 +403,22 @@ Resets Jan 15, 3pm
     });
   });
 
-  describe('executeClaudeUsageCommandMac', () => {
-    beforeEach(() => {
-      vi.mocked(os.platform).mockReturnValue('darwin');
-      vi.spyOn(process, 'env', 'get').mockReturnValue({ HOME: '/Users/testuser' });
-    });
-
-    it('should execute expect script and return output', async () => {
-      const mockOutput = `
-Current session
-65% left
-Resets in 2h
-`;
-
-      let stdoutCallback: Function;
-      let closeCallback: Function;
-
-      mockSpawnProcess.stdout = {
-        on: vi.fn((event: string, callback: Function) => {
-          if (event === 'data') {
-            stdoutCallback = callback;
-          }
-        }),
-      };
-      mockSpawnProcess.stderr = {
-        on: vi.fn(),
-      };
-      mockSpawnProcess.on = vi.fn((event: string, callback: Function) => {
-        if (event === 'close') {
-          closeCallback = callback;
-        }
-        return mockSpawnProcess;
-      });
-
-      const promise = service.fetchUsageData();
-
-      // Simulate stdout data
-      stdoutCallback!(Buffer.from(mockOutput));
-
-      // Simulate successful close
-      closeCallback!(0);
-
-      const result = await promise;
-
-      expect(result.sessionPercentage).toBe(35); // 100 - 65
-      expect(spawn).toHaveBeenCalledWith(
-        'expect',
-        expect.arrayContaining(['-c']),
-        expect.any(Object)
-      );
-    });
-
-    it('should handle authentication errors', async () => {
-      const mockOutput = 'token_expired';
-
-      let stdoutCallback: Function;
-      let closeCallback: Function;
-
-      mockSpawnProcess.stdout = {
-        on: vi.fn((event: string, callback: Function) => {
-          if (event === 'data') {
-            stdoutCallback = callback;
-          }
-        }),
-      };
-      mockSpawnProcess.stderr = {
-        on: vi.fn(),
-      };
-      mockSpawnProcess.on = vi.fn((event: string, callback: Function) => {
-        if (event === 'close') {
-          closeCallback = callback;
-        }
-        return mockSpawnProcess;
-      });
-
-      const promise = service.fetchUsageData();
-
-      stdoutCallback!(Buffer.from(mockOutput));
-      closeCallback!(1);
-
-      await expect(promise).rejects.toThrow('Authentication required');
-    });
-
-    it('should handle timeout with no data', async () => {
-      vi.useFakeTimers();
-
-      mockSpawnProcess.stdout = {
-        on: vi.fn(),
-      };
-      mockSpawnProcess.stderr = {
-        on: vi.fn(),
-      };
-      mockSpawnProcess.on = vi.fn(() => mockSpawnProcess);
-      mockSpawnProcess.kill = vi.fn();
-
-      const promise = service.fetchUsageData();
-
-      // Advance time past timeout (30 seconds)
-      vi.advanceTimersByTime(31000);
-
-      await expect(promise).rejects.toThrow('Command timed out');
-
-      vi.useRealTimers();
+  // Note: executeClaudeUsageCommandMac tests removed - the service now uses PTY for all platforms
+  // The executeClaudeUsageCommandMac method exists but is dead code (never called)
+  describe.skip('executeClaudeUsageCommandMac (deprecated - uses PTY now)', () => {
+    it('should be skipped - service now uses PTY for all platforms', () => {
+      expect(true).toBe(true);
     });
   });
 
-  describe('executeClaudeUsageCommandWindows', () => {
+  describe('executeClaudeUsageCommandPty', () => {
+    // Note: The service now uses PTY for all platforms, using process.cwd() as the working directory
     beforeEach(() => {
       vi.mocked(os.platform).mockReturnValue('win32');
-      vi.mocked(os.homedir).mockReturnValue('C:\\Users\\testuser');
-      vi.spyOn(process, 'env', 'get').mockReturnValue({ USERPROFILE: 'C:\\Users\\testuser' });
     });
 
-    it('should use node-pty on Windows and return output', async () => {
-      const windowsService = new ClaudeUsageService(); // Create new service for Windows platform
+    it('should use node-pty and return output', async () => {
+      const ptyService = new ClaudeUsageService();
       const mockOutput = `
 Current session
 65% left
@@ -538,7 +440,7 @@ Resets in 2h
       };
       vi.mocked(pty.spawn).mockReturnValue(mockPty as any);
 
-      const promise = windowsService.fetchUsageData();
+      const promise = ptyService.fetchUsageData();
 
       // Simulate data
       dataCallback!(mockOutput);
@@ -549,16 +451,19 @@ Resets in 2h
       const result = await promise;
 
       expect(result.sessionPercentage).toBe(35);
+      // Service uses process.cwd() for --add-dir
       expect(pty.spawn).toHaveBeenCalledWith(
         'cmd.exe',
-        ['/c', 'claude', '--add-dir', 'C:\\Users\\testuser'],
-        expect.any(Object)
+        ['/c', 'claude', '--add-dir', process.cwd()],
+        expect.objectContaining({
+          cwd: process.cwd(),
+        })
       );
     });
 
     it('should send escape key after seeing usage data', async () => {
       vi.useFakeTimers();
-      const windowsService = new ClaudeUsageService();
+      const ptyService = new ClaudeUsageService();
 
       const mockOutput = 'Current session\n65% left';
 
@@ -577,7 +482,7 @@ Resets in 2h
       };
       vi.mocked(pty.spawn).mockReturnValue(mockPty as any);
 
-      const promise = windowsService.fetchUsageData();
+      const promise = ptyService.fetchUsageData();
 
       // Simulate seeing usage data
       dataCallback!(mockOutput);
@@ -594,8 +499,8 @@ Resets in 2h
       vi.useRealTimers();
     });
 
-    it('should handle authentication errors on Windows', async () => {
-      const windowsService = new ClaudeUsageService();
+    it('should handle authentication errors', async () => {
+      const ptyService = new ClaudeUsageService();
       let dataCallback: Function | undefined;
       let exitCallback: Function | undefined;
 
@@ -611,18 +516,22 @@ Resets in 2h
       };
       vi.mocked(pty.spawn).mockReturnValue(mockPty as any);
 
-      const promise = windowsService.fetchUsageData();
+      const promise = ptyService.fetchUsageData();
 
-      dataCallback!('authentication_error');
+      // Send data containing the authentication error pattern the service looks for
+      dataCallback!('"type":"authentication_error"');
+
+      // Trigger the exit handler which checks for auth errors
+      exitCallback!({ exitCode: 1 });
 
       await expect(promise).rejects.toThrow(
         "Claude CLI authentication issue. Please run 'claude logout' and then 'claude login' in your terminal to refresh permissions."
       );
     });
 
-    it('should handle timeout with no data on Windows', async () => {
+    it('should handle timeout with no data', async () => {
       vi.useFakeTimers();
-      const windowsService = new ClaudeUsageService();
+      const ptyService = new ClaudeUsageService();
 
       const mockPty = {
         onData: vi.fn(),
@@ -633,7 +542,7 @@ Resets in 2h
       };
       vi.mocked(pty.spawn).mockReturnValue(mockPty as any);
 
-      const promise = windowsService.fetchUsageData();
+      const promise = ptyService.fetchUsageData();
 
       // Advance time past timeout (45 seconds)
       vi.advanceTimersByTime(46000);
@@ -648,7 +557,7 @@ Resets in 2h
 
     it('should return data on timeout if data was captured', async () => {
       vi.useFakeTimers();
-      const windowsService = new ClaudeUsageService();
+      const ptyService = new ClaudeUsageService();
 
       let dataCallback: Function | undefined;
 
@@ -663,7 +572,7 @@ Resets in 2h
       };
       vi.mocked(pty.spawn).mockReturnValue(mockPty as any);
 
-      const promise = windowsService.fetchUsageData();
+      const promise = ptyService.fetchUsageData();
 
       // Simulate receiving usage data
       dataCallback!('Current session\n65% left\nResets in 2h');
@@ -681,7 +590,9 @@ Resets in 2h
 
     it('should send SIGTERM after ESC if process does not exit', async () => {
       vi.useFakeTimers();
-      const windowsService = new ClaudeUsageService();
+      // Mock Unix platform to test SIGTERM behavior (Windows calls kill() without signal)
+      vi.mocked(os.platform).mockReturnValue('darwin');
+      const ptyService = new ClaudeUsageService();
 
       let dataCallback: Function | undefined;
 
@@ -696,7 +607,7 @@ Resets in 2h
       };
       vi.mocked(pty.spawn).mockReturnValue(mockPty as any);
 
-      windowsService.fetchUsageData();
+      ptyService.fetchUsageData();
 
       // Simulate seeing usage data
       dataCallback!('Current session\n65% left');

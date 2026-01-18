@@ -125,11 +125,14 @@ export function isOpencodeModel(model: string | undefined | null): boolean {
   // - github-copilot/gpt-4o
   // - google/gemini-2.5-pro
   // - xai/grok-3
-  // Pattern: provider-id/model-name (must have exactly one / and not be a URL)
+  // - openrouter/qwen/qwen3-14b:free (model names can contain / or :)
+  // Pattern: provider-id/model-name (at least one /, not a URL)
   if (model.includes('/') && !model.includes('://')) {
-    const parts = model.split('/');
-    // Valid dynamic model format: provider/model-name (exactly 2 parts)
-    if (parts.length === 2 && parts[0].length > 0 && parts[1].length > 0) {
+    const slashIndex = model.indexOf('/');
+    const providerId = model.substring(0, slashIndex);
+    const modelName = model.substring(slashIndex + 1);
+    // Valid dynamic model format: provider-id/model-name (both parts non-empty)
+    if (providerId.length > 0 && modelName.length > 0) {
       return true;
     }
   }

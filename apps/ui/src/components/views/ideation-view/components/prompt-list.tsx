@@ -141,43 +141,51 @@ export function PromptList({ category, onBack }: PromptListProps) {
               return (
                 <Card
                   key={prompt.id}
-                  className={`transition-all ${
+                  className={`group transition-all duration-300 ${
                     isDisabled
-                      ? 'opacity-60 cursor-not-allowed'
-                      : 'cursor-pointer hover:border-primary hover:shadow-md'
-                  } ${isLoading || isGenerating ? 'border-blue-500 ring-1 ring-blue-500' : ''} ${
-                    isStarted && !isGenerating ? 'border-green-500/50' : ''
+                      ? 'opacity-60 cursor-not-allowed bg-muted/50'
+                      : 'cursor-pointer hover:border-primary hover:shadow-md hover:-translate-x-1'
+                  } ${isLoading || isGenerating ? 'border-blue-500/50 ring-1 ring-blue-500/20 bg-blue-50/10' : ''} ${
+                    isStarted && !isGenerating ? 'border-green-500/50 bg-green-50/10' : ''
                   }`}
                   onClick={() => !isDisabled && handleSelectPrompt(prompt)}
                 >
                   <CardContent className="p-5">
-                    <div className="flex items-start gap-4">
+                    <div className="flex items-start gap-5">
                       <div
-                        className={`p-2 rounded-lg mt-0.5 ${
+                        className={`p-3 rounded-xl shrink-0 transition-all duration-300 ${
                           isLoading || isGenerating
-                            ? 'bg-blue-500/10'
+                            ? 'bg-blue-500/10 text-blue-500'
                             : isStarted
-                              ? 'bg-green-500/10'
-                              : 'bg-primary/10'
+                              ? 'bg-green-500/10 text-green-500'
+                              : 'bg-primary/10 text-primary group-hover:bg-primary/20 group-hover:scale-110'
                         }`}
                       >
                         {isLoading || isGenerating ? (
-                          <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />
+                          <Loader2 className="w-5 h-5 animate-spin" />
                         ) : isStarted ? (
-                          <CheckCircle2 className="w-4 h-4 text-green-500" />
+                          <CheckCircle2 className="w-5 h-5" />
                         ) : (
-                          <Lightbulb className="w-4 h-4 text-primary" />
+                          <Lightbulb className="w-5 h-5" />
                         )}
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <h3 className="font-semibold">{prompt.title}</h3>
-                        <p className="text-muted-foreground text-sm mt-1">{prompt.description}</p>
+                      <div className="flex-1 min-w-0 space-y-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <h3 className="font-semibold text-lg group-hover:text-primary transition-colors">
+                            {prompt.title}
+                          </h3>
+                          {isStarted && !isGenerating && (
+                            <span className="text-xs font-medium text-green-600 bg-green-100 dark:bg-green-900/30 dark:text-green-400 px-2 py-0.5 rounded-full">
+                              Generated
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-muted-foreground text-sm leading-relaxed">
+                          {prompt.description}
+                        </p>
                         {(isLoading || isGenerating) && (
-                          <p className="text-blue-500 text-sm mt-2">Generating in dashboard...</p>
-                        )}
-                        {isStarted && !isGenerating && (
-                          <p className="text-green-500 text-sm mt-2">
-                            Already generated - check dashboard
+                          <p className="text-blue-500 text-sm font-medium animate-pulse pt-1">
+                            Generating ideas...
                           </p>
                         )}
                       </div>

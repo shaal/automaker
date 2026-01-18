@@ -130,8 +130,8 @@ test.describe('Feature Manual Review Flow', () => {
       await page.waitForTimeout(300);
     }
 
-    // Verify we're on the correct project (project name appears in sidebar button)
-    await expect(page.getByRole('button', { name: new RegExp(projectName) })).toBeVisible({
+    // Verify we're on the correct project (project switcher button shows project name)
+    await expect(page.getByTestId(`project-switcher-project-${projectName}`)).toBeVisible({
       timeout: 10000,
     });
 

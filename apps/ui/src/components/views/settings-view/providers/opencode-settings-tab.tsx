@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 import { useAppStore } from '@/store/app-store';
 import { OpencodeCliStatus, OpencodeCliStatusSkeleton } from '../cli-status/opencode-cli-status';
 import { OpencodeModelConfiguration } from './opencode-model-configuration';
+import { ProviderToggle } from './provider-toggle';
 import { getElectronAPI } from '@/lib/electron';
 import { createLogger } from '@automaker/utils/logger';
 import type { CliStatus as SharedCliStatus } from '../shared/types';
@@ -290,6 +291,9 @@ export function OpencodeSettingsTab() {
 
   return (
     <div className="space-y-6">
+      {/* Provider Visibility Toggle */}
+      <ProviderToggle provider="opencode" providerLabel="OpenCode" />
+
       <OpencodeCliStatus
         status={cliStatus}
         authStatus={authStatus}

@@ -187,6 +187,7 @@ export function BoardView() {
   // Selection mode hook for mass editing
   const {
     isSelectionMode,
+    selectionTarget,
     selectedFeatureIds,
     selectedCount,
     toggleSelectionMode,
@@ -520,9 +521,9 @@ export function BoardView() {
           // Empty string clears the branch assignment, moving features to main/current branch
           finalBranchName = '';
         } else if (workMode === 'auto') {
-          // Auto-generate a branch name based on current branch and timestamp
-          const baseBranch =
-            currentWorktreeBranch || getPrimaryWorktreeBranch(currentProject.path) || 'main';
+          // Auto-generate a branch name based on primary branch (main/master) and timestamp
+          // Always use primary branch to avoid nested feature/feature/... paths
+          const baseBranch = getPrimaryWorktreeBranch(currentProject.path) || 'main';
           const timestamp = Date.now();
           const randomSuffix = Math.random().toString(36).substring(2, 6);
           finalBranchName = `feature/${baseBranch}-${timestamp}-${randomSuffix}`;
@@ -602,7 +603,6 @@ export function BoardView() {
       selectedFeatureIds,
       updateFeature,
       exitSelectionMode,
-      currentWorktreeBranch,
       getPrimaryWorktreeBranch,
       addAndSelectWorktree,
       setWorktreeRefreshKey,
@@ -683,6 +683,67 @@ export function BoardView() {
     currentProject?.path,
     isPrimaryWorktreeBranch,
   ]);
+
+  // Get waiting_approval feature IDs in current branch for "Select All"
+  const allSelectableWaitingApprovalFeatureIds = useMemo(() => {
+    return hookFeatures
+      .filter((f) => {
+        // Only waiting_approval features
+        if (f.status !== 'waiting_approval') return false;
+
+        // Filter by current worktree branch
+        const featureBranch = f.branchName;
+        if (!featureBranch) {
+          // No branch assigned - only selectable on primary worktree
+          return currentWorktreePath === null;
+        }
+        if (currentWorktreeBranch === null) {
+          // Viewing main but branch hasn't been initialized
+          return currentProject?.path
+            ? isPrimaryWorktreeBranch(currentProject.path, featureBranch)
+            : false;
+        }
+        // Match by branch name
+        return featureBranch === currentWorktreeBranch;
+      })
+      .map((f) => f.id);
+  }, [
+    hookFeatures,
+    currentWorktreePath,
+    currentWorktreeBranch,
+    currentProject?.path,
+    isPrimaryWorktreeBranch,
+  ]);
+
+  // Handler for bulk verifying multiple features
+  const handleBulkVerify = useCallback(async () => {
+    if (!currentProject || selectedFeatureIds.size === 0) return;
+
+    try {
+      const api = getHttpApiClient();
+      const featureIds = Array.from(selectedFeatureIds);
+      const updates = { status: 'verified' as const };
+
+      // Use bulk update API for efficient batch processing
+      const result = await api.features.bulkUpdate(currentProject.path, featureIds, updates);
+
+      if (result.success) {
+        // Update local state for all features
+        featureIds.forEach((featureId) => {
+          updateFeature(featureId, updates);
+        });
+        toast.success(`Verified ${result.updatedCount} features`);
+        exitSelectionMode();
+      } else {
+        toast.error('Failed to verify some features', {
+          description: `${result.failedCount} features failed to verify`,
+        });
+      }
+    } catch (error) {
+      logger.error('Bulk verify failed:', error);
+      toast.error('Failed to verify features');
+    }
+  }, [currentProject, selectedFeatureIds, updateFeature, exitSelectionMode]);
 
   // Handler for addressing PR comments - creates a feature and starts it automatically
   const handleAddressPRComments = useCallback(
@@ -888,6 +949,32 @@ export function BoardView() {
 
     return unsubscribe;
   }, []);
+
+  // Load any saved plan from disk when opening the board
+  useEffect(() => {
+    if (!currentProject || pendingBacklogPlan) return;
+
+    let isActive = true;
+    const loadSavedPlan = async () => {
+      const api = getElectronAPI();
+      if (!api?.backlogPlan) return;
+
+      const result = await api.backlogPlan.status(currentProject.path);
+      if (
+        isActive &&
+        result.success &&
+        result.savedPlan?.result &&
+        result.savedPlan.result.changes?.length > 0
+      ) {
+        setPendingBacklogPlan(result.savedPlan.result);
+      }
+    };
+
+    loadSavedPlan();
+    return () => {
+      isActive = false;
+    };
+  }, [currentProject, pendingBacklogPlan]);
 
   useEffect(() => {
     logger.info(
@@ -1322,6 +1409,8 @@ export function BoardView() {
           }
         }}
         onOpenPlanDialog={() => setShowPlanDialog(true)}
+        hasPendingPlan={Boolean(pendingBacklogPlan)}
+        onOpenPendingPlan={() => setShowPlanDialog(true)}
         isMounted={isMounted}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
@@ -1448,6 +1537,7 @@ export function BoardView() {
             pipelineConfig={pipelineConfig}
             onOpenPipelineSettings={() => setShowPipelineSettings(true)}
             isSelectionMode={isSelectionMode}
+            selectionTarget={selectionTarget}
             selectedFeatureIds={selectedFeatureIds}
             onToggleFeatureSelection={toggleFeatureSelection}
             onToggleSelectionMode={toggleSelectionMode}
@@ -1463,11 +1553,23 @@ export function BoardView() {
       {isSelectionMode && (
         <SelectionActionBar
           selectedCount={selectedCount}
-          totalCount={allSelectableFeatureIds.length}
-          onEdit={() => setShowMassEditDialog(true)}
-          onDelete={handleBulkDelete}
+          totalCount={
+            selectionTarget === 'waiting_approval'
+              ? allSelectableWaitingApprovalFeatureIds.length
+              : allSelectableFeatureIds.length
+          }
+          onEdit={selectionTarget === 'backlog' ? () => setShowMassEditDialog(true) : undefined}
+          onDelete={selectionTarget === 'backlog' ? handleBulkDelete : undefined}
+          onVerify={selectionTarget === 'waiting_approval' ? handleBulkVerify : undefined}
           onClear={clearSelection}
-          onSelectAll={() => selectAll(allSelectableFeatureIds)}
+          onSelectAll={() =>
+            selectAll(
+              selectionTarget === 'waiting_approval'
+                ? allSelectableWaitingApprovalFeatureIds
+                : allSelectableFeatureIds
+            )
+          }
+          mode={selectionTarget === 'waiting_approval' ? 'waiting_approval' : 'backlog'}
         />
       )}
 

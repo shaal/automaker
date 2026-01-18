@@ -65,6 +65,7 @@ interface KanbanCardProps {
   isSelectionMode?: boolean;
   isSelected?: boolean;
   onToggleSelect?: () => void;
+  selectionTarget?: 'backlog' | 'waiting_approval' | null;
 }
 
 export const KanbanCard = memo(function KanbanCard({
@@ -96,6 +97,7 @@ export const KanbanCard = memo(function KanbanCard({
   isSelectionMode = false,
   isSelected = false,
   onToggleSelect,
+  selectionTarget = null,
 }: KanbanCardProps) {
   const { useWorktrees } = useAppStore();
   const [isLifted, setIsLifted] = useState(false);
@@ -125,8 +127,8 @@ export const KanbanCard = memo(function KanbanCard({
 
   const cardStyle = getCardBorderStyle(cardBorderEnabled, cardBorderOpacity);
 
-  // Only allow selection for backlog features
-  const isSelectable = isSelectionMode && feature.status === 'backlog';
+  // Only allow selection for features matching the selection target
+  const isSelectable = isSelectionMode && feature.status === selectionTarget;
 
   const wrapperClasses = cn(
     'relative select-none outline-none touch-none transition-transform duration-200 ease-out',
@@ -180,7 +182,7 @@ export const KanbanCard = memo(function KanbanCard({
 
       {/* Category row with selection checkbox */}
       <div className="px-3 pt-3 flex items-center gap-2">
-        {isSelectionMode && !isOverlay && feature.status === 'backlog' && (
+        {isSelectable && !isOverlay && (
           <Checkbox
             checked={isSelected}
             onCheckedChange={() => onToggleSelect?.()}

@@ -16,9 +16,26 @@ import { isGitRepo } from '@automaker/git-utils';
 import { getErrorMessage, logError, normalizePath, execEnv, isGhCliAvailable } from '../common.js';
 import { readAllWorktreeMetadata, type WorktreePRInfo } from '../../../lib/worktree-metadata.js';
 import { createLogger } from '@automaker/utils';
+import {
+  checkGitHubRemote,
+  type GitHubRemoteStatus,
+} from '../../github/routes/check-github-remote.js';
 
 const execAsync = promisify(exec);
 const logger = createLogger('Worktree');
+
+/**
+ * Cache for GitHub remote status per project path.
+ * This prevents repeated "no git remotes found" warnings when polling
+ * projects that don't have a GitHub remote configured.
+ */
+interface GitHubRemoteCacheEntry {
+  status: GitHubRemoteStatus;
+  checkedAt: number;
+}
+
+const githubRemoteCache = new Map<string, GitHubRemoteCacheEntry>();
+const GITHUB_REMOTE_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 interface WorktreeInfo {
   path: string;
@@ -122,22 +139,62 @@ async function scanWorktreesDirectory(
 }
 
 /**
+ * Get cached GitHub remote status for a project, or check and cache it.
+ * Returns null if gh CLI is not available.
+ */
+async function getGitHubRemoteStatus(projectPath: string): Promise<GitHubRemoteStatus | null> {
+  // Check if gh CLI is available first
+  const ghAvailable = await isGhCliAvailable();
+  if (!ghAvailable) {
+    return null;
+  }
+
+  const now = Date.now();
+  const cached = githubRemoteCache.get(projectPath);
+
+  // Return cached result if still valid
+  if (cached && now - cached.checkedAt < GITHUB_REMOTE_CACHE_TTL_MS) {
+    return cached.status;
+  }
+
+  // Check GitHub remote and cache the result
+  const status = await checkGitHubRemote(projectPath);
+  githubRemoteCache.set(projectPath, {
+    status,
+    checkedAt: Date.now(),
+  });
+
+  return status;
+}
+
+/**
  * Fetch open PRs from GitHub and create a map of branch name to PR info.
  * This allows detecting PRs that were created outside the app.
+ *
+ * Uses cached GitHub remote status to avoid repeated warnings when the
+ * project doesn't have a GitHub remote configured.
  */
 async function fetchGitHubPRs(projectPath: string): Promise<Map<string, WorktreePRInfo>> {
   const prMap = new Map<string, WorktreePRInfo>();
 
   try {
-    // Check if gh CLI is available
-    const ghAvailable = await isGhCliAvailable();
-    if (!ghAvailable) {
+    // Check GitHub remote status (uses cache to avoid repeated warnings)
+    const remoteStatus = await getGitHubRemoteStatus(projectPath);
+
+    // If gh CLI not available or no GitHub remote, return empty silently
+    if (!remoteStatus || !remoteStatus.hasGitHubRemote) {
       return prMap;
     }
 
+    // Use -R flag with owner/repo for more reliable PR fetching
+    const repoFlag =
+      remoteStatus.owner && remoteStatus.repo
+        ? `-R ${remoteStatus.owner}/${remoteStatus.repo}`
+        : '';
+
     // Fetch open PRs from GitHub
     const { stdout } = await execAsync(
-      'gh pr list --state open --json number,title,url,state,headRefName,createdAt --limit 1000',
+      `gh pr list ${repoFlag} --state open --json number,title,url,state,headRefName,createdAt --limit 1000`,
       { cwd: projectPath, env: execEnv, timeout: 15000 }
     );
 
@@ -170,14 +227,21 @@ async function fetchGitHubPRs(projectPath: string): Promise<Map<string, Worktree
 export function createListHandler() {
   return async (req: Request, res: Response): Promise<void> => {
     try {
-      const { projectPath, includeDetails } = req.body as {
+      const { projectPath, includeDetails, forceRefreshGitHub } = req.body as {
         projectPath: string;
         includeDetails?: boolean;
+        forceRefreshGitHub?: boolean;
       };
 
       if (!projectPath) {
         res.status(400).json({ success: false, error: 'projectPath required' });
         return;
+      }
+
+      // Clear GitHub remote cache if force refresh requested
+      // This allows users to re-check for GitHub remote after adding one
+      if (forceRefreshGitHub) {
+        githubRemoteCache.delete(projectPath);
       }
 
       if (!(await isGitRepo(projectPath))) {

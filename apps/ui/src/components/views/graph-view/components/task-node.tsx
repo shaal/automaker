@@ -60,13 +60,6 @@ const statusConfig = {
     borderClass: 'border-[var(--status-success)]',
     bgClass: 'bg-[var(--status-success-bg)]',
   },
-  completed: {
-    icon: CheckCircle2,
-    label: 'Completed',
-    colorClass: 'text-[var(--status-success)]',
-    borderClass: 'border-[var(--status-success)]/50',
-    bgClass: 'bg-[var(--status-success-bg)]/50',
-  },
 };
 
 const priorityConfig = {
@@ -95,8 +88,13 @@ function getCardBorderStyle(
 
 export const TaskNode = memo(function TaskNode({ data, selected }: TaskNodeProps) {
   // Handle pipeline statuses by treating them like in_progress
+  // Treat completed (archived) as verified for display
   const status = data.status || 'backlog';
-  const statusKey = status.startsWith('pipeline_') ? 'in_progress' : status;
+  const statusKey = status.startsWith('pipeline_')
+    ? 'in_progress'
+    : status === 'completed'
+      ? 'verified'
+      : status;
   const config = statusConfig[statusKey as keyof typeof statusConfig] || statusConfig.backlog;
   const StatusIcon = config.icon;
   const priorityConf = data.priority ? priorityConfig[data.priority as 1 | 2 | 3] : null;

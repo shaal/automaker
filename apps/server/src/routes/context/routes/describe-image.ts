@@ -19,7 +19,10 @@ import { simpleQuery } from '../../../providers/simple-query-service.js';
 import * as secureFs from '../../../lib/secure-fs.js';
 import * as path from 'path';
 import type { SettingsService } from '../../../services/settings-service.js';
-import { getAutoLoadClaudeMdSetting } from '../../../lib/settings-helpers.js';
+import {
+  getAutoLoadClaudeMdSetting,
+  getPromptCustomization,
+} from '../../../lib/settings-helpers.js';
 
 const logger = createLogger('DescribeImage');
 
@@ -278,12 +281,11 @@ export function createDescribeImageHandler(
 
       logger.info(`[${requestId}] Using model: ${model}`);
 
-      // Build the instruction text
-      const instructionText =
-        `Describe this image in 1-2 sentences suitable for use as context in an AI coding assistant. ` +
-        `Focus on what the image shows and its purpose (e.g., "UI mockup showing login form with email/password fields", ` +
-        `"Architecture diagram of microservices", "Screenshot of error message in terminal").\n\n` +
-        `Respond with ONLY the description text, no additional formatting, preamble, or explanation.`;
+      // Get customized prompts from settings
+      const prompts = await getPromptCustomization(settingsService, '[DescribeImage]');
+
+      // Build the instruction text from centralized prompts
+      const instructionText = prompts.contextDescription.describeImagePrompt;
 
       // Build prompt based on provider capability
       // Some providers (like Cursor) may not support image content blocks

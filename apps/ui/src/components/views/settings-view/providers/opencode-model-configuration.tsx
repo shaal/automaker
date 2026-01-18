@@ -611,16 +611,16 @@ export function OpencodeModelConfiguration({
                           Dynamic
                         </Badge>
                       </div>
-                      {models.length > 0 && (
+                      {filteredModels.length > 0 && (
                         <div className={OPENCODE_SELECT_ALL_CONTAINER_CLASS}>
                           <Checkbox
                             checked={getSelectionState(
-                              models.map((model) => model.id),
+                              filteredModels.map((model) => model.id),
                               enabledDynamicModelIds
                             )}
                             onCheckedChange={(checked) =>
                               toggleProviderDynamicModels(
-                                models.map((model) => model.id),
+                                filteredModels.map((model) => model.id),
                                 checked
                               )
                             }

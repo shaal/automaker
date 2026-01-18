@@ -7,7 +7,7 @@
  * - Per-project settings ({projectPath}/.automaker/settings.json)
  */
 
-import { createLogger } from '@automaker/utils';
+import { createLogger, atomicWriteJson, DEFAULT_BACKUP_COUNT } from '@automaker/utils';
 import * as secureFs from '../lib/secure-fs.js';
 
 import {
@@ -42,28 +42,8 @@ import {
 const logger = createLogger('SettingsService');
 
 /**
- * Atomic file write - write to temp file then rename
- */
-async function atomicWriteJson(filePath: string, data: unknown): Promise<void> {
-  const tempPath = `${filePath}.tmp.${Date.now()}`;
-  const content = JSON.stringify(data, null, 2);
-
-  try {
-    await secureFs.writeFile(tempPath, content, 'utf-8');
-    await secureFs.rename(tempPath, filePath);
-  } catch (error) {
-    // Clean up temp file if it exists
-    try {
-      await secureFs.unlink(tempPath);
-    } catch {
-      // Ignore cleanup errors
-    }
-    throw error;
-  }
-}
-
-/**
- * Safely read JSON file with fallback to default
+ * Wrapper for readJsonFile from utils that uses the local secureFs
+ * to maintain compatibility with the server's secure file system
  */
 async function readJsonFile<T>(filePath: string, defaultValue: T): Promise<T> {
   try {
@@ -88,6 +68,13 @@ async function fileExists(filePath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Write settings atomically with backup support
+ */
+async function writeSettingsJson(filePath: string, data: unknown): Promise<void> {
+  await atomicWriteJson(filePath, data, { backupCount: DEFAULT_BACKUP_COUNT });
 }
 
 /**
@@ -180,7 +167,7 @@ export class SettingsService {
     if (needsSave) {
       try {
         await ensureDataDir(this.dataDir);
-        await atomicWriteJson(settingsPath, result);
+        await writeSettingsJson(settingsPath, result);
         logger.info('Settings migration complete');
       } catch (error) {
         logger.error('Failed to save migrated settings:', error);
@@ -340,7 +327,7 @@ export class SettingsService {
       };
     }
 
-    await atomicWriteJson(settingsPath, updated);
+    await writeSettingsJson(settingsPath, updated);
     logger.info('Global settings updated');
 
     return updated;
@@ -414,7 +401,7 @@ export class SettingsService {
       };
     }
 
-    await atomicWriteJson(credentialsPath, updated);
+    await writeSettingsJson(credentialsPath, updated);
     logger.info('Credentials updated');
 
     return updated;
@@ -525,7 +512,7 @@ export class SettingsService {
       };
     }
 
-    await atomicWriteJson(settingsPath, updated);
+    await writeSettingsJson(settingsPath, updated);
     logger.info(`Project settings updated for ${projectPath}`);
 
     return updated;

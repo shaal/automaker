@@ -77,8 +77,8 @@ test.describe('Project Creation', () => {
     }
 
     // Wait for project to be set as current and visible on the page
-    // The project name appears in the sidebar project selector button
-    await expect(page.getByRole('button', { name: new RegExp(projectName) })).toBeVisible({
+    // The project name appears in the project switcher button
+    await expect(page.getByTestId(`project-switcher-project-${projectName}`)).toBeVisible({
       timeout: 15000,
     });
 

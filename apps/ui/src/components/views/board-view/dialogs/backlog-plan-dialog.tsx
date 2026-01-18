@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { createLogger } from '@automaker/utils/logger';
 import {
   Dialog,
   DialogContent,
@@ -43,16 +44,6 @@ function normalizeEntry(entry: PhaseModelEntry | string): PhaseModelEntry {
   return entry;
 }
 
-/**
- * Extract model string from PhaseModelEntry or string
- */
-function extractModel(entry: PhaseModelEntry | string): ModelAlias | CursorModelId {
-  if (typeof entry === 'string') {
-    return entry as ModelAlias | CursorModelId;
-  }
-  return entry.model;
-}
-
 interface BacklogPlanDialogProps {
   open: boolean;
   onClose: () => void;
@@ -80,6 +71,7 @@ export function BacklogPlanDialog({
   setIsGeneratingPlan,
   currentBranch,
 }: BacklogPlanDialogProps) {
+  const logger = createLogger('BacklogPlanDialog');
   const [mode, setMode] = useState<DialogMode>('input');
   const [prompt, setPrompt] = useState('');
   const [expandedChanges, setExpandedChanges] = useState<Set<number>>(new Set());
@@ -110,11 +102,17 @@ export function BacklogPlanDialog({
 
     const api = getElectronAPI();
     if (!api?.backlogPlan) {
+      logger.warn('Backlog plan API not available');
       toast.error('API not available');
       return;
     }
 
     // Start generation in background
+    logger.debug('Starting backlog plan generation', {
+      projectPath,
+      promptLength: prompt.length,
+      hasModelOverride: Boolean(modelOverride),
+    });
     setIsGeneratingPlan(true);
 
     // Use model override if set, otherwise use global default (extract model string from PhaseModelEntry)
@@ -122,12 +120,20 @@ export function BacklogPlanDialog({
     const effectiveModel = effectiveModelEntry.model;
     const result = await api.backlogPlan.generate(projectPath, prompt, effectiveModel);
     if (!result.success) {
+      logger.error('Backlog plan generation failed to start', {
+        error: result.error,
+        projectPath,
+      });
       setIsGeneratingPlan(false);
       toast.error(result.error || 'Failed to start plan generation');
       return;
     }
 
     // Show toast and close dialog - generation runs in background
+    logger.debug('Backlog plan generation started', {
+      projectPath,
+      model: effectiveModel,
+    });
     toast.info('Generating plan... This will be ready soon!', {
       duration: 3000,
     });
@@ -194,10 +200,15 @@ export function BacklogPlanDialog({
     currentBranch,
   ]);
 
-  const handleDiscard = useCallback(() => {
+  const handleDiscard = useCallback(async () => {
     setPendingPlanResult(null);
     setMode('input');
-  }, [setPendingPlanResult]);
+
+    const api = getElectronAPI();
+    if (api?.backlogPlan) {
+      await api.backlogPlan.clear(projectPath);
+    }
+  }, [setPendingPlanResult, projectPath]);
 
   const toggleChangeExpanded = (index: number) => {
     setExpandedChanges((prev) => {
@@ -260,11 +271,11 @@ export function BacklogPlanDialog({
         return (
           <div className="space-y-4">
             <div className="text-sm text-muted-foreground">
-              Describe the changes you want to make to your backlog. The AI will analyze your
-              current features and propose additions, updates, or deletions.
+              Describe the changes you want to make across your features. The AI will analyze your
+              current feature list and propose additions, updates, deletions, or restructuring.
             </div>
             <Textarea
-              placeholder="e.g., Add authentication features with login, signup, and password reset. Also add a dashboard feature that depends on authentication."
+              placeholder="e.g., Refactor onboarding into smaller features, add a dashboard feature that depends on authentication, and remove the legacy tour task."
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               className="min-h-[150px] resize-none"
@@ -283,7 +294,7 @@ export function BacklogPlanDialog({
           </div>
         );
 
-      case 'review':
+      case 'review': {
         if (!pendingPlanResult) return null;
 
         const additions = pendingPlanResult.changes.filter((c) => c.type === 'add');
@@ -389,6 +400,7 @@ export function BacklogPlanDialog({
             </div>
           </div>
         );
+      }
 
       case 'applying':
         return (
@@ -402,7 +414,6 @@ export function BacklogPlanDialog({
 
   // Get effective model entry (override or global default)
   const effectiveModelEntry = modelOverride || normalizeEntry(phaseModels.backlogPlanningModel);
-  const effectiveModel = effectiveModelEntry.model;
 
   return (
     <Dialog open={open} onOpenChange={(isOpen) => !isOpen && onClose()}>
@@ -410,12 +421,12 @@ export function BacklogPlanDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Wand2 className="w-5 h-5 text-primary" />
-            {mode === 'review' ? 'Review Plan' : 'Plan Backlog Changes'}
+            {mode === 'review' ? 'Review Plan' : 'Plan Feature Changes'}
           </DialogTitle>
           <DialogDescription>
             {mode === 'review'
-              ? 'Select which changes to apply to your backlog'
-              : 'Use AI to add, update, or remove features from your backlog'}
+              ? 'Select which changes to apply to your features'
+              : 'Use AI to add, update, remove, or restructure your features'}
           </DialogDescription>
         </DialogHeader>
 
@@ -447,7 +458,7 @@ export function BacklogPlanDialog({
                 ) : (
                   <>
                     <Wand2 className="w-4 h-4 mr-2" />
-                    Generate Plan
+                    Apply Changes
                   </>
                 )}
               </Button>

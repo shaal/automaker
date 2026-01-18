@@ -333,19 +333,43 @@ export function UsagePopover() {
     return 'bg-green-500';
   };
 
+  // Determine which provider icon and percentage to show based on active tab
+  const getTabInfo = () => {
+    if (activeTab === 'claude') {
+      return {
+        icon: AnthropicIcon,
+        percentage: claudeMaxPercentage,
+        isStale: isClaudeStale,
+      };
+    }
+    return {
+      icon: OpenAIIcon,
+      percentage: codexMaxPercentage,
+      isStale: isCodexStale,
+    };
+  };
+
+  const tabInfo = getTabInfo();
+  const statusColor = getStatusInfo(tabInfo.percentage).color;
+  const ProviderIcon = tabInfo.icon;
+
   const trigger = (
-    <Button variant="ghost" size="sm" className="h-9 gap-3 bg-secondary border border-border px-3">
+    <Button variant="ghost" size="sm" className="h-9 gap-2 bg-secondary border border-border px-3">
+      {(claudeUsage || codexUsage) && <ProviderIcon className={cn('w-4 h-4', statusColor)} />}
       <span className="text-sm font-medium">Usage</span>
       {(claudeUsage || codexUsage) && (
         <div
           className={cn(
             'h-1.5 w-16 bg-muted-foreground/20 rounded-full overflow-hidden transition-opacity',
-            isStale && 'opacity-60'
+            tabInfo.isStale && 'opacity-60'
           )}
         >
           <div
-            className={cn('h-full transition-all duration-500', getProgressBarColor(maxPercentage))}
-            style={{ width: `${Math.min(maxPercentage, 100)}%` }}
+            className={cn(
+              'h-full transition-all duration-500',
+              getProgressBarColor(tabInfo.percentage)
+            )}
+            style={{ width: `${Math.min(tabInfo.percentage, 100)}%` }}
           />
         </div>
       )}

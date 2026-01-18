@@ -7,6 +7,7 @@ import { ClaudeMdSettings } from '../claude/claude-md-settings';
 import { ClaudeUsageSection } from '../api-keys/claude-usage-section';
 import { SkillsSection } from './claude-settings-tab/skills-section';
 import { SubagentsSection } from './claude-settings-tab/subagents-section';
+import { ProviderToggle } from './provider-toggle';
 import { Info } from 'lucide-react';
 
 export function ClaudeSettingsTab() {
@@ -24,6 +25,9 @@ export function ClaudeSettingsTab() {
 
   return (
     <div className="space-y-6">
+      {/* Provider Visibility Toggle */}
+      <ProviderToggle provider="claude" providerLabel="Claude" />
+
       {/* Usage Info */}
       <div className="flex items-start gap-3 p-4 rounded-xl bg-blue-500/10 border border-blue-500/20">
         <Info className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />

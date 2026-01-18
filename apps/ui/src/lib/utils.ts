@@ -124,3 +124,39 @@ export const isMac =
     : typeof navigator !== 'undefined' &&
       (/Mac/.test(navigator.userAgent) ||
         (navigator.platform ? navigator.platform.toLowerCase().includes('mac') : false));
+
+/**
+ * Generate a UUID v4 string.
+ *
+ * Uses crypto.randomUUID() when available (secure contexts: HTTPS or localhost).
+ * Falls back to crypto.getRandomValues() for non-secure contexts (e.g., Docker via HTTP).
+ *
+ * @returns A RFC 4122 compliant UUID v4 string (e.g., "550e8400-e29b-41d4-a716-446655440000")
+ */
+export function generateUUID(): string {
+  // Use native randomUUID if available (secure contexts: HTTPS or localhost)
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+
+  // Fallback using crypto.getRandomValues() (works in all modern browsers, including non-secure contexts)
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+
+    // Set version (4) and variant (RFC 4122) bits
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // Version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // Variant RFC 4122
+
+    // Convert to hex string with proper UUID format
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+
+  // Last resort fallback using Math.random() - less secure but ensures functionality
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}

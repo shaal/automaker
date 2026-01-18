@@ -5,6 +5,10 @@ import { getElectronAPI } from '@/lib/electron';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import {
+  HeaderActionsPanel,
+  HeaderActionsPanelTrigger,
+} from '@/components/ui/header-actions-panel';
+import {
   RefreshCw,
   FileText,
   Trash2,
@@ -59,6 +63,9 @@ export function MemoryView() {
   const [isCreateMemoryOpen, setIsCreateMemoryOpen] = useState(false);
   const [newMemoryName, setNewMemoryName] = useState('');
   const [newMemoryContent, setNewMemoryContent] = useState('');
+
+  // Actions panel state (for tablet/mobile)
+  const [showActionsPanel, setShowActionsPanel] = useState(false);
 
   // Get memory directory path
   const getMemoryPath = useCallback(() => {
@@ -310,26 +317,65 @@ export function MemoryView() {
             </p>
           </div>
         </div>
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={loadMemoryFiles}
-            data-testid="refresh-memory-button"
-          >
-            <RefreshCw className="w-4 h-4 mr-2" />
-            Refresh
-          </Button>
-          <Button
-            size="sm"
-            onClick={() => setIsCreateMemoryOpen(true)}
-            data-testid="create-memory-button"
-          >
-            <FilePlus className="w-4 h-4 mr-2" />
-            Create Memory File
-          </Button>
+        <div className="flex items-center gap-2">
+          {/* Desktop: show actions inline */}
+          <div className="hidden lg:flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={loadMemoryFiles}
+              data-testid="refresh-memory-button"
+            >
+              <RefreshCw className="w-4 h-4 mr-2" />
+              Refresh
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => setIsCreateMemoryOpen(true)}
+              data-testid="create-memory-button"
+            >
+              <FilePlus className="w-4 h-4 mr-2" />
+              Create Memory File
+            </Button>
+          </div>
+          {/* Tablet/Mobile: show trigger for actions panel */}
+          <HeaderActionsPanelTrigger
+            isOpen={showActionsPanel}
+            onToggle={() => setShowActionsPanel(!showActionsPanel)}
+          />
         </div>
       </div>
+
+      {/* Actions Panel (tablet/mobile) */}
+      <HeaderActionsPanel
+        isOpen={showActionsPanel}
+        onClose={() => setShowActionsPanel(false)}
+        title="Memory Actions"
+      >
+        <Button
+          variant="outline"
+          className="w-full justify-start"
+          onClick={() => {
+            loadMemoryFiles();
+            setShowActionsPanel(false);
+          }}
+          data-testid="refresh-memory-button-mobile"
+        >
+          <RefreshCw className="w-4 h-4 mr-2" />
+          Refresh
+        </Button>
+        <Button
+          className="w-full justify-start"
+          onClick={() => {
+            setIsCreateMemoryOpen(true);
+            setShowActionsPanel(false);
+          }}
+          data-testid="create-memory-button-mobile"
+        >
+          <FilePlus className="w-4 h-4 mr-2" />
+          Create Memory File
+        </Button>
+      </HeaderActionsPanel>
 
       {/* Main content area with file list and editor */}
       <div className="flex-1 flex overflow-hidden">

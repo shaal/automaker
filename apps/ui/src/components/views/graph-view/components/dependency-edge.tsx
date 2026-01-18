@@ -74,7 +74,16 @@ export const DependencyEdge = memo(function DependencyEdge(props: EdgeProps) {
 
   const handleDelete = (e: React.MouseEvent) => {
     e.stopPropagation();
-    edgeData?.onDeleteDependency?.(source, target);
+    console.log('Edge delete button clicked', {
+      source,
+      target,
+      hasCallback: !!edgeData?.onDeleteDependency,
+    });
+    if (edgeData?.onDeleteDependency) {
+      edgeData.onDeleteDependency(source, target);
+    } else {
+      console.error('onDeleteDependency callback is not defined on edge data');
+    }
   };
 
   return (

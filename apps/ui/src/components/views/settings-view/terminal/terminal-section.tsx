@@ -2,11 +2,19 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Slider } from '@/components/ui/slider';
 import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { SquareTerminal } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAppStore } from '@/store/app-store';
 import { toast } from 'sonner';
 import { TERMINAL_FONT_OPTIONS } from '@/config/terminal-themes';
+import { DEFAULT_FONT_VALUE } from '@/config/ui-font-options';
 
 export function TerminalSection() {
   const {
@@ -53,27 +61,32 @@ export function TerminalSection() {
         {/* Font Family */}
         <div className="space-y-3">
           <Label className="text-foreground font-medium">Font Family</Label>
-          <select
-            value={fontFamily}
-            onChange={(e) => {
-              setTerminalFontFamily(e.target.value);
+          <Select
+            value={fontFamily || DEFAULT_FONT_VALUE}
+            onValueChange={(value) => {
+              setTerminalFontFamily(value);
               toast.info('Font family changed', {
                 description: 'Restart terminal for changes to take effect',
               });
             }}
-            className={cn(
-              'w-full px-3 py-2 rounded-lg',
-              'bg-accent/30 border border-border/50',
-              'text-foreground text-sm',
-              'focus:outline-none focus:ring-2 focus:ring-green-500/30'
-            )}
           >
-            {TERMINAL_FONT_OPTIONS.map((font) => (
-              <option key={font.value} value={font.value}>
-                {font.label}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="Default (Menlo / Monaco)" />
+            </SelectTrigger>
+            <SelectContent>
+              {TERMINAL_FONT_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  <span
+                    style={{
+                      fontFamily: option.value === DEFAULT_FONT_VALUE ? undefined : option.value,
+                    }}
+                  >
+                    {option.label}
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
 
         {/* Default Font Size */}

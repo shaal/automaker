@@ -11,6 +11,14 @@ import {
   mergeAgentPrompts,
   mergeBacklogPlanPrompts,
   mergeEnhancementPrompts,
+  mergeCommitMessagePrompts,
+  mergeTitleGenerationPrompts,
+  mergeIssueValidationPrompts,
+  mergeIdeationPrompts,
+  mergeAppSpecPrompts,
+  mergeContextDescriptionPrompts,
+  mergeSuggestionsPrompts,
+  mergeTaskExecutionPrompts,
 } from '@automaker/prompts';
 
 const logger = createLogger('SettingsHelper');
@@ -218,6 +226,14 @@ export async function getPromptCustomization(
   agent: ReturnType<typeof mergeAgentPrompts>;
   backlogPlan: ReturnType<typeof mergeBacklogPlanPrompts>;
   enhancement: ReturnType<typeof mergeEnhancementPrompts>;
+  commitMessage: ReturnType<typeof mergeCommitMessagePrompts>;
+  titleGeneration: ReturnType<typeof mergeTitleGenerationPrompts>;
+  issueValidation: ReturnType<typeof mergeIssueValidationPrompts>;
+  ideation: ReturnType<typeof mergeIdeationPrompts>;
+  appSpec: ReturnType<typeof mergeAppSpecPrompts>;
+  contextDescription: ReturnType<typeof mergeContextDescriptionPrompts>;
+  suggestions: ReturnType<typeof mergeSuggestionsPrompts>;
+  taskExecution: ReturnType<typeof mergeTaskExecutionPrompts>;
 }> {
   let customization: PromptCustomization = {};
 
@@ -239,6 +255,14 @@ export async function getPromptCustomization(
     agent: mergeAgentPrompts(customization.agent),
     backlogPlan: mergeBacklogPlanPrompts(customization.backlogPlan),
     enhancement: mergeEnhancementPrompts(customization.enhancement),
+    commitMessage: mergeCommitMessagePrompts(customization.commitMessage),
+    titleGeneration: mergeTitleGenerationPrompts(customization.titleGeneration),
+    issueValidation: mergeIssueValidationPrompts(customization.issueValidation),
+    ideation: mergeIdeationPrompts(customization.ideation),
+    appSpec: mergeAppSpecPrompts(customization.appSpec),
+    contextDescription: mergeContextDescriptionPrompts(customization.contextDescription),
+    suggestions: mergeSuggestionsPrompts(customization.suggestions),
+    taskExecution: mergeTaskExecutionPrompts(customization.taskExecution),
   };
 }
 

@@ -33,6 +33,9 @@ const SYNC_DEBOUNCE_MS = 1000;
 // Fields to sync to server (subset of AppState that should be persisted)
 const SETTINGS_FIELDS_TO_SYNC = [
   'theme',
+  'fontFamilySans',
+  'fontFamilyMono',
+  'terminalFontFamily', // Maps to terminalState.fontFamily
   'sidebarOpen',
   'chatHistoryOpen',
   'maxConcurrency',
@@ -44,6 +47,8 @@ const SETTINGS_FIELDS_TO_SYNC = [
   'defaultRequirePlanApproval',
   'defaultFeatureModel',
   'muteDoneSound',
+  'serverLogLevel',
+  'enableRequestLogging',
   'enhancementModel',
   'validationModel',
   'phaseModels',
@@ -52,11 +57,13 @@ const SETTINGS_FIELDS_TO_SYNC = [
   'enabledOpencodeModels',
   'opencodeDefaultModel',
   'enabledDynamicModelIds',
+  'disabledProviders',
   'autoLoadClaudeMd',
   'keyboardShortcuts',
   'mcpServers',
   'defaultEditorCommand',
   'promptCustomization',
+  'eventHooks',
   'projects',
   'trashedProjects',
   'currentProjectId', // ID of currently open project
@@ -71,6 +78,41 @@ const SETTINGS_FIELDS_TO_SYNC = [
 
 // Fields from setup store to sync
 const SETUP_FIELDS_TO_SYNC = ['isFirstRun', 'setupComplete', 'skipClaudeSetup'] as const;
+
+/**
+ * Helper to extract a settings field value from app state
+ * Handles special cases for nested/mapped fields
+ */
+function getSettingsFieldValue(
+  field: (typeof SETTINGS_FIELDS_TO_SYNC)[number],
+  appState: ReturnType<typeof useAppStore.getState>
+): unknown {
+  if (field === 'currentProjectId') {
+    return appState.currentProject?.id ?? null;
+  }
+  if (field === 'terminalFontFamily') {
+    return appState.terminalState.fontFamily;
+  }
+  return appState[field as keyof typeof appState];
+}
+
+/**
+ * Helper to check if a settings field changed between states
+ */
+function hasSettingsFieldChanged(
+  field: (typeof SETTINGS_FIELDS_TO_SYNC)[number],
+  newState: ReturnType<typeof useAppStore.getState>,
+  prevState: ReturnType<typeof useAppStore.getState>
+): boolean {
+  if (field === 'currentProjectId') {
+    return newState.currentProject?.id !== prevState.currentProject?.id;
+  }
+  if (field === 'terminalFontFamily') {
+    return newState.terminalState.fontFamily !== prevState.terminalState.fontFamily;
+  }
+  const key = field as keyof typeof newState;
+  return newState[key] !== prevState[key];
+}
 
 interface SettingsSyncState {
   /** Whether initial settings have been loaded from API */
@@ -150,12 +192,7 @@ export function useSettingsSync(): SettingsSyncState {
       // Build updates object from current state
       const updates: Record<string, unknown> = {};
       for (const field of SETTINGS_FIELDS_TO_SYNC) {
-        if (field === 'currentProjectId') {
-          // Special handling: extract ID from currentProject object
-          updates[field] = appState.currentProject?.id ?? null;
-        } else {
-          updates[field] = appState[field as keyof typeof appState];
-        }
+        updates[field] = getSettingsFieldValue(field, appState);
       }
 
       // Include setup wizard state (lives in a separate store)
@@ -252,11 +289,7 @@ export function useSettingsSync(): SettingsSyncState {
         // (migration has already hydrated the store from server/localStorage)
         const updates: Record<string, unknown> = {};
         for (const field of SETTINGS_FIELDS_TO_SYNC) {
-          if (field === 'currentProjectId') {
-            updates[field] = appState.currentProject?.id ?? null;
-          } else {
-            updates[field] = appState[field as keyof typeof appState];
-          }
+          updates[field] = getSettingsFieldValue(field, appState);
         }
         for (const field of SETUP_FIELDS_TO_SYNC) {
           updates[field] = setupState[field as keyof typeof setupState];
@@ -310,18 +343,9 @@ export function useSettingsSync(): SettingsSyncState {
       // Check if any synced field changed
       let changed = false;
       for (const field of SETTINGS_FIELDS_TO_SYNC) {
-        if (field === 'currentProjectId') {
-          // Special handling: compare currentProject IDs
-          if (newState.currentProject?.id !== prevState.currentProject?.id) {
-            changed = true;
-            break;
-          }
-        } else {
-          const key = field as keyof typeof newState;
-          if (newState[key] !== prevState[key]) {
-            changed = true;
-            break;
-          }
+        if (hasSettingsFieldChanged(field, newState, prevState)) {
+          changed = true;
+          break;
         }
       }
 
@@ -395,11 +419,7 @@ export async function forceSyncSettingsToServer(): Promise<boolean> {
 
     const updates: Record<string, unknown> = {};
     for (const field of SETTINGS_FIELDS_TO_SYNC) {
-      if (field === 'currentProjectId') {
-        updates[field] = appState.currentProject?.id ?? null;
-      } else {
-        updates[field] = appState[field as keyof typeof appState];
-      }
+      updates[field] = getSettingsFieldValue(field, appState);
     }
     const setupState = useSetupStore.getState();
     for (const field of SETUP_FIELDS_TO_SYNC) {
@@ -469,6 +489,8 @@ export async function refreshSettingsFromServer(): Promise<boolean> {
       defaultRequirePlanApproval: serverSettings.defaultRequirePlanApproval,
       defaultFeatureModel: serverSettings.defaultFeatureModel ?? { model: 'opus' },
       muteDoneSound: serverSettings.muteDoneSound,
+      serverLogLevel: serverSettings.serverLogLevel ?? 'info',
+      enableRequestLogging: serverSettings.enableRequestLogging ?? true,
       enhancementModel: serverSettings.enhancementModel,
       validationModel: serverSettings.validationModel,
       phaseModels: serverSettings.phaseModels,
@@ -477,6 +499,7 @@ export async function refreshSettingsFromServer(): Promise<boolean> {
       enabledOpencodeModels: sanitizedEnabledOpencodeModels,
       opencodeDefaultModel: sanitizedOpencodeDefaultModel,
       enabledDynamicModelIds: sanitizedDynamicModelIds,
+      disabledProviders: serverSettings.disabledProviders ?? [],
       autoLoadClaudeMd: serverSettings.autoLoadClaudeMd ?? false,
       keyboardShortcuts: {
         ...currentAppState.keyboardShortcuts,
@@ -496,6 +519,13 @@ export async function refreshSettingsFromServer(): Promise<boolean> {
       worktreePanelCollapsed: serverSettings.worktreePanelCollapsed ?? false,
       lastProjectDir: serverSettings.lastProjectDir ?? '',
       recentFolders: serverSettings.recentFolders ?? [],
+      // Terminal font (nested in terminalState)
+      ...(serverSettings.terminalFontFamily && {
+        terminalState: {
+          ...currentAppState.terminalState,
+          fontFamily: serverSettings.terminalFontFamily,
+        },
+      }),
     });
 
     // Also refresh setup wizard state

@@ -43,11 +43,11 @@ export const CLAUDE_MODELS: ModelOption[] = [
 
 /**
  * Cursor models derived from CURSOR_MODEL_MAP
- * ID is prefixed with "cursor-" for ProviderFactory routing
+ * ID is prefixed with "cursor-" for ProviderFactory routing (if not already prefixed)
  */
 export const CURSOR_MODELS: ModelOption[] = Object.entries(CURSOR_MODEL_MAP).map(
   ([id, config]) => ({
-    id: `cursor-${id}`,
+    id: id.startsWith('cursor-') ? id : `cursor-${id}`,
     label: config.label,
     description: config.description,
     provider: 'cursor' as ModelProvider,

@@ -19,7 +19,10 @@ import { simpleQuery } from '../../../providers/simple-query-service.js';
 import * as secureFs from '../../../lib/secure-fs.js';
 import * as path from 'path';
 import type { SettingsService } from '../../../services/settings-service.js';
-import { getAutoLoadClaudeMdSetting } from '../../../lib/settings-helpers.js';
+import {
+  getAutoLoadClaudeMdSetting,
+  getPromptCustomization,
+} from '../../../lib/settings-helpers.js';
 
 const logger = createLogger('DescribeFile');
 
@@ -130,11 +133,12 @@ export function createDescribeFileHandler(
       // Get the filename for context
       const fileName = path.basename(resolvedPath);
 
+      // Get customized prompts from settings
+      const prompts = await getPromptCustomization(settingsService, '[DescribeFile]');
+
       // Build prompt with file content passed as structured data
       // The file content is included directly, not via tool invocation
-      const prompt = `Analyze the following file and provide a 1-2 sentence description suitable for use as context in an AI coding assistant. Focus on what the file contains, its purpose, and why an AI agent might want to use this context in the future (e.g., "API documentation for the authentication endpoints", "Configuration file for database connections", "Coding style guidelines for the project").
-
-Respond with ONLY the description text, no additional formatting, preamble, or explanation.
+      const prompt = `${prompts.contextDescription.describeFilePrompt}
 
 File: ${fileName}${truncated ? ' (truncated)' : ''}
 

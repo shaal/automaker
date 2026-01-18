@@ -89,10 +89,15 @@ function getHighlightedEdges(highlightedNodeIds: Set<string>, features: Feature[
 
 /**
  * Gets the effective status of a feature (accounting for running state)
+ * Treats completed (archived) as verified
  */
 function getEffectiveStatus(feature: Feature, runningAutoTasks: string[]): StatusFilterValue {
   if (feature.status === 'in_progress') {
     return runningAutoTasks.includes(feature.id) ? 'running' : 'paused';
+  }
+  // Treat completed (archived) as verified
+  if (feature.status === 'completed') {
+    return 'verified';
   }
   return feature.status as StatusFilterValue;
 }
