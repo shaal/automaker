@@ -5,6 +5,12 @@
 # 1. Starts CLIProxyAPI if not already running
 # 2. Starts AutoMaker in web or electron mode
 #
+# Prerequisites:
+# - CLIProxyAPI must be configured at ~/.cli-proxy-api/config.yaml
+# - The config should have api-keys COMMENTED OUT (disabled) since the
+#   Claude Agent SDK doesn't send API keys in a compatible format
+# - CLIProxyAPI should only listen on 127.0.0.1 for security
+#
 # Usage: ./start-with-proxy.sh [web|electron]
 
 set -e
@@ -12,7 +18,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLI_PROXY_DIR="$HOME/code/utilities/CLIProxyAPI"
 CLI_PROXY_CONFIG="$HOME/.cli-proxy-api/config.yaml"
-PORT=8318
+PORT=8317
 
 # Track if we started the proxy (to know if we should clean it up)
 PROXY_PID=""
@@ -84,8 +90,9 @@ export AUTOMAKER_API_KEY="${AUTOMAKER_API_KEY:-dev}"
 
 # Configure Claude SDK to use CLIProxyAPI
 export ANTHROPIC_BASE_URL="http://127.0.0.1:$PORT"
-# Use proxy-managed key - the proxy handles actual authentication via Claude Code subscription
-export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-proxy-managed}"
+# API key can be any value - CLIProxyAPI has api-keys disabled (localhost-only security)
+# The proxy handles actual authentication via Claude Code OAuth tokens
+export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-proxy-localhost}"
 
 echo ""
 echo "Starting AutoMaker in $MODE mode..."
