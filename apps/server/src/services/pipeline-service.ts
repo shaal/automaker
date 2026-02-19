@@ -234,51 +234,75 @@ export class PipelineService {
    *
    * Determines what status a feature should transition to based on current status.
    * Flow: in_progress -> pipeline_step_0 -> pipeline_step_1 -> ... -> final status
+   * Steps in the excludedStepIds array will be skipped.
    *
    * @param currentStatus - Current feature status
    * @param config - Pipeline configuration (or null if no pipeline)
    * @param skipTests - Whether to skip tests (affects final status)
+   * @param excludedStepIds - Optional array of step IDs to skip
    * @returns The next status in the pipeline flow
    */
   getNextStatus(
     currentStatus: FeatureStatusWithPipeline,
     config: PipelineConfig | null,
-    skipTests: boolean
+    skipTests: boolean,
+    excludedStepIds?: string[]
   ): FeatureStatusWithPipeline {
     const steps = config?.steps || [];
+    const exclusions = new Set(excludedStepIds || []);
 
-    // Sort steps by order
-    const sortedSteps = [...steps].sort((a, b) => a.order - b.order);
+    // Sort steps by order and filter out excluded steps
+    const sortedSteps = [...steps]
+      .sort((a, b) => a.order - b.order)
+      .filter((step) => !exclusions.has(step.id));
 
-    // If no pipeline steps, use original logic
+    // If no pipeline steps (or all excluded), use original logic
     if (sortedSteps.length === 0) {
-      if (currentStatus === 'in_progress') {
+      // If coming from in_progress or already in a pipeline step, go to final status
+      if (currentStatus === 'in_progress' || currentStatus.startsWith('pipeline_')) {
         return skipTests ? 'waiting_approval' : 'verified';
       }
       return currentStatus;
     }
 
-    // Coming from in_progress -> go to first pipeline step
+    // Coming from in_progress -> go to first non-excluded pipeline step
     if (currentStatus === 'in_progress') {
       return `pipeline_${sortedSteps[0].id}`;
     }
 
-    // Coming from a pipeline step -> go to next step or final status
+    // Coming from a pipeline step -> go to next non-excluded step or final status
     if (currentStatus.startsWith('pipeline_')) {
       const currentStepId = currentStatus.replace('pipeline_', '');
       const currentIndex = sortedSteps.findIndex((s) => s.id === currentStepId);
 
       if (currentIndex === -1) {
-        // Step not found, go to final status
+        // Current step not found in filtered list (might be excluded or invalid)
+        // Find next valid step after this one from the original sorted list
+        const allSortedSteps = [...steps].sort((a, b) => a.order - b.order);
+        const originalIndex = allSortedSteps.findIndex((s) => s.id === currentStepId);
+
+        if (originalIndex === -1) {
+          // Step truly doesn't exist, go to final status
+          return skipTests ? 'waiting_approval' : 'verified';
+        }
+
+        // Find the next non-excluded step after the current one
+        for (let i = originalIndex + 1; i < allSortedSteps.length; i++) {
+          if (!exclusions.has(allSortedSteps[i].id)) {
+            return `pipeline_${allSortedSteps[i].id}`;
+          }
+        }
+
+        // No more non-excluded steps, go to final status
         return skipTests ? 'waiting_approval' : 'verified';
       }
 
       if (currentIndex < sortedSteps.length - 1) {
-        // Go to next step
+        // Go to next non-excluded step
         return `pipeline_${sortedSteps[currentIndex + 1].id}`;
       }
 
-      // Last step completed, go to final status
+      // Last non-excluded step completed, go to final status
       return skipTests ? 'waiting_approval' : 'verified';
     }
 

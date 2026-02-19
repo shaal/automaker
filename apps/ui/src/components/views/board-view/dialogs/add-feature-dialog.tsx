@@ -1,6 +1,5 @@
-// @ts-nocheck
+// @ts-nocheck - feature data building with conditional fields and model type inference
 import { useState, useEffect, useRef } from 'react';
-import { createLogger } from '@automaker/utils/logger';
 import {
   Dialog,
   DialogContent,
@@ -27,36 +26,27 @@ import { useNavigate } from '@tanstack/react-router';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { modelSupportsThinking } from '@/lib/utils';
-import {
-  useAppStore,
-  ModelAlias,
-  ThinkingLevel,
-  FeatureImage,
-  PlanningMode,
-  Feature,
-} from '@/store/app-store';
+import { useAppStore, ThinkingLevel, FeatureImage, PlanningMode, Feature } from '@/store/app-store';
 import type { ReasoningEffort, PhaseModelEntry, AgentModel } from '@automaker/types';
-import { supportsReasoningEffort, isClaudeModel } from '@automaker/types';
+import { supportsReasoningEffort } from '@automaker/types';
 import {
-  TestingTabContent,
   PrioritySelector,
   WorkModeSelector,
   PlanningModeSelect,
   AncestorContextSection,
   EnhanceWithAI,
   EnhancementHistoryButton,
+  PipelineExclusionControls,
   type BaseHistoryEntry,
 } from '../shared';
 import type { WorkMode } from '../shared';
 import { PhaseModelSelector } from '@/components/views/settings-view/model-defaults/phase-model-selector';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   getAncestors,
   formatAncestorContextForPrompt,
   type AncestorContext,
 } from '@automaker/dependency-resolver';
-
-const logger = createLogger('AddFeatureDialog');
 
 /**
  * Determines the default work mode based on global settings and current worktree selection.
@@ -101,6 +91,7 @@ type FeatureData = {
   requirePlanApproval: boolean;
   dependencies?: string[];
   childDependencies?: string[]; // Feature IDs that should depend on this feature
+  excludedPipelineSteps?: string[]; // Pipeline step IDs to skip for this feature
   workMode: WorkMode;
 };
 
@@ -118,6 +109,10 @@ interface AddFeatureDialogProps {
   isMaximized: boolean;
   parentFeature?: Feature | null;
   allFeatures?: Feature[];
+  /**
+   * Path to the current project for loading pipeline config.
+   */
+  projectPath?: string;
   /**
    * When a non-main worktree is selected in the board header, this will be set to that worktree's branch.
    * When set, the dialog will default to 'custom' work mode with this branch pre-filled.
@@ -151,6 +146,7 @@ export function AddFeatureDialog({
   isMaximized,
   parentFeature = null,
   allFeatures = [],
+  projectPath,
   selectedNonMainWorktreeBranch,
   forceCurrentBranchMode,
 }: AddFeatureDialogProps) {
@@ -170,10 +166,7 @@ export function AddFeatureDialog({
   const [priority, setPriority] = useState(2);
 
   // Model selection state
-  const [modelEntry, setModelEntry] = useState<PhaseModelEntry>({ model: 'opus' });
-
-  // Check if current model supports planning mode (Claude/Anthropic only)
-  const modelSupportsPlanningMode = isClaudeModel(modelEntry.model);
+  const [modelEntry, setModelEntry] = useState<PhaseModelEntry>({ model: 'claude-opus' });
 
   // Planning mode state
   const [planningMode, setPlanningMode] = useState<PlanningMode>('skip');
@@ -194,9 +187,20 @@ export function AddFeatureDialog({
   const [parentDependencies, setParentDependencies] = useState<string[]>([]);
   const [childDependencies, setChildDependencies] = useState<string[]>([]);
 
+  // Pipeline exclusion state
+  const [excludedPipelineSteps, setExcludedPipelineSteps] = useState<string[]>([]);
+
   // Get defaults from store
-  const { defaultPlanningMode, defaultRequirePlanApproval, useWorktrees, defaultFeatureModel } =
-    useAppStore();
+  const {
+    defaultPlanningMode,
+    defaultRequirePlanApproval,
+    useWorktrees,
+    defaultFeatureModel,
+    currentProject,
+  } = useAppStore();
+
+  // Use project-level default feature model if set, otherwise fall back to global
+  const effectiveDefaultFeatureModel = currentProject?.defaultFeatureModel ?? defaultFeatureModel;
 
   // Track previous open state to detect when dialog opens
   const wasOpenRef = useRef(false);
@@ -216,7 +220,7 @@ export function AddFeatureDialog({
       );
       setPlanningMode(defaultPlanningMode);
       setRequirePlanApproval(defaultRequirePlanApproval);
-      setModelEntry(defaultFeatureModel);
+      setModelEntry(effectiveDefaultFeatureModel);
 
       // Initialize description history (empty for new feature)
       setDescriptionHistory([]);
@@ -234,6 +238,9 @@ export function AddFeatureDialog({
       // Reset dependency selections
       setParentDependencies([]);
       setChildDependencies([]);
+
+      // Reset pipeline exclusions (all pipelines enabled by default)
+      setExcludedPipelineSteps([]);
     }
   }, [
     open,
@@ -241,13 +248,20 @@ export function AddFeatureDialog({
     defaultBranch,
     defaultPlanningMode,
     defaultRequirePlanApproval,
-    defaultFeatureModel,
+    effectiveDefaultFeatureModel,
     useWorktrees,
     selectedNonMainWorktreeBranch,
     forceCurrentBranchMode,
     parentFeature,
     allFeatures,
   ]);
+
+  // Clear requirePlanApproval when planning mode is skip or lite
+  useEffect(() => {
+    if (planningMode === 'skip' || planningMode === 'lite') {
+      setRequirePlanApproval(false);
+    }
+  }, [planningMode]);
 
   const handleModelChange = (entry: PhaseModelEntry) => {
     setModelEntry(entry);
@@ -328,6 +342,7 @@ export function AddFeatureDialog({
       requirePlanApproval,
       dependencies: finalDependencies,
       childDependencies: childDependencies.length > 0 ? childDependencies : undefined,
+      excludedPipelineSteps: excludedPipelineSteps.length > 0 ? excludedPipelineSteps : undefined,
       workMode,
     };
   };
@@ -343,7 +358,7 @@ export function AddFeatureDialog({
     // When a non-main worktree is selected, use its branch name for custom mode
     setBranchName(selectedNonMainWorktreeBranch || '');
     setPriority(2);
-    setModelEntry(defaultFeatureModel);
+    setModelEntry(effectiveDefaultFeatureModel);
     setWorkMode(
       getDefaultWorkMode(useWorktrees, selectedNonMainWorktreeBranch, forceCurrentBranchMode)
     );
@@ -354,6 +369,7 @@ export function AddFeatureDialog({
     setDescriptionHistory([]);
     setParentDependencies([]);
     setChildDependencies([]);
+    setExcludedPipelineSteps([]);
     onOpenChange(false);
   };
 
@@ -505,26 +521,24 @@ export function AddFeatureDialog({
                 <Cpu className="w-4 h-4 text-muted-foreground" />
                 <span>AI & Execution</span>
               </div>
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onOpenChange(false);
-                        navigate({ to: '/settings', search: { view: 'defaults' } });
-                      }}
-                      className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                    >
-                      <Settings2 className="w-3.5 h-3.5" />
-                      <span>Edit Defaults</span>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <p>Change default model and planning settings for new features</p>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onOpenChange(false);
+                      navigate({ to: '/settings', search: { view: 'defaults' } });
+                    }}
+                    className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <Settings2 className="w-3.5 h-3.5" />
+                    <span>Edit Defaults</span>
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>Change default model and planning settings for new features</p>
+                </TooltipContent>
+              </Tooltip>
             </div>
 
             <div className="space-y-1.5">
@@ -539,41 +553,13 @@ export function AddFeatureDialog({
 
             <div className="grid gap-3 grid-cols-2">
               <div className="space-y-1.5">
-                <Label
-                  className={cn(
-                    'text-xs text-muted-foreground',
-                    !modelSupportsPlanningMode && 'opacity-50'
-                  )}
-                >
-                  Planning
-                </Label>
-                {modelSupportsPlanningMode ? (
-                  <PlanningModeSelect
-                    mode={planningMode}
-                    onModeChange={setPlanningMode}
-                    testIdPrefix="add-feature-planning"
-                    compact
-                  />
-                ) : (
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <div>
-                          <PlanningModeSelect
-                            mode="skip"
-                            onModeChange={() => {}}
-                            testIdPrefix="add-feature-planning"
-                            compact
-                            disabled
-                          />
-                        </div>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p>Planning modes are only available for Claude Provider</p>
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                )}
+                <Label className="text-xs text-muted-foreground">Planning</Label>
+                <PlanningModeSelect
+                  mode={planningMode}
+                  onModeChange={setPlanningMode}
+                  testIdPrefix="add-feature-planning"
+                  compact
+                />
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs text-muted-foreground">Options</Label>
@@ -597,20 +583,14 @@ export function AddFeatureDialog({
                       id="add-feature-require-approval"
                       checked={requirePlanApproval}
                       onCheckedChange={(checked) => setRequirePlanApproval(!!checked)}
-                      disabled={
-                        !modelSupportsPlanningMode ||
-                        planningMode === 'skip' ||
-                        planningMode === 'lite'
-                      }
-                      data-testid="add-feature-require-approval-checkbox"
+                      disabled={planningMode === 'skip' || planningMode === 'lite'}
+                      data-testid="add-feature-planning-require-approval-checkbox"
                     />
                     <Label
                       htmlFor="add-feature-require-approval"
                       className={cn(
                         'text-xs font-normal',
-                        !modelSupportsPlanningMode ||
-                          planningMode === 'skip' ||
-                          planningMode === 'lite'
+                        planningMode === 'skip' || planningMode === 'lite'
                           ? 'cursor-not-allowed text-muted-foreground'
                           : 'cursor-pointer'
                       )}
@@ -696,6 +676,16 @@ export function AddFeatureDialog({
                 </div>
               </div>
             )}
+
+            {/* Pipeline Exclusion Controls */}
+            <div className="pt-2">
+              <PipelineExclusionControls
+                projectPath={projectPath}
+                excludedPipelineSteps={excludedPipelineSteps}
+                onExcludedStepsChange={setExcludedPipelineSteps}
+                testIdPrefix="add-feature-pipeline"
+              />
+            </div>
           </div>
         </div>
 

@@ -25,9 +25,11 @@ COPY libs/types/package*.json ./libs/types/
 COPY libs/utils/package*.json ./libs/utils/
 COPY libs/prompts/package*.json ./libs/prompts/
 COPY libs/platform/package*.json ./libs/platform/
+COPY libs/spec-parser/package*.json ./libs/spec-parser/
 COPY libs/model-resolver/package*.json ./libs/model-resolver/
 COPY libs/dependency-resolver/package*.json ./libs/dependency-resolver/
 COPY libs/git-utils/package*.json ./libs/git-utils/
+COPY libs/spec-parser/package*.json ./libs/spec-parser/
 
 # Copy scripts (needed by npm workspace)
 COPY scripts ./scripts

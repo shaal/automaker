@@ -37,6 +37,8 @@ export interface DevServerInfo {
   flushTimeout: NodeJS.Timeout | null;
   // Flag to indicate server is stopping (prevents output after stop)
   stopping: boolean;
+  // Flag to indicate if URL has been detected from output
+  urlDetected: boolean;
 }
 
 // Port allocation starts at 3001 to avoid conflicts with common dev ports
@@ -104,6 +106,54 @@ class DevServerService {
   }
 
   /**
+   * Detect actual server URL from output
+   * Parses stdout/stderr for common URL patterns from dev servers
+   */
+  private detectUrlFromOutput(server: DevServerInfo, content: string): void {
+    // Skip if URL already detected
+    if (server.urlDetected) {
+      return;
+    }
+
+    // Common URL patterns from various dev servers:
+    // - Vite: "Local:   http://localhost:5173/"
+    // - Next.js: "ready - started server on 0.0.0.0:3000, url: http://localhost:3000"
+    // - CRA/Webpack: "On Your Network:  http://192.168.1.1:3000"
+    // - Generic: Any http:// or https:// URL
+    const urlPatterns = [
+      /(?:Local|Network):\s+(https?:\/\/[^\s]+)/i, // Vite format
+      /(?:ready|started server).*?(?:url:\s*)?(https?:\/\/[^\s,]+)/i, // Next.js format
+      /(https?:\/\/(?:localhost|127\.0\.0\.1|\[::\]):\d+)/i, // Generic localhost URL
+      /(https?:\/\/[^\s<>"{}|\\^`\[\]]+)/i, // Any HTTP(S) URL
+    ];
+
+    for (const pattern of urlPatterns) {
+      const match = content.match(pattern);
+      if (match && match[1]) {
+        const detectedUrl = match[1].trim();
+        // Validate it looks like a reasonable URL
+        if (detectedUrl.startsWith('http://') || detectedUrl.startsWith('https://')) {
+          server.url = detectedUrl;
+          server.urlDetected = true;
+          logger.info(
+            `Detected actual server URL: ${detectedUrl} (allocated port was ${server.port})`
+          );
+
+          // Emit URL update event
+          if (this.emitter) {
+            this.emitter.emit('dev-server:url-detected', {
+              worktreePath: server.worktreePath,
+              url: detectedUrl,
+              timestamp: new Date().toISOString(),
+            });
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  /**
    * Handle incoming stdout/stderr data from dev server process
    * Buffers data for scrollback replay and schedules throttled emission
    */
@@ -114,6 +164,9 @@ class DevServerService {
     }
 
     const content = data.toString();
+
+    // Try to detect actual server URL from output
+    this.detectUrlFromOutput(server, content);
 
     // Append to scrollback buffer for replay on reconnect
     this.appendToScrollback(server, content);
@@ -274,11 +327,55 @@ class DevServerService {
   }
 
   /**
+   * Parse a custom command string into cmd and args
+   * Handles quoted strings with spaces (e.g., "my command" arg1 arg2)
+   */
+  private parseCustomCommand(command: string): { cmd: string; args: string[] } {
+    const tokens: string[] = [];
+    let current = '';
+    let inQuote = false;
+    let quoteChar = '';
+
+    for (let i = 0; i < command.length; i++) {
+      const char = command[i];
+
+      if (inQuote) {
+        if (char === quoteChar) {
+          inQuote = false;
+        } else {
+          current += char;
+        }
+      } else if (char === '"' || char === "'") {
+        inQuote = true;
+        quoteChar = char;
+      } else if (char === ' ') {
+        if (current) {
+          tokens.push(current);
+          current = '';
+        }
+      } else {
+        current += char;
+      }
+    }
+
+    if (current) {
+      tokens.push(current);
+    }
+
+    const [cmd, ...args] = tokens;
+    return { cmd: cmd || '', args };
+  }
+
+  /**
    * Start a dev server for a worktree
+   * @param projectPath - The project root path
+   * @param worktreePath - The worktree directory path
+   * @param customCommand - Optional custom command to run instead of auto-detected dev command
    */
   async startDevServer(
     projectPath: string,
-    worktreePath: string
+    worktreePath: string,
+    customCommand?: string
   ): Promise<{
     success: boolean;
     result?: {
@@ -311,22 +408,41 @@ class DevServerService {
       };
     }
 
-    // Check for package.json
-    const packageJsonPath = path.join(worktreePath, 'package.json');
-    if (!(await this.fileExists(packageJsonPath))) {
-      return {
-        success: false,
-        error: `No package.json found in: ${worktreePath}`,
-      };
-    }
+    // Determine the dev command to use
+    let devCommand: { cmd: string; args: string[] };
 
-    // Get dev command
-    const devCommand = await this.getDevCommand(worktreePath);
-    if (!devCommand) {
-      return {
-        success: false,
-        error: `Could not determine dev command for: ${worktreePath}`,
-      };
+    // Normalize custom command: trim whitespace and treat empty strings as undefined
+    const normalizedCustomCommand = customCommand?.trim();
+
+    if (normalizedCustomCommand) {
+      // Use the provided custom command
+      devCommand = this.parseCustomCommand(normalizedCustomCommand);
+      if (!devCommand.cmd) {
+        return {
+          success: false,
+          error: 'Invalid custom command: command cannot be empty',
+        };
+      }
+      logger.debug(`Using custom command: ${normalizedCustomCommand}`);
+    } else {
+      // Check for package.json when auto-detecting
+      const packageJsonPath = path.join(worktreePath, 'package.json');
+      if (!(await this.fileExists(packageJsonPath))) {
+        return {
+          success: false,
+          error: `No package.json found in: ${worktreePath}`,
+        };
+      }
+
+      // Get dev command from package manager detection
+      const detectedCommand = await this.getDevCommand(worktreePath);
+      if (!detectedCommand) {
+        return {
+          success: false,
+          error: `Could not determine dev command for: ${worktreePath}`,
+        };
+      }
+      devCommand = detectedCommand;
     }
 
     // Find available port
@@ -383,13 +499,14 @@ class DevServerService {
     const serverInfo: DevServerInfo = {
       worktreePath,
       port,
-      url: `http://${hostname}:${port}`,
+      url: `http://${hostname}:${port}`, // Initial URL, may be updated by detectUrlFromOutput
       process: devProcess,
       startedAt: new Date(),
       scrollbackBuffer: '',
       outputBuffer: '',
       flushTimeout: null,
       stopping: false,
+      urlDetected: false, // Will be set to true when actual URL is detected from output
     };
 
     // Capture stdout with buffer management and event emission

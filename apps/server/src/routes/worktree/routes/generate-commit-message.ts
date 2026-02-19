@@ -10,14 +10,14 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { query } from '@anthropic-ai/claude-agent-sdk';
 import { createLogger } from '@automaker/utils';
-import { DEFAULT_PHASE_MODELS, isCursorModel, stripProviderPrefix } from '@automaker/types';
+import { isCursorModel, stripProviderPrefix } from '@automaker/types';
 import { resolvePhaseModel } from '@automaker/model-resolver';
 import { mergeCommitMessagePrompts } from '@automaker/prompts';
 import { ProviderFactory } from '../../../providers/provider-factory.js';
 import type { SettingsService } from '../../../services/settings-service.js';
 import { getErrorMessage, logError } from '../common.js';
+import { getPhaseModelWithOverrides } from '../../../lib/settings-helpers.js';
 
 const logger = createLogger('GenerateCommitMessage');
 const execAsync = promisify(exec);
@@ -72,33 +72,6 @@ interface GenerateCommitMessageSuccessResponse {
 interface GenerateCommitMessageErrorResponse {
   success: false;
   error: string;
-}
-
-async function extractTextFromStream(
-  stream: AsyncIterable<{
-    type: string;
-    subtype?: string;
-    result?: string;
-    message?: {
-      content?: Array<{ type: string; text?: string }>;
-    };
-  }>
-): Promise<string> {
-  let responseText = '';
-
-  for await (const msg of stream) {
-    if (msg.type === 'assistant' && msg.message?.content) {
-      for (const block of msg.message.content) {
-        if (block.type === 'text' && block.text) {
-          responseText += block.text;
-        }
-      }
-    } else if (msg.type === 'result' && msg.subtype === 'success') {
-      responseText = msg.result || responseText;
-    }
-  }
-
-  return responseText;
 }
 
 export function createGenerateCommitMessageHandler(
@@ -184,67 +157,68 @@ export function createGenerateCommitMessageHandler(
 
       const userPrompt = `Generate a commit message for these changes:\n\n\`\`\`diff\n${truncatedDiff}\n\`\`\``;
 
-      // Get model from phase settings
-      const settings = await settingsService?.getGlobalSettings();
-      const phaseModelEntry =
-        settings?.phaseModels?.commitMessageModel || DEFAULT_PHASE_MODELS.commitMessageModel;
-      const { model } = resolvePhaseModel(phaseModelEntry);
+      // Get model from phase settings with provider info
+      const {
+        phaseModel: phaseModelEntry,
+        provider: claudeCompatibleProvider,
+        credentials,
+      } = await getPhaseModelWithOverrides(
+        'commitMessageModel',
+        settingsService,
+        worktreePath,
+        '[GenerateCommitMessage]'
+      );
+      const { model, thinkingLevel } = resolvePhaseModel(phaseModelEntry);
 
-      logger.info(`Using model for commit message: ${model}`);
+      logger.info(
+        `Using model for commit message: ${model}`,
+        claudeCompatibleProvider ? `via provider: ${claudeCompatibleProvider.name}` : 'direct API'
+      );
 
       // Get the effective system prompt (custom or default)
       const systemPrompt = await getSystemPrompt(settingsService);
 
-      let message: string;
+      // Get provider for the model type
+      const aiProvider = ProviderFactory.getProviderForModel(model);
+      const bareModel = stripProviderPrefix(model);
 
-      // Route to appropriate provider based on model type
-      if (isCursorModel(model)) {
-        // Use Cursor provider for Cursor models
-        logger.info(`Using Cursor provider for model: ${model}`);
+      // For Cursor models, combine prompts since Cursor doesn't support systemPrompt separation
+      const effectivePrompt = isCursorModel(model)
+        ? `${systemPrompt}\n\n${userPrompt}`
+        : userPrompt;
+      const effectiveSystemPrompt = isCursorModel(model) ? undefined : systemPrompt;
 
-        const provider = ProviderFactory.getProviderForModel(model);
-        const bareModel = stripProviderPrefix(model);
+      logger.info(`Using ${aiProvider.getName()} provider for model: ${model}`);
 
-        const cursorPrompt = `${systemPrompt}\n\n${userPrompt}`;
+      let responseText = '';
+      const stream = aiProvider.executeQuery({
+        prompt: effectivePrompt,
+        model: bareModel,
+        cwd: worktreePath,
+        systemPrompt: effectiveSystemPrompt,
+        maxTurns: 1,
+        allowedTools: [],
+        readOnly: true,
+        thinkingLevel, // Pass thinking level for extended thinking support
+        claudeCompatibleProvider, // Pass provider for alternative endpoint configuration
+        credentials, // Pass credentials for resolving 'credentials' apiKeySource
+      });
 
-        let responseText = '';
-        const cursorStream = provider.executeQuery({
-          prompt: cursorPrompt,
-          model: bareModel,
-          cwd: worktreePath,
-          maxTurns: 1,
-          allowedTools: [],
-          readOnly: true,
-        });
-
-        // Wrap with timeout to prevent indefinite hangs
-        for await (const msg of withTimeout(cursorStream, AI_TIMEOUT_MS)) {
-          if (msg.type === 'assistant' && msg.message?.content) {
-            for (const block of msg.message.content) {
-              if (block.type === 'text' && block.text) {
-                responseText += block.text;
-              }
+      // Wrap with timeout to prevent indefinite hangs
+      for await (const msg of withTimeout(stream, AI_TIMEOUT_MS)) {
+        if (msg.type === 'assistant' && msg.message?.content) {
+          for (const block of msg.message.content) {
+            if (block.type === 'text' && block.text) {
+              responseText += block.text;
             }
           }
+        } else if (msg.type === 'result' && msg.subtype === 'success' && msg.result) {
+          // Use result if available (some providers return final text here)
+          responseText = msg.result;
         }
-
-        message = responseText.trim();
-      } else {
-        // Use Claude SDK for Claude models
-        const stream = query({
-          prompt: userPrompt,
-          options: {
-            model,
-            systemPrompt,
-            maxTurns: 1,
-            allowedTools: [],
-            permissionMode: 'default',
-          },
-        });
-
-        // Wrap with timeout to prevent indefinite hangs
-        message = await extractTextFromStream(withTimeout(stream, AI_TIMEOUT_MS));
       }
+
+      const message = responseText.trim();
 
       if (!message || message.trim().length === 0) {
         logger.warn('Received empty response from model');

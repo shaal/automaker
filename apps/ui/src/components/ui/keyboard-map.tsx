@@ -7,7 +7,7 @@ import {
 } from '@/store/app-store';
 import type { KeyboardShortcuts } from '@/store/app-store';
 import { cn } from '@/lib/utils';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { CheckCircle2, X, RotateCcw, Edit2 } from 'lucide-react';
@@ -305,54 +305,52 @@ export function KeyboardMap({ onKeySelect, selectedKey, className }: KeyboardMap
   };
 
   return (
-    <TooltipProvider>
-      <div className={cn('space-y-4', className)} data-testid="keyboard-map">
-        {/* Legend */}
-        <div className="flex flex-wrap gap-4 justify-center text-xs">
-          {Object.entries(CATEGORY_COLORS).map(([key, colors]) => (
-            <div key={key} className="flex items-center gap-2">
-              <div className={cn('w-4 h-4 rounded border', colors.bg, colors.border)} />
-              <span className={colors.text}>{colors.label}</span>
-            </div>
-          ))}
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 rounded bg-sidebar-accent/10 border border-sidebar-border" />
-            <span className="text-muted-foreground">Available</span>
+    <div className={cn('space-y-4', className)} data-testid="keyboard-map">
+      {/* Legend */}
+      <div className="flex flex-wrap gap-4 justify-center text-xs">
+        {Object.entries(CATEGORY_COLORS).map(([key, colors]) => (
+          <div key={key} className="flex items-center gap-2">
+            <div className={cn('w-4 h-4 rounded border', colors.bg, colors.border)} />
+            <span className={colors.text}>{colors.label}</span>
           </div>
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-yellow-500" />
-            <span className="text-yellow-400">Modified</span>
-          </div>
+        ))}
+        <div className="flex items-center gap-2">
+          <div className="w-4 h-4 rounded bg-sidebar-accent/10 border border-sidebar-border" />
+          <span className="text-muted-foreground">Available</span>
         </div>
-
-        {/* Keyboard layout */}
-        <div className="flex flex-col items-center gap-1.5 p-4 rounded-xl bg-sidebar-accent/5 border border-sidebar-border">
-          {KEYBOARD_ROWS.map((row, rowIndex) => (
-            <div key={rowIndex} className="flex gap-1.5 justify-center">
-              {row.map(renderKey)}
-            </div>
-          ))}
-        </div>
-
-        {/* Stats */}
-        <div className="flex justify-center gap-6 text-xs text-muted-foreground">
-          <span>
-            <strong className="text-foreground">{Object.keys(keyboardShortcuts).length}</strong>{' '}
-            shortcuts configured
-          </span>
-          <span>
-            <strong className="text-foreground">{Object.keys(keyToShortcuts).length}</strong> keys
-            in use
-          </span>
-          <span>
-            <strong className="text-foreground">
-              {KEYBOARD_ROWS.flat().length - Object.keys(keyToShortcuts).length}
-            </strong>{' '}
-            keys available
-          </span>
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-yellow-500" />
+          <span className="text-yellow-400">Modified</span>
         </div>
       </div>
-    </TooltipProvider>
+
+      {/* Keyboard layout */}
+      <div className="flex flex-col items-center gap-1.5 p-4 rounded-xl bg-sidebar-accent/5 border border-sidebar-border">
+        {KEYBOARD_ROWS.map((row, rowIndex) => (
+          <div key={rowIndex} className="flex gap-1.5 justify-center">
+            {row.map(renderKey)}
+          </div>
+        ))}
+      </div>
+
+      {/* Stats */}
+      <div className="flex justify-center gap-6 text-xs text-muted-foreground">
+        <span>
+          <strong className="text-foreground">{Object.keys(keyboardShortcuts).length}</strong>{' '}
+          shortcuts configured
+        </span>
+        <span>
+          <strong className="text-foreground">{Object.keys(keyToShortcuts).length}</strong> keys in
+          use
+        </span>
+        <span>
+          <strong className="text-foreground">
+            {KEYBOARD_ROWS.flat().length - Object.keys(keyToShortcuts).length}
+          </strong>{' '}
+          keys available
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -508,196 +506,194 @@ export function ShortcutReferencePanel({ editable = false }: ShortcutReferencePa
   };
 
   return (
-    <TooltipProvider>
-      <div className="space-y-4" data-testid="shortcut-reference-panel">
-        {editable && (
-          <div className="flex justify-end">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => resetKeyboardShortcuts()}
-              className="gap-2 text-xs"
-              data-testid="reset-all-shortcuts-button"
-            >
-              <RotateCcw className="w-3 h-3" />
-              Reset All to Defaults
-            </Button>
-          </div>
-        )}
-        {Object.entries(groupedShortcuts).map(([category, shortcuts]) => {
-          const colors = CATEGORY_COLORS[category as keyof typeof CATEGORY_COLORS];
-          return (
-            <div key={category} className="space-y-2">
-              <h4 className={cn('text-sm font-semibold', colors.text)}>{colors.label}</h4>
-              <div className="grid grid-cols-2 gap-2">
-                {shortcuts.map(({ key, label, value }) => {
-                  const isModified = mergedShortcuts[key] !== DEFAULT_KEYBOARD_SHORTCUTS[key];
-                  const isEditing = editingShortcut === key;
+    <div className="space-y-4" data-testid="shortcut-reference-panel">
+      {editable && (
+        <div className="flex justify-end">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => resetKeyboardShortcuts()}
+            className="gap-2 text-xs"
+            data-testid="reset-all-shortcuts-button"
+          >
+            <RotateCcw className="w-3 h-3" />
+            Reset All to Defaults
+          </Button>
+        </div>
+      )}
+      {Object.entries(groupedShortcuts).map(([category, shortcuts]) => {
+        const colors = CATEGORY_COLORS[category as keyof typeof CATEGORY_COLORS];
+        return (
+          <div key={category} className="space-y-2">
+            <h4 className={cn('text-sm font-semibold', colors.text)}>{colors.label}</h4>
+            <div className="grid grid-cols-2 gap-2">
+              {shortcuts.map(({ key, label, value }) => {
+                const isModified = mergedShortcuts[key] !== DEFAULT_KEYBOARD_SHORTCUTS[key];
+                const isEditing = editingShortcut === key;
 
-                  return (
-                    <div
-                      key={key}
-                      className={cn(
-                        'flex items-center justify-between p-2 rounded-lg bg-sidebar-accent/10 border transition-colors',
-                        isEditing ? 'border-brand-500' : 'border-sidebar-border',
-                        editable && !isEditing && 'hover:bg-sidebar-accent/20 cursor-pointer'
-                      )}
-                      onClick={() => editable && !isEditing && handleStartEdit(key)}
-                      data-testid={`shortcut-row-${key}`}
-                    >
-                      <span className="text-sm text-foreground">{label}</span>
-                      <div className="flex items-center gap-2">
-                        {isEditing ? (
-                          <div
-                            className="flex items-center gap-2"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            {/* Modifier checkboxes */}
-                            <div className="flex items-center gap-1.5 text-xs">
-                              <div className="flex items-center gap-1">
-                                <Checkbox
-                                  id={`mod-cmd-${key}`}
-                                  checked={modifiers.cmdCtrl}
-                                  onCheckedChange={(checked) =>
-                                    handleModifierChange('cmdCtrl', !!checked, key)
-                                  }
-                                  className="h-3.5 w-3.5"
-                                />
-                                <Label
-                                  htmlFor={`mod-cmd-${key}`}
-                                  className="text-xs text-muted-foreground cursor-pointer"
-                                >
-                                  {isMac ? '⌘' : 'Ctrl'}
-                                </Label>
-                              </div>
-                              <div className="flex items-center gap-1">
-                                <Checkbox
-                                  id={`mod-alt-${key}`}
-                                  checked={modifiers.alt}
-                                  onCheckedChange={(checked) =>
-                                    handleModifierChange('alt', !!checked, key)
-                                  }
-                                  className="h-3.5 w-3.5"
-                                />
-                                <Label
-                                  htmlFor={`mod-alt-${key}`}
-                                  className="text-xs text-muted-foreground cursor-pointer"
-                                >
-                                  {isMac ? '⌥' : 'Alt'}
-                                </Label>
-                              </div>
-                              <div className="flex items-center gap-1">
-                                <Checkbox
-                                  id={`mod-shift-${key}`}
-                                  checked={modifiers.shift}
-                                  onCheckedChange={(checked) =>
-                                    handleModifierChange('shift', !!checked, key)
-                                  }
-                                  className="h-3.5 w-3.5"
-                                />
-                                <Label
-                                  htmlFor={`mod-shift-${key}`}
-                                  className="text-xs text-muted-foreground cursor-pointer"
-                                >
-                                  ⇧
-                                </Label>
-                              </div>
+                return (
+                  <div
+                    key={key}
+                    className={cn(
+                      'flex items-center justify-between p-2 rounded-lg bg-sidebar-accent/10 border transition-colors',
+                      isEditing ? 'border-brand-500' : 'border-sidebar-border',
+                      editable && !isEditing && 'hover:bg-sidebar-accent/20 cursor-pointer'
+                    )}
+                    onClick={() => editable && !isEditing && handleStartEdit(key)}
+                    data-testid={`shortcut-row-${key}`}
+                  >
+                    <span className="text-sm text-foreground">{label}</span>
+                    <div className="flex items-center gap-2">
+                      {isEditing ? (
+                        <div
+                          className="flex items-center gap-2"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {/* Modifier checkboxes */}
+                          <div className="flex items-center gap-1.5 text-xs">
+                            <div className="flex items-center gap-1">
+                              <Checkbox
+                                id={`mod-cmd-${key}`}
+                                checked={modifiers.cmdCtrl}
+                                onCheckedChange={(checked) =>
+                                  handleModifierChange('cmdCtrl', !!checked, key)
+                                }
+                                className="h-3.5 w-3.5"
+                              />
+                              <Label
+                                htmlFor={`mod-cmd-${key}`}
+                                className="text-xs text-muted-foreground cursor-pointer"
+                              >
+                                {isMac ? '⌘' : 'Ctrl'}
+                              </Label>
                             </div>
-                            <span className="text-muted-foreground">+</span>
-                            <Input
-                              value={keyValue}
-                              onChange={(e) => handleKeyChange(e.target.value, key)}
-                              onKeyDown={handleKeyDown}
-                              className={cn(
-                                'w-12 h-7 text-center font-mono text-xs uppercase',
-                                shortcutError && 'border-red-500 focus-visible:ring-red-500'
-                              )}
-                              placeholder="Key"
-                              maxLength={1}
-                              autoFocus
-                              data-testid={`edit-shortcut-input-${key}`}
-                            />
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-7 w-7 p-0 hover:bg-green-500/20 hover:text-green-400"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleSaveShortcut();
-                              }}
-                              disabled={!!shortcutError || !keyValue}
-                              data-testid={`save-shortcut-${key}`}
-                            >
-                              <CheckCircle2 className="w-4 h-4" />
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-7 w-7 p-0 hover:bg-red-500/20 hover:text-red-400"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleCancelEdit();
-                              }}
-                              data-testid={`cancel-shortcut-${key}`}
-                            >
-                              <X className="w-4 h-4" />
-                            </Button>
+                            <div className="flex items-center gap-1">
+                              <Checkbox
+                                id={`mod-alt-${key}`}
+                                checked={modifiers.alt}
+                                onCheckedChange={(checked) =>
+                                  handleModifierChange('alt', !!checked, key)
+                                }
+                                className="h-3.5 w-3.5"
+                              />
+                              <Label
+                                htmlFor={`mod-alt-${key}`}
+                                className="text-xs text-muted-foreground cursor-pointer"
+                              >
+                                {isMac ? '⌥' : 'Alt'}
+                              </Label>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <Checkbox
+                                id={`mod-shift-${key}`}
+                                checked={modifiers.shift}
+                                onCheckedChange={(checked) =>
+                                  handleModifierChange('shift', !!checked, key)
+                                }
+                                className="h-3.5 w-3.5"
+                              />
+                              <Label
+                                htmlFor={`mod-shift-${key}`}
+                                className="text-xs text-muted-foreground cursor-pointer"
+                              >
+                                ⇧
+                              </Label>
+                            </div>
                           </div>
-                        ) : (
-                          <>
-                            <kbd
-                              className={cn(
-                                'px-2 py-1 text-xs font-mono rounded border',
-                                colors.bg,
-                                colors.border,
-                                colors.text
-                              )}
-                            >
-                              {formatShortcut(value, true)}
-                            </kbd>
-                            {isModified && editable && (
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    className="h-6 w-6 p-0 hover:bg-yellow-500/20 hover:text-yellow-400"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleResetShortcut(key);
-                                    }}
-                                    data-testid={`reset-shortcut-${key}`}
-                                  >
-                                    <RotateCcw className="w-3 h-3" />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent side="top">
-                                  Reset to default ({DEFAULT_KEYBOARD_SHORTCUTS[key]})
-                                </TooltipContent>
-                              </Tooltip>
+                          <span className="text-muted-foreground">+</span>
+                          <Input
+                            value={keyValue}
+                            onChange={(e) => handleKeyChange(e.target.value, key)}
+                            onKeyDown={handleKeyDown}
+                            className={cn(
+                              'w-12 h-7 text-center font-mono text-xs uppercase',
+                              shortcutError && 'border-red-500 focus-visible:ring-red-500'
                             )}
-                            {isModified && !editable && (
-                              <span className="w-2 h-2 rounded-full bg-yellow-500" />
+                            placeholder="Key"
+                            maxLength={1}
+                            autoFocus
+                            data-testid={`edit-shortcut-input-${key}`}
+                          />
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 w-7 p-0 hover:bg-green-500/20 hover:text-green-400"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleSaveShortcut();
+                            }}
+                            disabled={!!shortcutError || !keyValue}
+                            data-testid={`save-shortcut-${key}`}
+                          >
+                            <CheckCircle2 className="w-4 h-4" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 w-7 p-0 hover:bg-red-500/20 hover:text-red-400"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleCancelEdit();
+                            }}
+                            data-testid={`cancel-shortcut-${key}`}
+                          >
+                            <X className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      ) : (
+                        <>
+                          <kbd
+                            className={cn(
+                              'px-2 py-1 text-xs font-mono rounded border',
+                              colors.bg,
+                              colors.border,
+                              colors.text
                             )}
-                            {editable && !isModified && (
-                              <Edit2 className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100" />
-                            )}
-                          </>
-                        )}
-                      </div>
+                          >
+                            {formatShortcut(value, true)}
+                          </kbd>
+                          {isModified && editable && (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-6 w-6 p-0 hover:bg-yellow-500/20 hover:text-yellow-400"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleResetShortcut(key);
+                                  }}
+                                  data-testid={`reset-shortcut-${key}`}
+                                >
+                                  <RotateCcw className="w-3 h-3" />
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent side="top">
+                                Reset to default ({DEFAULT_KEYBOARD_SHORTCUTS[key]})
+                              </TooltipContent>
+                            </Tooltip>
+                          )}
+                          {isModified && !editable && (
+                            <span className="w-2 h-2 rounded-full bg-yellow-500" />
+                          )}
+                          {editable && !isModified && (
+                            <Edit2 className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100" />
+                          )}
+                        </>
+                      )}
                     </div>
-                  );
-                })}
-              </div>
-              {editingShortcut &&
-                shortcutError &&
-                SHORTCUT_CATEGORIES[editingShortcut] === category && (
-                  <p className="text-xs text-red-400 mt-1">{shortcutError}</p>
-                )}
+                  </div>
+                );
+              })}
             </div>
-          );
-        })}
-      </div>
-    </TooltipProvider>
+            {editingShortcut &&
+              shortcutError &&
+              SHORTCUT_CATEGORIES[editingShortcut] === category && (
+                <p className="text-xs text-red-400 mt-1">{shortcutError}</p>
+              )}
+          </div>
+        );
+      })}
+    </div>
   );
 }

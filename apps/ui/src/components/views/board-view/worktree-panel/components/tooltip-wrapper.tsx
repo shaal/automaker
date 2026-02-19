@@ -1,5 +1,5 @@
 import type { ReactElement, ReactNode } from 'react';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 interface TooltipWrapperProps {
   /** The element to wrap with a tooltip */
@@ -29,16 +29,14 @@ export function TooltipWrapper({
   }
 
   return (
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          {/* The div wrapper is necessary for tooltips to work on disabled elements */}
-          <div>{children}</div>
-        </TooltipTrigger>
-        <TooltipContent side={side}>
-          <p>{tooltipContent}</p>
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        {/* The div wrapper is necessary for tooltips to work on disabled elements */}
+        <div>{children}</div>
+      </TooltipTrigger>
+      <TooltipContent side={side}>
+        <p>{tooltipContent}</p>
+      </TooltipContent>
+    </Tooltip>
   );
 }

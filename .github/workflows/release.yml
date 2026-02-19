@@ -4,6 +4,9 @@ on:
   release:
     types: [published]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:
@@ -62,7 +65,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: macos-builds
-          path: apps/ui/release/*.{dmg,zip}
+          path: |
+            apps/ui/release/*.dmg
+            apps/ui/release/*.zip
+          if-no-files-found: error
           retention-days: 30
 
       - name: Upload Windows artifacts
@@ -71,6 +77,7 @@ jobs:
         with:
           name: windows-builds
           path: apps/ui/release/*.exe
+          if-no-files-found: error
           retention-days: 30
 
       - name: Upload Linux artifacts
@@ -78,7 +85,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linux-builds
-          path: apps/ui/release/*.{AppImage,deb,rpm}
+          path: |
+            apps/ui/release/*.AppImage
+            apps/ui/release/*.deb
+            apps/ui/release/*.rpm
+          if-no-files-found: error
           retention-days: 30
 
   upload:
@@ -108,9 +119,13 @@ jobs:
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          fail_on_unmatched_files: true
           files: |
-            artifacts/macos-builds/*.{dmg,zip,blockmap}
-            artifacts/windows-builds/*.{exe,blockmap}
-            artifacts/linux-builds/*.{AppImage,deb,rpm,blockmap}
+            artifacts/macos-builds/*.dmg
+            artifacts/macos-builds/*.zip
+            artifacts/windows-builds/*.exe
+            artifacts/linux-builds/*.AppImage
+            artifacts/linux-builds/*.deb
+            artifacts/linux-builds/*.rpm
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

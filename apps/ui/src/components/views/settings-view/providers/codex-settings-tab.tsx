@@ -16,18 +16,13 @@ const logger = createLogger('CodexSettings');
 export function CodexSettingsTab() {
   const {
     codexAutoLoadAgents,
-    codexSandboxMode,
-    codexApprovalPolicy,
     codexEnableWebSearch,
     codexEnableImages,
     enabledCodexModels,
     codexDefaultModel,
     setCodexAutoLoadAgents,
-    setCodexSandboxMode,
-    setCodexApprovalPolicy,
     setCodexEnableWebSearch,
     setCodexEnableImages,
-    setEnabledCodexModels,
     setCodexDefaultModel,
     toggleCodexModel,
   } = useAppStore();
@@ -59,9 +54,25 @@ export function CodexSettingsTab() {
   useEffect(() => {
     const checkCodexStatus = async () => {
       const api = getElectronAPI();
-      if (api?.setup?.getCodexStatus) {
+      // Check if getCodexStatus method exists on the API (may not be implemented yet)
+      const getCodexStatus = (api?.setup as Record<string, unknown> | undefined)?.getCodexStatus as
+        | (() => Promise<{
+            success: boolean;
+            installed: boolean;
+            version?: string;
+            path?: string;
+            recommendation?: string;
+            installCommands?: { npm?: string; macos?: string; windows?: string };
+            auth?: {
+              authenticated: boolean;
+              method: string;
+              hasApiKey?: boolean;
+            };
+          }>)
+        | undefined;
+      if (getCodexStatus) {
         try {
-          const result = await api.setup.getCodexStatus();
+          const result = await getCodexStatus();
           setDisplayCliStatus({
             success: result.success,
             status: result.installed ? 'installed' : 'not_installed',
@@ -73,8 +84,8 @@ export function CodexSettingsTab() {
           });
           setCodexCliStatus({
             installed: result.installed,
-            version: result.version,
-            path: result.path,
+            version: result.version ?? null,
+            path: result.path ?? null,
             method: result.auth?.method || 'none',
           });
           if (result.auth) {
@@ -101,8 +112,24 @@ export function CodexSettingsTab() {
     setIsCheckingCodexCli(true);
     try {
       const api = getElectronAPI();
-      if (api?.setup?.getCodexStatus) {
-        const result = await api.setup.getCodexStatus();
+      // Check if getCodexStatus method exists on the API (may not be implemented yet)
+      const getCodexStatus = (api?.setup as Record<string, unknown> | undefined)?.getCodexStatus as
+        | (() => Promise<{
+            success: boolean;
+            installed: boolean;
+            version?: string;
+            path?: string;
+            recommendation?: string;
+            installCommands?: { npm?: string; macos?: string; windows?: string };
+            auth?: {
+              authenticated: boolean;
+              method: string;
+              hasApiKey?: boolean;
+            };
+          }>)
+        | undefined;
+      if (getCodexStatus) {
+        const result = await getCodexStatus();
         setDisplayCliStatus({
           success: result.success,
           status: result.installed ? 'installed' : 'not_installed',
@@ -114,8 +141,8 @@ export function CodexSettingsTab() {
         });
         setCodexCliStatus({
           installed: result.installed,
-          version: result.version,
-          path: result.path,
+          version: result.version ?? null,
+          path: result.path ?? null,
           method: result.auth?.method || 'none',
         });
         if (result.auth) {

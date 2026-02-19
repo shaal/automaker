@@ -13,7 +13,6 @@ import {
   CheckSquare,
   Trash2,
   ImageIcon,
-  Loader2,
   Settings,
   RotateCcw,
   Search,
@@ -22,8 +21,10 @@ import {
   Maximize2,
   Minimize2,
   ArrowDown,
+  GitBranch,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Slider } from '@/components/ui/slider';
@@ -44,7 +45,6 @@ import { matchesShortcutWithCode } from '@/hooks/use-keyboard-shortcuts';
 import {
   getTerminalTheme,
   TERMINAL_FONT_OPTIONS,
-  DEFAULT_TERMINAL_FONT,
   getTerminalFontFamily,
 } from '@/config/terminal-themes';
 import { DEFAULT_FONT_VALUE } from '@/config/ui-font-options';
@@ -94,13 +94,13 @@ interface TerminalPanelProps {
   onCommandRan?: () => void; // Callback when the initial command has been sent
   isMaximized?: boolean;
   onToggleMaximize?: () => void;
+  branchName?: string; // Branch name to display in header (from "Open in Terminal" action)
 }
 
 // Type for xterm Terminal - we'll use any since we're dynamically importing
 type XTerminal = InstanceType<typeof import('@xterm/xterm').Terminal>;
 type XFitAddon = InstanceType<typeof import('@xterm/addon-fit').FitAddon>;
 type XSearchAddon = InstanceType<typeof import('@xterm/addon-search').SearchAddon>;
-type XWebLinksAddon = InstanceType<typeof import('@xterm/addon-web-links').WebLinksAddon>;
 
 export function TerminalPanel({
   sessionId,
@@ -124,6 +124,7 @@ export function TerminalPanel({
   onCommandRan,
   isMaximized = false,
   onToggleMaximize,
+  branchName,
 }: TerminalPanelProps) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -282,8 +283,8 @@ export function TerminalPanel({
     // - CSI sequences: \x1b[...letter
     // - OSC sequences: \x1b]...ST
     // - Other escape sequences: \x1b followed by various characters
-    // eslint-disable-next-line no-control-regex
     return text.replace(
+      // eslint-disable-next-line no-control-regex
       /\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][AB012]|\x1b[>=<]|\x1b[78HM]|\x1b#[0-9]|\x1b./g,
       ''
     );
@@ -667,8 +668,6 @@ export function TerminalPanel({
           while ((match = filePathRegex.exec(lineText)) !== null) {
             const fullMatch = match[1];
             const filePath = match[2];
-            const lineNum = match[3] ? parseInt(match[3], 10) : undefined;
-            const colNum = match[4] ? parseInt(match[4], 10) : undefined;
 
             // Skip common false positives (URLs, etc.)
             if (
@@ -1743,7 +1742,7 @@ export function TerminalPanel({
           <div className="flex flex-col items-center gap-2 px-4 py-3 bg-blue-500/90 rounded-md text-white">
             {isProcessingImage ? (
               <>
-                <Loader2 className="h-6 w-6 animate-spin" />
+                <Spinner size="lg" />
                 <span className="text-sm font-medium">Processing...</span>
               </>
             ) : (
@@ -1776,6 +1775,13 @@ export function TerminalPanel({
         <div className="flex items-center gap-1.5 flex-1 min-w-0">
           <Terminal className="h-3 w-3 shrink-0 text-muted-foreground" />
           <span className="text-xs truncate text-foreground">{shellName}</span>
+          {/* Branch name indicator - show when terminal was opened from worktree */}
+          {branchName && (
+            <span className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-brand-500/10 text-brand-500 shrink-0">
+              <GitBranch className="h-2.5 w-2.5 shrink-0" />
+              <span>{branchName}</span>
+            </span>
+          )}
           {/* Font size indicator - only show when not default */}
           {fontSize !== DEFAULT_FONT_SIZE && (
             <button
@@ -1791,7 +1797,7 @@ export function TerminalPanel({
           )}
           {connectionStatus === 'reconnecting' && (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-500 flex items-center gap-1">
-              <Loader2 className="h-2.5 w-2.5 animate-spin" />
+              <Spinner size="xs" />
               Reconnecting...
             </span>
           )}

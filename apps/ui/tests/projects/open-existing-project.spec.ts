@@ -17,7 +17,6 @@ import {
   setupWelcomeView,
   authenticateForTests,
   handleLoginScreenIfPresent,
-  waitForNetworkIdle,
 } from '../utils';
 
 // Create unique temp dir for this test run
@@ -83,8 +82,24 @@ test.describe('Open Project', () => {
     // Intercept settings API BEFORE any navigation to prevent restoring a currentProject
     // AND inject our test project into the projects list
     await page.route('**/api/settings/global', async (route) => {
-      const response = await route.fetch();
-      const json = await response.json();
+      let response;
+      try {
+        response = await route.fetch();
+      } catch {
+        // If fetch fails, continue with original request
+        await route.continue();
+        return;
+      }
+
+      let json;
+      try {
+        json = await response.json();
+      } catch {
+        // If response is disposed, continue with original request
+        await route.continue();
+        return;
+      }
+
       if (json.settings) {
         // Remove currentProjectId to prevent restoring a project
         json.settings.currentProjectId = null;
@@ -99,16 +114,14 @@ test.describe('Open Project', () => {
 
         // Add to existing projects (or create array)
         const existingProjects = json.settings.projects || [];
-        const hasProject = existingProjects.some((p: any) => p.id === projectId);
+        const hasProject = existingProjects.some(
+          (p: { id: string; path: string }) => p.id === projectId
+        );
         if (!hasProject) {
           json.settings.projects = [testProject, ...existingProjects];
         }
       }
-      await route.fulfill({
-        status: response.status(),
-        headers: response.headers(),
-        json,
-      });
+      await route.fulfill({ response, json });
     });
 
     // Now navigate to the app
@@ -156,9 +169,11 @@ test.describe('Open Project', () => {
     }
 
     // Wait for a project to be set as current and visible on the page
-    // The project name appears in the project switcher button
+    // The project name appears in the project dropdown trigger
     if (targetProjectName) {
-      await expect(page.getByTestId(`project-switcher-project-${targetProjectName}`)).toBeVisible({
+      await expect(
+        page.locator('[data-testid="project-dropdown-trigger"]').getByText(targetProjectName)
+      ).toBeVisible({
         timeout: 15000,
       });
     }

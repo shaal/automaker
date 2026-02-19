@@ -51,7 +51,7 @@ export function GraphView({
   planUseSelectedWorktreeBranch,
   onPlanUseSelectedWorktreeBranchChange,
 }: GraphViewProps) {
-  const { currentProject } = useAppStore();
+  const currentProject = useAppStore((state) => state.currentProject);
 
   // Use the same background hook as the board view
   const { backgroundImageStyle, backgroundSettings } = useBoardBackground({ currentProject });

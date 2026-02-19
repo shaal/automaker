@@ -1,8 +1,8 @@
 import { useState, useCallback, useEffect } from 'react';
 import { Plus, Bug, FolderOpen, BookOpen } from 'lucide-react';
 import { useNavigate, useLocation } from '@tanstack/react-router';
-import { cn } from '@/lib/utils';
-import { useAppStore, type ThemeMode } from '@/store/app-store';
+import { cn, isMac } from '@/lib/utils';
+import { useAppStore } from '@/store/app-store';
 import { useOSDetection } from '@/hooks/use-os-detection';
 import { ProjectSwitcherItem } from './components/project-switcher-item';
 import { ProjectContextMenu } from './components/project-context-menu';
@@ -10,10 +10,13 @@ import { EditProjectDialog } from './components/edit-project-dialog';
 import { NotificationBell } from './components/notification-bell';
 import { NewProjectModal } from '@/components/dialogs/new-project-modal';
 import { OnboardingDialog } from '@/components/layout/sidebar/dialogs';
-import { useProjectCreation, useProjectTheme } from '@/components/layout/sidebar/hooks';
-import { SIDEBAR_FEATURE_FLAGS } from '@/components/layout/sidebar/constants';
+import { useProjectCreation } from '@/components/layout/sidebar/hooks';
+import {
+  MACOS_ELECTRON_TOP_PADDING_CLASS,
+  SIDEBAR_FEATURE_FLAGS,
+} from '@/components/layout/sidebar/constants';
 import type { Project } from '@/lib/electron';
-import { getElectronAPI } from '@/lib/electron';
+import { getElectronAPI, isElectron } from '@/lib/electron';
 import { initializeProject, hasAppSpec, hasAutomakerDir } from '@/lib/project-init';
 import { toast } from 'sonner';
 import { CreateSpecDialog } from '@/components/views/spec-view/dialogs';
@@ -41,7 +44,6 @@ export function ProjectSwitcher() {
     projects,
     currentProject,
     setCurrentProject,
-    trashedProjects,
     upsertAndSetCurrentProject,
     specCreatingForProject,
     setSpecCreatingForProject,
@@ -69,9 +71,6 @@ export function ProjectSwitcher() {
   const appMode = import.meta.env.VITE_APP_MODE || '?';
   const versionSuffix = `${getOSAbbreviation(os)}${appMode}`;
 
-  // Get global theme for project creation
-  const { globalTheme } = useProjectTheme();
-
   // Project creation state and handlers
   const {
     showNewProjectModal,
@@ -84,9 +83,6 @@ export function ProjectSwitcher() {
     handleCreateFromTemplate,
     handleCreateFromCustomUrl,
   } = useProjectCreation({
-    trashedProjects,
-    currentProject,
-    globalTheme,
     upsertAndSetCurrentProject,
   });
 
@@ -161,13 +157,8 @@ export function ProjectSwitcher() {
         }
 
         // Upsert project and set as current (handles both create and update cases)
-        // Theme preservation is handled by the store action
-        const trashedProject = trashedProjects.find((p) => p.path === path);
-        const effectiveTheme =
-          (trashedProject?.theme as ThemeMode | undefined) ||
-          (currentProject?.theme as ThemeMode | undefined) ||
-          globalTheme;
-        upsertAndSetCurrentProject(path, name, effectiveTheme);
+        // Theme handling (trashed project recovery or undefined for global) is done by the store
+        upsertAndSetCurrentProject(path, name);
 
         // Check if app_spec.txt exists
         const specExists = await hasAppSpec(path);
@@ -198,7 +189,7 @@ export function ProjectSwitcher() {
         });
       }
     }
-  }, [trashedProjects, upsertAndSetCurrentProject, currentProject, globalTheme, navigate]);
+  }, [upsertAndSetCurrentProject, navigate]);
 
   // Handler for creating initial spec from the setup dialog
   const handleCreateInitialSpec = useCallback(async () => {
@@ -291,7 +282,12 @@ export function ProjectSwitcher() {
         data-testid="project-switcher"
       >
         {/* Automaker Logo and Version */}
-        <div className="flex flex-col items-center pt-3 pb-2 px-2">
+        <div
+          className={cn(
+            'flex flex-col items-center pb-2 px-2',
+            isMac && isElectron() ? MACOS_ELECTRON_TOP_PADDING_CLASS : 'pt-3'
+          )}
+        >
           <button
             onClick={() => navigate({ to: '/dashboard' })}
             className="group flex flex-col items-center gap-0.5"

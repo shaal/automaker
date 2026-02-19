@@ -9,14 +9,18 @@ import * as secureFs from '../../lib/secure-fs.js';
 import type { EventEmitter } from '../../lib/events.js';
 import { specOutputSchema, specToXml, type SpecOutput } from '../../lib/app-spec-format.js';
 import { createLogger } from '@automaker/utils';
-import { DEFAULT_PHASE_MODELS, isCursorModel } from '@automaker/types';
+import { DEFAULT_PHASE_MODELS, supportsStructuredOutput } from '@automaker/types';
 import { resolvePhaseModel } from '@automaker/model-resolver';
 import { extractJson } from '../../lib/json-extractor.js';
 import { streamingQuery } from '../../providers/simple-query-service.js';
 import { generateFeaturesFromSpec } from './generate-features-from-spec.js';
 import { ensureAutomakerDir, getAppSpecPath } from '@automaker/platform';
 import type { SettingsService } from '../../services/settings-service.js';
-import { getAutoLoadClaudeMdSetting, getPromptCustomization } from '../../lib/settings-helpers.js';
+import {
+  getAutoLoadClaudeMdSetting,
+  getPromptCustomization,
+  getPhaseModelWithOverrides,
+} from '../../lib/settings-helpers.js';
 
 const logger = createLogger('SpecRegeneration');
 
@@ -92,21 +96,37 @@ ${prompts.appSpec.structuredSpecInstructions}`;
     '[SpecRegeneration]'
   );
 
-  // Get model from phase settings
-  const settings = await settingsService?.getGlobalSettings();
-  const phaseModelEntry =
-    settings?.phaseModels?.specGenerationModel || DEFAULT_PHASE_MODELS.specGenerationModel;
+  // Get model from phase settings with provider info
+  const {
+    phaseModel: phaseModelEntry,
+    provider,
+    credentials,
+  } = settingsService
+    ? await getPhaseModelWithOverrides(
+        'specGenerationModel',
+        settingsService,
+        projectPath,
+        '[SpecRegeneration]'
+      )
+    : {
+        phaseModel: DEFAULT_PHASE_MODELS.specGenerationModel,
+        provider: undefined,
+        credentials: undefined,
+      };
   const { model, thinkingLevel } = resolvePhaseModel(phaseModelEntry);
 
-  logger.info('Using model:', model);
+  logger.info('Using model:', model, provider ? `via provider: ${provider.name}` : 'direct API');
 
   let responseText = '';
   let structuredOutput: SpecOutput | null = null;
 
-  // Determine if we should use structured output (Claude supports it, Cursor doesn't)
-  const useStructuredOutput = !isCursorModel(model);
+  // Determine if we should use structured output based on model type
+  const useStructuredOutput = supportsStructuredOutput(model);
+  logger.info(
+    `Structured output mode: ${useStructuredOutput ? 'enabled (Claude/Codex)' : 'disabled (using JSON instructions)'}`
+  );
 
-  // Build the final prompt - for Cursor, include JSON schema instructions
+  // Build the final prompt - for non-Claude/Codex models, include JSON schema instructions
   let finalPrompt = prompt;
   if (!useStructuredOutput) {
     finalPrompt = `${prompt}
@@ -132,6 +152,8 @@ Your entire response should be valid JSON starting with { and ending with }. No 
     thinkingLevel,
     readOnly: true, // Spec generation only reads code, we write the spec ourselves
     settingSources: autoLoadClaudeMd ? ['user', 'project', 'local'] : undefined,
+    claudeCompatibleProvider: provider, // Pass provider for alternative endpoint configuration
+    credentials, // Pass credentials for resolving 'credentials' apiKeySource
     outputFormat: useStructuredOutput
       ? {
           type: 'json_schema',

@@ -1,6 +1,7 @@
+import { useState } from 'react';
 import { Folder, LucideIcon } from 'lucide-react';
 import * as LucideIcons from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, sanitizeForTestId } from '@/lib/utils';
 import { getAuthenticatedImageUrl } from '@/lib/api-fetch';
 import type { Project } from '@/lib/electron';
 
@@ -19,6 +20,8 @@ export function ProjectSwitcherItem({
   onClick,
   onContextMenu,
 }: ProjectSwitcherItemProps) {
+  const [imageError, setImageError] = useState(false);
+
   // Convert index to hotkey label: 0 -> "1", 1 -> "2", ..., 8 -> "9", 9 -> "0"
   const hotkeyLabel =
     hotkeyIndex !== undefined && hotkeyIndex >= 0 && hotkeyIndex <= 9
@@ -35,12 +38,17 @@ export function ProjectSwitcherItem({
   };
 
   const IconComponent = getIconComponent();
-  const hasCustomIcon = !!project.customIconPath;
+  const hasCustomIcon = !!project.customIconPath && !imageError;
+
+  // Combine project.id with sanitized name for uniqueness and readability
+  // Format: project-switcher-{id}-{sanitizedName}
+  const testId = `project-switcher-${project.id}-${sanitizeForTestId(project.name)}`;
 
   return (
     <button
       onClick={onClick}
       onContextMenu={onContextMenu}
+      data-testid={testId}
       className={cn(
         'group w-full aspect-square rounded-xl flex items-center justify-center relative overflow-hidden',
         'transition-all duration-200 ease-out',
@@ -60,7 +68,6 @@ export function ProjectSwitcherItem({
         'hover:scale-105 active:scale-95'
       )}
       title={project.name}
-      data-testid={`project-switcher-${project.id}`}
     >
       {hasCustomIcon ? (
         <img
@@ -70,6 +77,7 @@ export function ProjectSwitcherItem({
             'w-8 h-8 rounded-lg object-cover transition-all duration-200',
             isActive ? 'ring-1 ring-brand-500/50' : 'group-hover:scale-110'
           )}
+          onError={() => setImageError(true)}
         />
       ) : (
         <IconComponent

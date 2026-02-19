@@ -7,11 +7,15 @@ import type {
   CursorModelId,
   CodexModelId,
   OpencodeModelId,
+  GeminiModelId,
+  CopilotModelId,
   GroupedModel,
   PhaseModelEntry,
+  ClaudeCompatibleProvider,
+  ProviderModel,
+  ClaudeModelAlias,
 } from '@automaker/types';
 import {
-  stripProviderPrefix,
   STANDALONE_CURSOR_MODELS,
   getModelGroup,
   isGroupSelected,
@@ -22,6 +26,8 @@ import {
   CLAUDE_MODELS,
   CURSOR_MODELS,
   OPENCODE_MODELS,
+  GEMINI_MODELS,
+  COPILOT_MODELS,
   THINKING_LEVELS,
   THINKING_LEVEL_LABELS,
   REASONING_EFFORT_LEVELS,
@@ -33,6 +39,11 @@ import {
   AnthropicIcon,
   CursorIcon,
   OpenAIIcon,
+  OpenRouterIcon,
+  GlmIcon,
+  MiniMaxIcon,
+  GeminiIcon,
+  CopilotIcon,
   getProviderIconForModel,
 } from '@/components/ui/provider-icon';
 import { Button } from '@/components/ui/button';
@@ -154,12 +165,16 @@ export function PhaseModelSelector({
   const [expandedGroup, setExpandedGroup] = useState<string | null>(null);
   const [expandedClaudeModel, setExpandedClaudeModel] = useState<ModelAlias | null>(null);
   const [expandedCodexModel, setExpandedCodexModel] = useState<CodexModelId | null>(null);
+  const [expandedProviderModel, setExpandedProviderModel] = useState<string | null>(null); // Format: providerId:modelId
   const commandListRef = useRef<HTMLDivElement>(null);
   const expandedTriggerRef = useRef<HTMLDivElement>(null);
   const expandedClaudeTriggerRef = useRef<HTMLDivElement>(null);
   const expandedCodexTriggerRef = useRef<HTMLDivElement>(null);
+  const expandedProviderTriggerRef = useRef<HTMLDivElement>(null);
   const {
     enabledCursorModels,
+    enabledGeminiModels,
+    enabledCopilotModels,
     favoriteModels,
     toggleFavoriteModel,
     codexModels,
@@ -170,15 +185,22 @@ export function PhaseModelSelector({
     opencodeModelsLoading,
     fetchOpencodeModels,
     disabledProviders,
+    claudeCompatibleProviders,
   } = useAppStore();
 
   // Detect mobile devices to use inline expansion instead of nested popovers
   const isMobile = useIsMobile();
 
-  // Extract model and thinking/reasoning levels from value
+  // Extract model, provider, and thinking/reasoning levels from value
   const selectedModel = value.model;
+  const selectedProviderId = value.providerId;
   const selectedThinkingLevel = value.thinkingLevel || 'none';
   const selectedReasoningEffort = value.reasoningEffort || 'none';
+
+  // Get enabled providers and their models
+  const enabledProviders = useMemo(() => {
+    return (claudeCompatibleProviders || []).filter((p) => p.enabled !== false);
+  }, [claudeCompatibleProviders]);
 
   // Fetch Codex models on mount
   useEffect(() => {
@@ -267,6 +289,29 @@ export function PhaseModelSelector({
     return () => observer.disconnect();
   }, [expandedCodexModel]);
 
+  // Close expanded provider model popover when trigger scrolls out of view
+  useEffect(() => {
+    const triggerElement = expandedProviderTriggerRef.current;
+    const listElement = commandListRef.current;
+    if (!triggerElement || !listElement || !expandedProviderModel) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (!entry.isIntersecting) {
+          setExpandedProviderModel(null);
+        }
+      },
+      {
+        root: listElement,
+        threshold: 0.1,
+      }
+    );
+
+    observer.observe(triggerElement);
+    return () => observer.disconnect();
+  }, [expandedProviderModel]);
+
   // Transform dynamic Codex models from store to component format
   const transformedCodexModels = useMemo(() => {
     return codexModels.map((model) => ({
@@ -279,9 +324,19 @@ export function PhaseModelSelector({
   }, [codexModels]);
 
   // Filter Cursor models to only show enabled ones
+  // With canonical IDs, both CURSOR_MODELS and enabledCursorModels use prefixed format
   const availableCursorModels = CURSOR_MODELS.filter((model) => {
-    // Compare model.id directly since both model.id and enabledCursorModels use full IDs with prefix
     return enabledCursorModels.includes(model.id as CursorModelId);
+  });
+
+  // Filter Gemini models to only show enabled ones
+  const availableGeminiModels = GEMINI_MODELS.filter((model) => {
+    return enabledGeminiModels.includes(model.id as GeminiModelId);
+  });
+
+  // Filter Copilot models to only show enabled ones
+  const availableCopilotModels = COPILOT_MODELS.filter((model) => {
+    return enabledCopilotModels.includes(model.id as CopilotModelId);
   });
 
   // Helper to find current selected model details
@@ -300,6 +355,7 @@ export function PhaseModelSelector({
       };
     }
 
+    // With canonical IDs, direct comparison works
     const cursorModel = availableCursorModels.find((m) => m.id === selectedModel);
     if (cursorModel) return { ...cursorModel, icon: CursorIcon };
 
@@ -320,6 +376,25 @@ export function PhaseModelSelector({
     const codexModel = transformedCodexModels.find((m) => m.id === selectedModel);
     if (codexModel) return { ...codexModel, icon: OpenAIIcon };
 
+    // Check Gemini models
+    // Note: Gemini CLI doesn't support thinking level configuration
+    const geminiModel = availableGeminiModels.find((m) => m.id === selectedModel);
+    if (geminiModel) {
+      return {
+        ...geminiModel,
+        icon: GeminiIcon,
+      };
+    }
+
+    // Check Copilot models
+    const copilotModel = availableCopilotModels.find((m) => m.id === selectedModel);
+    if (copilotModel) {
+      return {
+        ...copilotModel,
+        icon: CopilotIcon,
+      };
+    }
+
     // Check OpenCode models (static) - use dynamic icon resolution for provider-specific icons
     const opencodeModel = OPENCODE_MODELS.find((m) => m.id === selectedModel);
     if (opencodeModel) return { ...opencodeModel, icon: getProviderIconForModel(opencodeModel.id) };
@@ -336,13 +411,95 @@ export function PhaseModelSelector({
       };
     }
 
+    // Check ClaudeCompatibleProvider models (when providerId is set)
+    if (selectedProviderId) {
+      const provider = enabledProviders.find((p) => p.id === selectedProviderId);
+      if (provider) {
+        const providerModel = provider.models?.find((m) => m.id === selectedModel);
+        if (providerModel) {
+          // Count providers of same type to determine if we need provider name suffix
+          const sameTypeCount = enabledProviders.filter(
+            (p) => p.providerType === provider.providerType
+          ).length;
+          const suffix = sameTypeCount > 1 ? ` (${provider.name})` : '';
+          // Add thinking level to label if not 'none'
+          const thinkingLabel =
+            selectedThinkingLevel !== 'none'
+              ? ` (${THINKING_LEVEL_LABELS[selectedThinkingLevel]} Thinking)`
+              : '';
+          // Get icon based on provider type
+          const getIconForProviderType = () => {
+            switch (provider.providerType) {
+              case 'glm':
+                return GlmIcon;
+              case 'minimax':
+                return MiniMaxIcon;
+              case 'openrouter':
+                return OpenRouterIcon;
+              default:
+                return getProviderIconForModel(providerModel.id) || OpenRouterIcon;
+            }
+          };
+          return {
+            id: selectedModel,
+            label: `${providerModel.displayName}${suffix}${thinkingLabel}`,
+            description: provider.name,
+            provider: 'claude-compatible' as const,
+            icon: getIconForProviderType(),
+          };
+        }
+      }
+    }
+
+    // Fallback: Check ClaudeCompatibleProvider models by model ID only (when providerId is not set)
+    // This handles cases where features store model ID but not providerId
+    for (const provider of enabledProviders) {
+      const providerModel = provider.models?.find((m) => m.id === selectedModel);
+      if (providerModel) {
+        // Count providers of same type to determine if we need provider name suffix
+        const sameTypeCount = enabledProviders.filter(
+          (p) => p.providerType === provider.providerType
+        ).length;
+        const suffix = sameTypeCount > 1 ? ` (${provider.name})` : '';
+        // Add thinking level to label if not 'none'
+        const thinkingLabel =
+          selectedThinkingLevel !== 'none'
+            ? ` (${THINKING_LEVEL_LABELS[selectedThinkingLevel]} Thinking)`
+            : '';
+        // Get icon based on provider type
+        const getIconForProviderType = () => {
+          switch (provider.providerType) {
+            case 'glm':
+              return GlmIcon;
+            case 'minimax':
+              return MiniMaxIcon;
+            case 'openrouter':
+              return OpenRouterIcon;
+            default:
+              return getProviderIconForModel(providerModel.id) || OpenRouterIcon;
+          }
+        };
+        return {
+          id: selectedModel,
+          label: `${providerModel.displayName}${suffix}${thinkingLabel}`,
+          description: provider.name,
+          provider: 'claude-compatible' as const,
+          icon: getIconForProviderType(),
+        };
+      }
+    }
+
     return null;
   }, [
     selectedModel,
+    selectedProviderId,
     selectedThinkingLevel,
     availableCursorModels,
+    availableGeminiModels,
+    availableCopilotModels,
     transformedCodexModels,
     dynamicOpencodeModels,
+    enabledProviders,
   ]);
 
   // Compute grouped vs standalone Cursor models
@@ -352,7 +509,7 @@ export function PhaseModelSelector({
     const seenGroups = new Set<string>();
 
     availableCursorModels.forEach((model) => {
-      const cursorId = stripProviderPrefix(model.id) as CursorModelId;
+      const cursorId = model.id as CursorModelId;
 
       // Check if this model is standalone
       if (STANDALONE_CURSOR_MODELS.includes(cursorId)) {
@@ -403,17 +560,25 @@ export function PhaseModelSelector({
     return [...staticModels, ...uniqueDynamic];
   }, [dynamicOpencodeModels, enabledDynamicModelIds]);
 
+  // Check if providers are disabled (needed for rendering conditions)
+  const isCursorDisabled = disabledProviders.includes('cursor');
+  const isGeminiDisabled = disabledProviders.includes('gemini');
+  const isCopilotDisabled = disabledProviders.includes('copilot');
+
   // Group models (filtering out disabled providers)
-  const { favorites, claude, cursor, codex, opencode } = useMemo(() => {
+  const { favorites, claude, codex, gemini, copilot, opencode } = useMemo(() => {
     const favs: typeof CLAUDE_MODELS = [];
     const cModels: typeof CLAUDE_MODELS = [];
     const curModels: typeof CURSOR_MODELS = [];
     const codModels: typeof transformedCodexModels = [];
+    const gemModels: typeof GEMINI_MODELS = [];
+    const copModels: typeof COPILOT_MODELS = [];
     const ocModels: ModelOption[] = [];
 
     const isClaudeDisabled = disabledProviders.includes('claude');
-    const isCursorDisabled = disabledProviders.includes('cursor');
     const isCodexDisabled = disabledProviders.includes('codex');
+    const isGeminiDisabledInner = disabledProviders.includes('gemini');
+    const isCopilotDisabledInner = disabledProviders.includes('copilot');
     const isOpencodeDisabled = disabledProviders.includes('opencode');
 
     // Process Claude Models (skip if provider is disabled)
@@ -449,6 +614,28 @@ export function PhaseModelSelector({
       });
     }
 
+    // Process Gemini Models (skip if provider is disabled)
+    if (!isGeminiDisabledInner) {
+      availableGeminiModels.forEach((model) => {
+        if (favoriteModels.includes(model.id)) {
+          favs.push(model);
+        } else {
+          gemModels.push(model);
+        }
+      });
+    }
+
+    // Process Copilot Models (skip if provider is disabled)
+    if (!isCopilotDisabledInner) {
+      availableCopilotModels.forEach((model) => {
+        if (favoriteModels.includes(model.id)) {
+          favs.push(model);
+        } else {
+          copModels.push(model);
+        }
+      });
+    }
+
     // Process OpenCode Models (skip if provider is disabled)
     if (!isOpencodeDisabled) {
       allOpencodeModels.forEach((model) => {
@@ -463,13 +650,16 @@ export function PhaseModelSelector({
     return {
       favorites: favs,
       claude: cModels,
-      cursor: curModels,
       codex: codModels,
+      gemini: gemModels,
+      copilot: copModels,
       opencode: ocModels,
     };
   }, [
     favoriteModels,
     availableCursorModels,
+    availableGeminiModels,
+    availableCopilotModels,
     transformedCodexModels,
     allOpencodeModels,
     disabledProviders,
@@ -906,10 +1096,10 @@ export function PhaseModelSelector({
     );
   };
 
-  // Render Cursor model item (no thinking level needed)
-  const renderCursorModelItem = (model: (typeof CURSOR_MODELS)[0]) => {
-    const modelValue = stripProviderPrefix(model.id);
-    const isSelected = selectedModel === modelValue;
+  // Render Gemini model item - simple selector without thinking level
+  // Note: Gemini CLI doesn't support a --thinking-level flag, thinking is model-internal
+  const renderGeminiModelItem = (model: (typeof GEMINI_MODELS)[0]) => {
+    const isSelected = selectedModel === model.id;
     const isFavorite = favoriteModels.includes(model.id);
 
     return (
@@ -917,7 +1107,353 @@ export function PhaseModelSelector({
         key={model.id}
         value={model.label}
         onSelect={() => {
-          onChange({ model: modelValue as CursorModelId });
+          onChange({ model: model.id as GeminiModelId });
+          setOpen(false);
+        }}
+        className="group flex items-center justify-between py-2"
+      >
+        <div className="flex items-center gap-3 overflow-hidden">
+          <GeminiIcon
+            className={cn(
+              'h-4 w-4 shrink-0',
+              isSelected ? 'text-primary' : 'text-muted-foreground'
+            )}
+          />
+          <div className="flex flex-col truncate">
+            <span className={cn('truncate font-medium', isSelected && 'text-primary')}>
+              {model.label}
+            </span>
+            <span className="truncate text-xs text-muted-foreground">{model.description}</span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1 ml-2">
+          <Button
+            variant="ghost"
+            size="icon"
+            className={cn(
+              'h-6 w-6 hover:bg-transparent hover:text-yellow-500 focus:ring-0',
+              isFavorite
+                ? 'text-yellow-500 opacity-100'
+                : 'opacity-0 group-hover:opacity-100 text-muted-foreground'
+            )}
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleFavoriteModel(model.id);
+            }}
+          >
+            <Star className={cn('h-3.5 w-3.5', isFavorite && 'fill-current')} />
+          </Button>
+          {isSelected && <Check className="h-4 w-4 text-primary shrink-0" />}
+        </div>
+      </CommandItem>
+    );
+  };
+
+  // Render Copilot model item - simple selector without thinking level
+  const renderCopilotModelItem = (model: (typeof COPILOT_MODELS)[0]) => {
+    const isSelected = selectedModel === model.id;
+    const isFavorite = favoriteModels.includes(model.id);
+
+    return (
+      <CommandItem
+        key={model.id}
+        value={model.label}
+        onSelect={() => {
+          onChange({ model: model.id as CopilotModelId });
+          setOpen(false);
+        }}
+        className="group flex items-center justify-between py-2"
+      >
+        <div className="flex items-center gap-3 overflow-hidden">
+          <CopilotIcon
+            className={cn(
+              'h-4 w-4 shrink-0',
+              isSelected ? 'text-primary' : 'text-muted-foreground'
+            )}
+          />
+          <div className="flex flex-col truncate">
+            <span className={cn('truncate font-medium', isSelected && 'text-primary')}>
+              {model.label}
+            </span>
+            <span className="truncate text-xs text-muted-foreground">{model.description}</span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1 ml-2">
+          <Button
+            variant="ghost"
+            size="icon"
+            className={cn(
+              'h-6 w-6 hover:bg-transparent hover:text-yellow-500 focus:ring-0',
+              isFavorite
+                ? 'text-yellow-500 opacity-100'
+                : 'opacity-0 group-hover:opacity-100 text-muted-foreground'
+            )}
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleFavoriteModel(model.id);
+            }}
+          >
+            <Star className={cn('h-3.5 w-3.5', isFavorite && 'fill-current')} />
+          </Button>
+          {isSelected && <Check className="h-4 w-4 text-primary shrink-0" />}
+        </div>
+      </CommandItem>
+    );
+  };
+
+  // Render ClaudeCompatibleProvider model item with thinking level support
+  const renderProviderModelItem = (
+    provider: ClaudeCompatibleProvider,
+    model: ProviderModel,
+    showProviderSuffix: boolean,
+    allMappedModels: ClaudeModelAlias[] = []
+  ) => {
+    const isSelected = selectedModel === model.id && selectedProviderId === provider.id;
+    const expandKey = `${provider.id}:${model.id}`;
+    const isExpanded = expandedProviderModel === expandKey;
+    const currentThinking = isSelected ? selectedThinkingLevel : 'none';
+    const displayName = showProviderSuffix
+      ? `${model.displayName} (${provider.name})`
+      : model.displayName;
+
+    // Build description showing all mapped Claude models
+    const modelLabelMap: Record<ClaudeModelAlias, string> = {
+      haiku: 'Haiku',
+      sonnet: 'Sonnet',
+      opus: 'Opus',
+    };
+    // Sort in order: haiku, sonnet, opus for consistent display
+    const sortOrder: ClaudeModelAlias[] = ['haiku', 'sonnet', 'opus'];
+    const sortedMappedModels = [...allMappedModels].sort(
+      (a, b) => sortOrder.indexOf(a) - sortOrder.indexOf(b)
+    );
+    const mappedModelLabel =
+      sortedMappedModels.length > 0
+        ? sortedMappedModels.map((m) => modelLabelMap[m]).join(', ')
+        : 'Claude';
+
+    // Get icon based on provider type, falling back to model-based detection
+    const getProviderTypeIcon = () => {
+      switch (provider.providerType) {
+        case 'glm':
+          return GlmIcon;
+        case 'minimax':
+          return MiniMaxIcon;
+        case 'openrouter':
+          return OpenRouterIcon;
+        default:
+          // For generic/unknown providers, use OpenRouter as a generic "cloud API" icon
+          // unless the model ID has a recognizable pattern
+          return getProviderIconForModel(model.id) || OpenRouterIcon;
+      }
+    };
+    const ProviderIcon = getProviderTypeIcon();
+
+    // On mobile, render inline expansion instead of nested popover
+    if (isMobile) {
+      return (
+        <div key={`${provider.id}-${model.id}`}>
+          <CommandItem
+            value={`${provider.name} ${model.displayName}`}
+            onSelect={() => setExpandedProviderModel(isExpanded ? null : expandKey)}
+            className="group flex items-center justify-between py-2"
+          >
+            <div className="flex items-center gap-3 overflow-hidden">
+              <ProviderIcon
+                className={cn(
+                  'h-4 w-4 shrink-0',
+                  isSelected ? 'text-primary' : 'text-muted-foreground'
+                )}
+              />
+              <div className="flex flex-col truncate">
+                <span className={cn('truncate font-medium', isSelected && 'text-primary')}>
+                  {displayName}
+                </span>
+                <span className="truncate text-xs text-muted-foreground">
+                  {isSelected && currentThinking !== 'none'
+                    ? `Thinking: ${THINKING_LEVEL_LABELS[currentThinking]}`
+                    : `Maps to ${mappedModelLabel}`}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1 ml-2">
+              {isSelected && !isExpanded && <Check className="h-4 w-4 text-primary shrink-0" />}
+              <ChevronRight
+                className={cn(
+                  'h-4 w-4 text-muted-foreground transition-transform',
+                  isExpanded && 'rotate-90'
+                )}
+              />
+            </div>
+          </CommandItem>
+
+          {/* Inline thinking level options on mobile */}
+          {isExpanded && (
+            <div className="pl-6 pr-2 pb-2 space-y-1">
+              <div className="px-2 py-1 text-xs font-medium text-muted-foreground">
+                Thinking Level
+              </div>
+              {THINKING_LEVELS.map((level) => (
+                <button
+                  key={level}
+                  onClick={() => {
+                    onChange({
+                      providerId: provider.id,
+                      model: model.id,
+                      thinkingLevel: level,
+                    });
+                    setExpandedProviderModel(null);
+                    setOpen(false);
+                  }}
+                  className={cn(
+                    'w-full flex items-center justify-between px-2 py-2 rounded-sm text-sm',
+                    'hover:bg-accent cursor-pointer transition-colors',
+                    isSelected && currentThinking === level && 'bg-accent text-accent-foreground'
+                  )}
+                >
+                  <div className="flex flex-col items-start">
+                    <span className="font-medium text-xs">{THINKING_LEVEL_LABELS[level]}</span>
+                    <span className="text-[10px] text-muted-foreground">
+                      {level === 'none' && 'No extended thinking'}
+                      {level === 'low' && 'Light reasoning (1k tokens)'}
+                      {level === 'medium' && 'Moderate reasoning (10k tokens)'}
+                      {level === 'high' && 'Deep reasoning (16k tokens)'}
+                      {level === 'ultrathink' && 'Maximum reasoning (32k tokens)'}
+                    </span>
+                  </div>
+                  {isSelected && currentThinking === level && (
+                    <Check className="h-3.5 w-3.5 text-primary" />
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Desktop: Use nested popover
+    return (
+      <CommandItem
+        key={`${provider.id}-${model.id}`}
+        value={`${provider.name} ${model.displayName}`}
+        onSelect={() => setExpandedProviderModel(isExpanded ? null : expandKey)}
+        className="p-0 data-[selected=true]:bg-transparent"
+      >
+        <Popover
+          open={isExpanded}
+          onOpenChange={(isOpen) => {
+            if (!isOpen) {
+              setExpandedProviderModel(null);
+            }
+          }}
+        >
+          <PopoverTrigger asChild>
+            <div
+              ref={isExpanded ? expandedProviderTriggerRef : undefined}
+              className={cn(
+                'w-full group flex items-center justify-between py-2 px-2 rounded-sm cursor-pointer',
+                'hover:bg-accent',
+                isExpanded && 'bg-accent'
+              )}
+            >
+              <div className="flex items-center gap-3 overflow-hidden">
+                <ProviderIcon
+                  className={cn(
+                    'h-4 w-4 shrink-0',
+                    isSelected ? 'text-primary' : 'text-muted-foreground'
+                  )}
+                />
+                <div className="flex flex-col truncate">
+                  <span className={cn('truncate font-medium', isSelected && 'text-primary')}>
+                    {displayName}
+                  </span>
+                  <span className="truncate text-xs text-muted-foreground">
+                    {isSelected && currentThinking !== 'none'
+                      ? `Thinking: ${THINKING_LEVEL_LABELS[currentThinking]}`
+                      : `Maps to ${mappedModelLabel}`}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1 ml-2">
+                {isSelected && <Check className="h-4 w-4 text-primary shrink-0" />}
+                <ChevronRight
+                  className={cn(
+                    'h-4 w-4 text-muted-foreground transition-transform',
+                    isExpanded && 'rotate-90'
+                  )}
+                />
+              </div>
+            </div>
+          </PopoverTrigger>
+          <PopoverContent
+            side="right"
+            align="start"
+            className="w-[220px] p-1"
+            sideOffset={8}
+            collisionPadding={16}
+            onCloseAutoFocus={(e) => e.preventDefault()}
+          >
+            <div className="space-y-1">
+              <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground border-b border-border/50 mb-1">
+                Thinking Level
+              </div>
+              {THINKING_LEVELS.map((level) => (
+                <button
+                  key={level}
+                  onClick={() => {
+                    onChange({
+                      providerId: provider.id,
+                      model: model.id,
+                      thinkingLevel: level,
+                    });
+                    setExpandedProviderModel(null);
+                    setOpen(false);
+                  }}
+                  className={cn(
+                    'w-full flex items-center justify-between px-2 py-2 rounded-sm text-sm',
+                    'hover:bg-accent cursor-pointer transition-colors',
+                    isSelected && currentThinking === level && 'bg-accent text-accent-foreground'
+                  )}
+                >
+                  <div className="flex flex-col items-start">
+                    <span className="font-medium">{THINKING_LEVEL_LABELS[level]}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {level === 'none' && 'No extended thinking'}
+                      {level === 'low' && 'Light reasoning (1k tokens)'}
+                      {level === 'medium' && 'Moderate reasoning (10k tokens)'}
+                      {level === 'high' && 'Deep reasoning (16k tokens)'}
+                      {level === 'ultrathink' && 'Maximum reasoning (32k tokens)'}
+                    </span>
+                  </div>
+                  {isSelected && currentThinking === level && (
+                    <Check className="h-3.5 w-3.5 text-primary" />
+                  )}
+                </button>
+              ))}
+            </div>
+          </PopoverContent>
+        </Popover>
+      </CommandItem>
+    );
+  };
+
+  // Render Cursor model item (no thinking level needed)
+  const renderCursorModelItem = (model: (typeof CURSOR_MODELS)[0]) => {
+    // With canonical IDs, store the full prefixed ID
+    const isSelected = selectedModel === model.id;
+    const isFavorite = favoriteModels.includes(model.id);
+
+    return (
+      <CommandItem
+        key={model.id}
+        value={model.label}
+        onSelect={() => {
+          onChange({ model: model.id as CursorModelId });
           setOpen(false);
         }}
         className="group flex items-center justify-between py-2"
@@ -1458,7 +1994,7 @@ export function PhaseModelSelector({
                   return favorites.map((model) => {
                     // Check if this favorite is part of a grouped model
                     if (model.provider === 'cursor') {
-                      const cursorId = stripProviderPrefix(model.id) as CursorModelId;
+                      const cursorId = model.id as CursorModelId;
                       const group = getModelGroup(cursorId);
                       if (group) {
                         // Skip if we already rendered this group
@@ -1479,6 +2015,14 @@ export function PhaseModelSelector({
                     if (model.provider === 'codex') {
                       return renderCodexModelItem(model as (typeof transformedCodexModels)[0]);
                     }
+                    // Gemini model
+                    if (model.provider === 'gemini') {
+                      return renderGeminiModelItem(model as (typeof GEMINI_MODELS)[0]);
+                    }
+                    // Copilot model
+                    if (model.provider === 'copilot') {
+                      return renderCopilotModelItem(model as (typeof COPILOT_MODELS)[0]);
+                    }
                     // OpenCode model
                     if (model.provider === 'opencode') {
                       return renderOpencodeModelItem(model);
@@ -1498,7 +2042,51 @@ export function PhaseModelSelector({
             </CommandGroup>
           )}
 
-          {(groupedModels.length > 0 || standaloneCursorModels.length > 0) && (
+          {/* ClaudeCompatibleProvider Models - each provider as separate group */}
+          {enabledProviders.map((provider) => {
+            if (!provider.models || provider.models.length === 0) return null;
+
+            // Check if we need provider suffix (multiple providers of same type)
+            const sameTypeCount = enabledProviders.filter(
+              (p) => p.providerType === provider.providerType
+            ).length;
+            const showSuffix = sameTypeCount > 1;
+
+            // Group models by ID and collect all mapped Claude models for each
+            const modelsByIdMap = new Map<
+              string,
+              { model: ProviderModel; mappedModels: ClaudeModelAlias[] }
+            >();
+            for (const model of provider.models) {
+              const existing = modelsByIdMap.get(model.id);
+              if (existing) {
+                // Add this mapped model if not already present
+                if (
+                  model.mapsToClaudeModel &&
+                  !existing.mappedModels.includes(model.mapsToClaudeModel)
+                ) {
+                  existing.mappedModels.push(model.mapsToClaudeModel);
+                }
+              } else {
+                // First occurrence of this model ID
+                modelsByIdMap.set(model.id, {
+                  model,
+                  mappedModels: model.mapsToClaudeModel ? [model.mapsToClaudeModel] : [],
+                });
+              }
+            }
+            const uniqueModelsWithMappings = Array.from(modelsByIdMap.values());
+
+            return (
+              <CommandGroup key={provider.id} heading={`${provider.name} (via Claude)`}>
+                {uniqueModelsWithMappings.map(({ model, mappedModels }) =>
+                  renderProviderModelItem(provider, model, showSuffix, mappedModels)
+                )}
+              </CommandGroup>
+            );
+          })}
+
+          {!isCursorDisabled && (groupedModels.length > 0 || standaloneCursorModels.length > 0) && (
             <CommandGroup heading="Cursor Models">
               {/* Grouped models with secondary popover */}
               {groupedModels.map((group) => renderGroupedModelItem(group))}
@@ -1513,9 +2101,21 @@ export function PhaseModelSelector({
             </CommandGroup>
           )}
 
+          {!isGeminiDisabled && gemini.length > 0 && (
+            <CommandGroup heading="Gemini Models">
+              {gemini.map((model) => renderGeminiModelItem(model))}
+            </CommandGroup>
+          )}
+
+          {!isCopilotDisabled && copilot.length > 0 && (
+            <CommandGroup heading="Copilot Models">
+              {copilot.map((model) => renderCopilotModelItem(model))}
+            </CommandGroup>
+          )}
+
           {opencodeSections.length > 0 && (
             <CommandGroup heading={OPENCODE_CLI_GROUP_LABEL}>
-              {opencodeSections.map((section, sectionIndex) => (
+              {opencodeSections.map((section, _sectionIndex) => (
                 <Fragment key={section.key}>
                   <div className="px-2 pt-2 text-xs font-medium text-muted-foreground">
                     {section.label}

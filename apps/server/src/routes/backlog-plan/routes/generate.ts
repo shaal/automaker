@@ -53,13 +53,12 @@ export function createGenerateHandler(events: EventEmitter, settingsService?: Se
       setRunningState(true, abortController);
 
       // Start generation in background
+      // Note: generateBacklogPlan handles its own error event emission,
+      // so we only log here to avoid duplicate error toasts
       generateBacklogPlan(projectPath, prompt, events, abortController, settingsService, model)
         .catch((error) => {
+          // Just log - error event already emitted by generateBacklogPlan
           logError(error, 'Generate backlog plan failed (background)');
-          events.emit('backlog-plan:event', {
-            type: 'backlog_plan_error',
-            error: getErrorMessage(error),
-          });
         })
         .finally(() => {
           setRunningState(false, null);

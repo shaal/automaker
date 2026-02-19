@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import {
   ChevronDown,
   ChevronRight,
@@ -21,9 +21,8 @@ import {
   X,
   Filter,
   Circle,
-  Play,
-  Loader2,
 } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
 import {
   parseLogOutput,
@@ -148,7 +147,7 @@ function TodoListRenderer({ todos }: { todos: TodoItem[] }) {
       case 'completed':
         return <CheckCircle2 className="w-4 h-4 text-emerald-400" />;
       case 'in_progress':
-        return <Loader2 className="w-4 h-4 text-amber-400 animate-spin" />;
+        return <Spinner size="sm" />;
       case 'pending':
         return <Circle className="w-4 h-4 text-muted-foreground/70" />;
       default:

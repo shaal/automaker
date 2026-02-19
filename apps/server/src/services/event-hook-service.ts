@@ -21,6 +21,7 @@ import { createLogger } from '@automaker/utils';
 import type { EventEmitter } from '../lib/events.js';
 import type { SettingsService } from './settings-service.js';
 import type { EventHistoryService } from './event-history-service.js';
+import type { FeatureLoader } from './feature-loader.js';
 import type {
   EventHook,
   EventHookTrigger,
@@ -57,6 +58,7 @@ interface HookContext {
 interface AutoModeEventPayload {
   type?: string;
   featureId?: string;
+  featureName?: string;
   passes?: boolean;
   message?: string;
   error?: string;
@@ -83,19 +85,22 @@ export class EventHookService {
   private emitter: EventEmitter | null = null;
   private settingsService: SettingsService | null = null;
   private eventHistoryService: EventHistoryService | null = null;
+  private featureLoader: FeatureLoader | null = null;
   private unsubscribe: (() => void) | null = null;
 
   /**
-   * Initialize the service with event emitter, settings service, and event history service
+   * Initialize the service with event emitter, settings service, event history service, and feature loader
    */
   initialize(
     emitter: EventEmitter,
     settingsService: SettingsService,
-    eventHistoryService?: EventHistoryService
+    eventHistoryService?: EventHistoryService,
+    featureLoader?: FeatureLoader
   ): void {
     this.emitter = emitter;
     this.settingsService = settingsService;
     this.eventHistoryService = eventHistoryService || null;
+    this.featureLoader = featureLoader || null;
 
     // Subscribe to events
     this.unsubscribe = emitter.subscribe((type, payload) => {
@@ -120,6 +125,7 @@ export class EventHookService {
     this.emitter = null;
     this.settingsService = null;
     this.eventHistoryService = null;
+    this.featureLoader = null;
   }
 
   /**
@@ -149,9 +155,24 @@ export class EventHookService {
 
     if (!trigger) return;
 
+    // Load feature name if we have featureId but no featureName
+    let featureName: string | undefined = undefined;
+    if (payload.featureId && payload.projectPath && this.featureLoader) {
+      try {
+        const feature = await this.featureLoader.get(payload.projectPath, payload.featureId);
+        if (feature?.title) {
+          featureName = feature.title;
+        }
+      } catch (error) {
+        logger.warn(`Failed to load feature ${payload.featureId} for event hook:`, error);
+      }
+    }
+
     // Build context for variable substitution
+    // Use loaded featureName (from feature.title) or fall back to payload.featureName
     const context: HookContext = {
       featureId: payload.featureId,
+      featureName: featureName || payload.featureName,
       projectPath: payload.projectPath,
       projectName: payload.projectPath ? this.extractProjectName(payload.projectPath) : undefined,
       error: payload.error || payload.message,
@@ -313,6 +334,7 @@ export class EventHookService {
         eventType: context.eventType,
         timestamp: context.timestamp,
         featureId: context.featureId,
+        featureName: context.featureName,
         projectPath: context.projectPath,
         projectName: context.projectName,
         error: context.error,

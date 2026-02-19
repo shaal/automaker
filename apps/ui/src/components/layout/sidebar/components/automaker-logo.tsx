@@ -32,7 +32,7 @@ export function AutomakerLogo({ sidebarOpen, navigate }: AutomakerLogoProps) {
         'flex items-center gap-3 titlebar-no-drag cursor-pointer group',
         !sidebarOpen && 'flex-col gap-1'
       )}
-      onClick={() => navigate({ to: '/dashboard' })}
+      onClick={() => navigate({ to: '/overview' })}
       data-testid="logo-button"
     >
       {/* Collapsed logo - only shown when sidebar is closed */}

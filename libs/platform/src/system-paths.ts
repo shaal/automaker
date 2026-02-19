@@ -750,6 +750,9 @@ export function electronUserDataWriteFileSync(
     throw new Error('[SystemPaths] Electron userData path not initialized');
   }
   const fullPath = path.join(electronUserDataPath, relativePath);
+  // Ensure parent directory exists (may not exist on first launch)
+  const dir = path.dirname(fullPath);
+  fsSync.mkdirSync(dir, { recursive: true });
   fsSync.writeFileSync(fullPath, data, options);
 }
 

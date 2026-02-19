@@ -28,6 +28,29 @@ import type {
   InstallationStatus,
   ValidationResult,
   ModelDefinition,
+  AgentDefinition,
+  ReasoningEffort,
+  SystemPromptPreset,
+  McpServerConfig,
+  McpStdioServerConfig,
+  McpSSEServerConfig,
+  McpHttpServerConfig,
+} from '@automaker/types';
+```
+
+### Codex CLI Types
+
+Types for Codex CLI integration.
+
+```typescript
+import type {
+  CodexSandboxMode,
+  CodexApprovalPolicy,
+  CodexCliConfig,
+  CodexAuthStatus,
+  CodexEventType,
+  CodexItemType,
+  CodexEvent,
 } from '@automaker/types';
 ```
 

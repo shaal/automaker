@@ -1,6 +1,5 @@
-// @ts-nocheck
+// @ts-nocheck - form state management with partial feature updates and validation
 import { useState, useEffect } from 'react';
-import { createLogger } from '@automaker/utils/logger';
 import {
   Dialog,
   DialogContent,
@@ -26,24 +25,23 @@ import { GitBranch, Cpu, FolderKanban, Settings2 } from 'lucide-react';
 import { useNavigate } from '@tanstack/react-router';
 import { toast } from 'sonner';
 import { cn, modelSupportsThinking } from '@/lib/utils';
-import { Feature, ModelAlias, ThinkingLevel, useAppStore, PlanningMode } from '@/store/app-store';
+import { Feature, ModelAlias, ThinkingLevel, PlanningMode } from '@/store/app-store';
 import type { ReasoningEffort, PhaseModelEntry, DescriptionHistoryEntry } from '@automaker/types';
+import { migrateModelId } from '@automaker/types';
 import {
-  TestingTabContent,
   PrioritySelector,
   WorkModeSelector,
   PlanningModeSelect,
   EnhanceWithAI,
   EnhancementHistoryButton,
+  PipelineExclusionControls,
   type EnhancementMode,
 } from '../shared';
 import type { WorkMode } from '../shared';
 import { PhaseModelSelector } from '@/components/views/settings-view/model-defaults/phase-model-selector';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { DependencyTreeDialog } from './dependency-tree-dialog';
-import { isClaudeModel, supportsReasoningEffort } from '@automaker/types';
-
-const logger = createLogger('EditFeatureDialog');
+import { supportsReasoningEffort } from '@automaker/types';
 
 interface EditFeatureDialogProps {
   feature: Feature | null;
@@ -66,6 +64,7 @@ interface EditFeatureDialogProps {
       requirePlanApproval: boolean;
       dependencies?: string[];
       childDependencies?: string[]; // Feature IDs that should depend on this feature
+      excludedPipelineSteps?: string[]; // Pipeline step IDs to skip for this feature
     },
     descriptionHistorySource?: 'enhance' | 'edit',
     enhancementMode?: EnhancementMode,
@@ -77,6 +76,7 @@ interface EditFeatureDialogProps {
   currentBranch?: string;
   isMaximized: boolean;
   allFeatures: Feature[];
+  projectPath?: string;
 }
 
 export function EditFeatureDialog({
@@ -89,6 +89,7 @@ export function EditFeatureDialog({
   currentBranch,
   isMaximized,
   allFeatures,
+  projectPath,
 }: EditFeatureDialogProps) {
   const navigate = useNavigate();
   const [editingFeature, setEditingFeature] = useState<Feature | null>(feature);
@@ -107,15 +108,12 @@ export function EditFeatureDialog({
     feature?.requirePlanApproval ?? false
   );
 
-  // Model selection state
+  // Model selection state - migrate legacy model IDs to canonical format
   const [modelEntry, setModelEntry] = useState<PhaseModelEntry>(() => ({
-    model: (feature?.model as ModelAlias) || 'opus',
+    model: migrateModelId(feature?.model) || 'claude-opus',
     thinkingLevel: feature?.thinkingLevel || 'none',
     reasoningEffort: feature?.reasoningEffort || 'none',
   }));
-
-  // Check if current model supports planning mode (Claude/Anthropic only)
-  const modelSupportsPlanningMode = isClaudeModel(modelEntry.model);
 
   // Track the source of description changes for history
   const [descriptionChangeSource, setDescriptionChangeSource] = useState<
@@ -145,6 +143,11 @@ export function EditFeatureDialog({
     return allFeatures.filter((f) => f.dependencies?.includes(feature.id)).map((f) => f.id);
   });
 
+  // Pipeline exclusion state
+  const [excludedPipelineSteps, setExcludedPipelineSteps] = useState<string[]>(
+    feature?.excludedPipelineSteps ?? []
+  );
+
   useEffect(() => {
     setEditingFeature(feature);
     if (feature) {
@@ -157,9 +160,9 @@ export function EditFeatureDialog({
       setDescriptionChangeSource(null);
       setPreEnhancementDescription(null);
       setLocalHistory(feature.descriptionHistory ?? []);
-      // Reset model entry
+      // Reset model entry - migrate legacy model IDs
       setModelEntry({
-        model: (feature.model as ModelAlias) || 'opus',
+        model: migrateModelId(feature.model) || 'claude-opus',
         thinkingLevel: feature.thinkingLevel || 'none',
         reasoningEffort: feature.reasoningEffort || 'none',
       });
@@ -170,6 +173,8 @@ export function EditFeatureDialog({
         .map((f) => f.id);
       setChildDependencies(childDeps);
       setOriginalChildDependencies(childDeps);
+      // Reset pipeline exclusion state
+      setExcludedPipelineSteps(feature.excludedPipelineSteps ?? []);
     } else {
       setEditFeaturePreviewMap(new Map());
       setDescriptionChangeSource(null);
@@ -178,8 +183,16 @@ export function EditFeatureDialog({
       setParentDependencies([]);
       setChildDependencies([]);
       setOriginalChildDependencies([]);
+      setExcludedPipelineSteps([]);
     }
   }, [feature, allFeatures]);
+
+  // Clear requirePlanApproval when planning mode is skip or lite
+  useEffect(() => {
+    if (planningMode === 'skip' || planningMode === 'lite') {
+      setRequirePlanApproval(false);
+    }
+  }, [planningMode]);
 
   const handleModelChange = (entry: PhaseModelEntry) => {
     setModelEntry(entry);
@@ -231,6 +244,7 @@ export function EditFeatureDialog({
       workMode,
       dependencies: parentDependencies,
       childDependencies: childDepsChanged ? childDependencies : undefined,
+      excludedPipelineSteps: excludedPipelineSteps.length > 0 ? excludedPipelineSteps : undefined,
     };
 
     // Determine if description changed and what source to use
@@ -406,26 +420,24 @@ export function EditFeatureDialog({
                 <Cpu className="w-4 h-4 text-muted-foreground" />
                 <span>AI & Execution</span>
               </div>
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onClose();
-                        navigate({ to: '/settings', search: { view: 'defaults' } });
-                      }}
-                      className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                    >
-                      <Settings2 className="w-3.5 h-3.5" />
-                      <span>Edit Defaults</span>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <p>Change default model and planning settings for new features</p>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      navigate({ to: '/settings', search: { view: 'defaults' } });
+                    }}
+                    className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <Settings2 className="w-3.5 h-3.5" />
+                    <span>Edit Defaults</span>
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>Change default model and planning settings for new features</p>
+                </TooltipContent>
+              </Tooltip>
             </div>
 
             <div className="space-y-1.5">
@@ -440,41 +452,13 @@ export function EditFeatureDialog({
 
             <div className="grid gap-3 grid-cols-2">
               <div className="space-y-1.5">
-                <Label
-                  className={cn(
-                    'text-xs text-muted-foreground',
-                    !modelSupportsPlanningMode && 'opacity-50'
-                  )}
-                >
-                  Planning
-                </Label>
-                {modelSupportsPlanningMode ? (
-                  <PlanningModeSelect
-                    mode={planningMode}
-                    onModeChange={setPlanningMode}
-                    testIdPrefix="edit-feature-planning"
-                    compact
-                  />
-                ) : (
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <div>
-                          <PlanningModeSelect
-                            mode="skip"
-                            onModeChange={() => {}}
-                            testIdPrefix="edit-feature-planning"
-                            compact
-                            disabled
-                          />
-                        </div>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p>Planning modes are only available for Claude Provider</p>
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                )}
+                <Label className="text-xs text-muted-foreground">Planning</Label>
+                <PlanningModeSelect
+                  mode={planningMode}
+                  onModeChange={setPlanningMode}
+                  testIdPrefix="edit-feature-planning"
+                  compact
+                />
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs text-muted-foreground">Options</Label>
@@ -500,20 +484,14 @@ export function EditFeatureDialog({
                       id="edit-feature-require-approval"
                       checked={requirePlanApproval}
                       onCheckedChange={(checked) => setRequirePlanApproval(!!checked)}
-                      disabled={
-                        !modelSupportsPlanningMode ||
-                        planningMode === 'skip' ||
-                        planningMode === 'lite'
-                      }
+                      disabled={planningMode === 'skip' || planningMode === 'lite'}
                       data-testid="edit-feature-require-approval-checkbox"
                     />
                     <Label
                       htmlFor="edit-feature-require-approval"
                       className={cn(
                         'text-xs font-normal',
-                        !modelSupportsPlanningMode ||
-                          planningMode === 'skip' ||
-                          planningMode === 'lite'
+                        planningMode === 'skip' || planningMode === 'lite'
                           ? 'cursor-not-allowed text-muted-foreground'
                           : 'cursor-pointer'
                       )}
@@ -617,6 +595,16 @@ export function EditFeatureDialog({
                 </div>
               </div>
             )}
+
+            {/* Pipeline Exclusion Controls */}
+            <div className="pt-2">
+              <PipelineExclusionControls
+                projectPath={projectPath}
+                excludedPipelineSteps={excludedPipelineSteps}
+                onExcludedStepsChange={setExcludedPipelineSteps}
+                testIdPrefix="edit-feature-pipeline"
+              />
+            </div>
           </div>
         </div>
 

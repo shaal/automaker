@@ -14,6 +14,7 @@ import type { GlobalSettings } from '../../../types/settings.js';
 import { getErrorMessage, logError, logger } from '../common.js';
 import { setLogLevel, LogLevel } from '@automaker/utils';
 import { setRequestLoggingEnabled } from '../../../index.js';
+import { getTerminalService } from '../../../services/terminal-service.js';
 
 /**
  * Map server log level string to LogLevel enum
@@ -45,18 +46,59 @@ export function createUpdateGlobalHandler(settingsService: SettingsService) {
       }
 
       // Minimal debug logging to help diagnose accidental wipes.
-      if ('projects' in updates || 'theme' in updates || 'localStorageMigrated' in updates) {
-        const projectsLen = Array.isArray((updates as any).projects)
-          ? (updates as any).projects.length
-          : undefined;
-        logger.info(
-          `Update global settings request: projects=${projectsLen ?? 'n/a'}, theme=${
-            (updates as any).theme ?? 'n/a'
-          }, localStorageMigrated=${(updates as any).localStorageMigrated ?? 'n/a'}`
-        );
-      }
+      const projectsLen = Array.isArray((updates as any).projects)
+        ? (updates as any).projects.length
+        : undefined;
+      const trashedLen = Array.isArray((updates as any).trashedProjects)
+        ? (updates as any).trashedProjects.length
+        : undefined;
+      logger.info(
+        `[SERVER_SETTINGS_UPDATE] Request received: projects=${projectsLen ?? 'n/a'}, trashedProjects=${trashedLen ?? 'n/a'}, theme=${
+          (updates as any).theme ?? 'n/a'
+        }, localStorageMigrated=${(updates as any).localStorageMigrated ?? 'n/a'}`
+      );
 
+      // Get old settings to detect theme changes
+      const oldSettings = await settingsService.getGlobalSettings();
+      const oldTheme = oldSettings?.theme;
+
+      logger.info('[SERVER_SETTINGS_UPDATE] Calling updateGlobalSettings...');
       const settings = await settingsService.updateGlobalSettings(updates);
+      logger.info(
+        '[SERVER_SETTINGS_UPDATE] Update complete, projects count:',
+        settings.projects?.length ?? 0
+      );
+
+      // Handle theme change - regenerate terminal RC files for all projects
+      if ('theme' in updates && updates.theme && updates.theme !== oldTheme) {
+        const terminalService = getTerminalService(settingsService);
+        const newTheme = updates.theme;
+
+        logger.info(
+          `[TERMINAL_CONFIG] Theme changed from ${oldTheme} to ${newTheme}, regenerating RC files`
+        );
+
+        // Regenerate RC files for all projects with terminal config enabled
+        const projects = settings.projects || [];
+        for (const project of projects) {
+          try {
+            const projectSettings = await settingsService.getProjectSettings(project.path);
+            // Check if terminal config is enabled (global or project-specific)
+            const terminalConfigEnabled =
+              projectSettings.terminalConfig?.enabled !== false &&
+              settings.terminalConfig?.enabled === true;
+
+            if (terminalConfigEnabled) {
+              await terminalService.onThemeChange(project.path, newTheme);
+              logger.info(`[TERMINAL_CONFIG] Regenerated RC files for project: ${project.name}`);
+            }
+          } catch (error) {
+            logger.warn(
+              `[TERMINAL_CONFIG] Failed to regenerate RC files for project ${project.name}: ${error}`
+            );
+          }
+        }
+      }
 
       // Apply server log level if it was updated
       if ('serverLogLevel' in updates && updates.serverLogLevel) {

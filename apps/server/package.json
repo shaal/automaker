@@ -1,6 +1,6 @@
 {
   "name": "@automaker/server",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Backend server for Automaker - provides API for both web and Electron modes",
   "author": "AutoMaker Team",
   "license": "SEE LICENSE IN LICENSE",
@@ -32,6 +32,7 @@
     "@automaker/prompts": "1.0.0",
     "@automaker/types": "1.0.0",
     "@automaker/utils": "1.0.0",
+    "@github/copilot-sdk": "^0.1.16",
     "@modelcontextprotocol/sdk": "1.25.2",
     "@openai/codex-sdk": "^0.77.0",
     "cookie-parser": "1.4.7",
@@ -40,7 +41,8 @@
     "express": "5.2.1",
     "morgan": "1.10.1",
     "node-pty": "1.1.0-beta41",
-    "ws": "8.18.3"
+    "ws": "8.18.3",
+    "yaml": "2.7.0"
   },
   "devDependencies": {
     "@types/cookie": "0.6.0",

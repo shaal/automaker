@@ -5,18 +5,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import {
-  FileText,
-  FolderOpen,
-  Terminal,
-  CheckCircle,
-  XCircle,
-  Loader2,
-  Play,
-  File,
-  Pencil,
-  Wrench,
-} from 'lucide-react';
+import { Terminal, CheckCircle, XCircle, Play, File, Pencil, Wrench } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
 import { getElectronAPI } from '@/lib/electron';
 
@@ -27,13 +17,6 @@ interface ToolResult {
   output?: string;
   error?: string;
   timestamp: Date;
-}
-
-interface ToolExecution {
-  tool: string;
-  input: string;
-  result: ToolResult | null;
-  isRunning: boolean;
 }
 
 export function AgentToolsView() {
@@ -236,7 +219,7 @@ export function AgentToolsView() {
               >
                 {isReadingFile ? (
                   <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    <Spinner size="sm" className="mr-2" />
                     Reading...
                   </>
                 ) : (
@@ -315,7 +298,7 @@ export function AgentToolsView() {
               >
                 {isWritingFile ? (
                   <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    <Spinner size="sm" className="mr-2" />
                     Writing...
                   </>
                 ) : (
@@ -383,7 +366,7 @@ export function AgentToolsView() {
               >
                 {isRunningCommand ? (
                   <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    <Spinner size="sm" className="mr-2" />
                     Running...
                   </>
                 ) : (

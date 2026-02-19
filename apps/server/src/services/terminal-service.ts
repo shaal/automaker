@@ -13,6 +13,14 @@ import * as path from 'path';
 // to enforce ALLOWED_ROOT_DIRECTORY security boundary
 import * as secureFs from '../lib/secure-fs.js';
 import { createLogger } from '@automaker/utils';
+import type { SettingsService } from './settings-service.js';
+import { getTerminalThemeColors, getAllTerminalThemes } from '../lib/terminal-themes-data.js';
+import {
+  getRcFilePath,
+  getTerminalDir,
+  ensureRcFilesUpToDate,
+  type TerminalConfig,
+} from '@automaker/platform';
 
 const logger = createLogger('Terminal');
 // System paths module handles shell binary checks and WSL detection
@@ -23,6 +31,27 @@ import {
   getWslVersionPath,
   getShellPaths,
 } from '@automaker/platform';
+
+const BASH_LOGIN_ARG = '--login';
+const BASH_RCFILE_ARG = '--rcfile';
+const SHELL_NAME_BASH = 'bash';
+const SHELL_NAME_ZSH = 'zsh';
+const SHELL_NAME_SH = 'sh';
+const DEFAULT_SHOW_USER_HOST = true;
+const DEFAULT_SHOW_PATH = true;
+const DEFAULT_SHOW_TIME = false;
+const DEFAULT_SHOW_EXIT_STATUS = false;
+const DEFAULT_PATH_DEPTH = 0;
+const DEFAULT_PATH_STYLE: TerminalConfig['pathStyle'] = 'full';
+const DEFAULT_CUSTOM_PROMPT = true;
+const DEFAULT_PROMPT_FORMAT: TerminalConfig['promptFormat'] = 'standard';
+const DEFAULT_SHOW_GIT_BRANCH = true;
+const DEFAULT_SHOW_GIT_STATUS = true;
+const DEFAULT_CUSTOM_ALIASES = '';
+const DEFAULT_CUSTOM_ENV_VARS: Record<string, string> = {};
+const PROMPT_THEME_CUSTOM = 'custom';
+const PROMPT_THEME_PREFIX = 'omp-';
+const OMP_THEME_ENV_VAR = 'AUTOMAKER_OMP_THEME';
 
 // Maximum scrollback buffer size (characters)
 const MAX_SCROLLBACK_SIZE = 50000; // ~50KB per terminal
@@ -41,6 +70,114 @@ let maxSessions = parseInt(process.env.TERMINAL_MAX_SESSIONS || '1000', 10);
 // Note: 16ms caused perceived input lag, especially with backspace
 const OUTPUT_THROTTLE_MS = 4; // ~250fps max update rate for responsive input
 const OUTPUT_BATCH_SIZE = 4096; // Smaller batches for lower latency
+
+function applyBashRcFileArgs(args: string[], rcFilePath: string): string[] {
+  const sanitizedArgs: string[] = [];
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === BASH_LOGIN_ARG) {
+      continue;
+    }
+    if (arg === BASH_RCFILE_ARG) {
+      index += 1;
+      continue;
+    }
+    sanitizedArgs.push(arg);
+  }
+
+  sanitizedArgs.push(BASH_RCFILE_ARG, rcFilePath);
+  return sanitizedArgs;
+}
+
+function normalizePathStyle(
+  pathStyle: TerminalConfig['pathStyle'] | undefined
+): TerminalConfig['pathStyle'] {
+  if (pathStyle === 'short' || pathStyle === 'basename') {
+    return pathStyle;
+  }
+  return DEFAULT_PATH_STYLE;
+}
+
+function normalizePathDepth(pathDepth: number | undefined): number {
+  const depth =
+    typeof pathDepth === 'number' && Number.isFinite(pathDepth) ? pathDepth : DEFAULT_PATH_DEPTH;
+  return Math.max(DEFAULT_PATH_DEPTH, Math.floor(depth));
+}
+
+function getShellBasename(shellPath: string): string {
+  const lastSep = Math.max(shellPath.lastIndexOf('/'), shellPath.lastIndexOf('\\'));
+  return lastSep >= 0 ? shellPath.slice(lastSep + 1) : shellPath;
+}
+
+function getShellArgsForPath(shellPath: string): string[] {
+  const shellName = getShellBasename(shellPath).toLowerCase().replace('.exe', '');
+  if (shellName === 'powershell' || shellName === 'pwsh' || shellName === 'cmd') {
+    return [];
+  }
+  if (shellName === SHELL_NAME_SH) {
+    return [];
+  }
+  return [BASH_LOGIN_ARG];
+}
+
+function resolveOmpThemeName(promptTheme: string | undefined): string | null {
+  if (!promptTheme || promptTheme === PROMPT_THEME_CUSTOM) {
+    return null;
+  }
+  if (promptTheme.startsWith(PROMPT_THEME_PREFIX)) {
+    return promptTheme.slice(PROMPT_THEME_PREFIX.length);
+  }
+  return null;
+}
+
+function buildEffectiveTerminalConfig(
+  globalTerminalConfig: TerminalConfig | undefined,
+  projectTerminalConfig: Partial<TerminalConfig> | undefined
+): TerminalConfig {
+  const mergedEnvVars = {
+    ...(globalTerminalConfig?.customEnvVars ?? DEFAULT_CUSTOM_ENV_VARS),
+    ...(projectTerminalConfig?.customEnvVars ?? DEFAULT_CUSTOM_ENV_VARS),
+  };
+
+  return {
+    enabled: projectTerminalConfig?.enabled ?? globalTerminalConfig?.enabled ?? false,
+    customPrompt: globalTerminalConfig?.customPrompt ?? DEFAULT_CUSTOM_PROMPT,
+    promptFormat: globalTerminalConfig?.promptFormat ?? DEFAULT_PROMPT_FORMAT,
+    showGitBranch:
+      projectTerminalConfig?.showGitBranch ??
+      globalTerminalConfig?.showGitBranch ??
+      DEFAULT_SHOW_GIT_BRANCH,
+    showGitStatus:
+      projectTerminalConfig?.showGitStatus ??
+      globalTerminalConfig?.showGitStatus ??
+      DEFAULT_SHOW_GIT_STATUS,
+    showUserHost:
+      projectTerminalConfig?.showUserHost ??
+      globalTerminalConfig?.showUserHost ??
+      DEFAULT_SHOW_USER_HOST,
+    showPath:
+      projectTerminalConfig?.showPath ?? globalTerminalConfig?.showPath ?? DEFAULT_SHOW_PATH,
+    pathStyle: normalizePathStyle(
+      projectTerminalConfig?.pathStyle ?? globalTerminalConfig?.pathStyle
+    ),
+    pathDepth: normalizePathDepth(
+      projectTerminalConfig?.pathDepth ?? globalTerminalConfig?.pathDepth
+    ),
+    showTime:
+      projectTerminalConfig?.showTime ?? globalTerminalConfig?.showTime ?? DEFAULT_SHOW_TIME,
+    showExitStatus:
+      projectTerminalConfig?.showExitStatus ??
+      globalTerminalConfig?.showExitStatus ??
+      DEFAULT_SHOW_EXIT_STATUS,
+    customAliases:
+      projectTerminalConfig?.customAliases ??
+      globalTerminalConfig?.customAliases ??
+      DEFAULT_CUSTOM_ALIASES,
+    customEnvVars: mergedEnvVars,
+    rcFileVersion: globalTerminalConfig?.rcFileVersion,
+  };
+}
 
 export interface TerminalSession {
   id: string;
@@ -77,6 +214,12 @@ export class TerminalService extends EventEmitter {
     !!(process.versions && (process.versions as Record<string, string>).electron) ||
     !!process.env.ELECTRON_RUN_AS_NODE;
   private useConptyFallback = false; // Track if we need to use winpty fallback on Windows
+  private settingsService: SettingsService | null = null;
+
+  constructor(settingsService?: SettingsService) {
+    super();
+    this.settingsService = settingsService || null;
+  }
 
   /**
    * Kill a PTY process with platform-specific handling.
@@ -102,37 +245,19 @@ export class TerminalService extends EventEmitter {
     const platform = os.platform();
     const shellPaths = getShellPaths();
 
-    // Helper to get basename handling both path separators
-    const getBasename = (shellPath: string): string => {
-      const lastSep = Math.max(shellPath.lastIndexOf('/'), shellPath.lastIndexOf('\\'));
-      return lastSep >= 0 ? shellPath.slice(lastSep + 1) : shellPath;
-    };
-
-    // Helper to get shell args based on shell name
-    const getShellArgs = (shell: string): string[] => {
-      const shellName = getBasename(shell).toLowerCase().replace('.exe', '');
-      // PowerShell and cmd don't need --login
-      if (shellName === 'powershell' || shellName === 'pwsh' || shellName === 'cmd') {
-        return [];
-      }
-      // sh doesn't support --login in all implementations
-      if (shellName === 'sh') {
-        return [];
-      }
-      // bash, zsh, and other POSIX shells support --login
-      return ['--login'];
-    };
-
     // Check if running in WSL - prefer user's shell or bash with --login
     if (platform === 'linux' && this.isWSL()) {
       const userShell = process.env.SHELL;
       if (userShell) {
         // Try to find userShell in allowed paths
         for (const allowedShell of shellPaths) {
-          if (allowedShell === userShell || getBasename(allowedShell) === getBasename(userShell)) {
+          if (
+            allowedShell === userShell ||
+            getShellBasename(allowedShell) === getShellBasename(userShell)
+          ) {
             try {
               if (systemPathExists(allowedShell)) {
-                return { shell: allowedShell, args: getShellArgs(allowedShell) };
+                return { shell: allowedShell, args: getShellArgsForPath(allowedShell) };
               }
             } catch {
               // Path not allowed, continue searching
@@ -144,7 +269,7 @@ export class TerminalService extends EventEmitter {
       for (const shell of shellPaths) {
         try {
           if (systemPathExists(shell)) {
-            return { shell, args: getShellArgs(shell) };
+            return { shell, args: getShellArgsForPath(shell) };
           }
         } catch {
           // Path not allowed, continue
@@ -158,10 +283,13 @@ export class TerminalService extends EventEmitter {
     if (userShell && platform !== 'win32') {
       // Try to find userShell in allowed paths
       for (const allowedShell of shellPaths) {
-        if (allowedShell === userShell || getBasename(allowedShell) === getBasename(userShell)) {
+        if (
+          allowedShell === userShell ||
+          getShellBasename(allowedShell) === getShellBasename(userShell)
+        ) {
           try {
             if (systemPathExists(allowedShell)) {
-              return { shell: allowedShell, args: getShellArgs(allowedShell) };
+              return { shell: allowedShell, args: getShellArgsForPath(allowedShell) };
             }
           } catch {
             // Path not allowed, continue searching
@@ -174,7 +302,7 @@ export class TerminalService extends EventEmitter {
     for (const shell of shellPaths) {
       try {
         if (systemPathExists(shell)) {
-          return { shell, args: getShellArgs(shell) };
+          return { shell, args: getShellArgsForPath(shell) };
         }
       } catch {
         // Path not allowed or doesn't exist, continue to next
@@ -313,8 +441,9 @@ export class TerminalService extends EventEmitter {
 
     const id = `term-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 
-    const { shell: detectedShell, args: shellArgs } = this.detectShell();
+    const { shell: detectedShell, args: detectedShellArgs } = this.detectShell();
     const shell = options.shell || detectedShell;
+    let shellArgs = options.shell ? getShellArgsForPath(shell) : [...detectedShellArgs];
 
     // Validate and resolve working directory
     // Uses secureFs internally to enforce ALLOWED_ROOT_DIRECTORY
@@ -332,6 +461,89 @@ export class TerminalService extends EventEmitter {
       }
     }
 
+    // Terminal config injection (custom prompts, themes)
+    const terminalConfigEnv: Record<string, string> = {};
+    if (this.settingsService) {
+      try {
+        logger.info(
+          `[createSession] Checking terminal config for session ${id}, cwd: ${options.cwd || cwd}`
+        );
+        const globalSettings = await this.settingsService.getGlobalSettings();
+        const projectSettings = options.cwd
+          ? await this.settingsService.getProjectSettings(options.cwd)
+          : null;
+
+        const globalTerminalConfig = globalSettings?.terminalConfig;
+        const projectTerminalConfig = projectSettings?.terminalConfig;
+        const effectiveConfig = buildEffectiveTerminalConfig(
+          globalTerminalConfig,
+          projectTerminalConfig
+        );
+
+        logger.info(
+          `[createSession] Terminal config: global.enabled=${globalTerminalConfig?.enabled}, project.enabled=${projectTerminalConfig?.enabled}`
+        );
+        logger.info(
+          `[createSession] Terminal config effective enabled: ${effectiveConfig.enabled}`
+        );
+
+        if (effectiveConfig.enabled && globalTerminalConfig) {
+          const currentTheme = globalSettings?.theme || 'dark';
+          const themeColors = getTerminalThemeColors(currentTheme);
+          const allThemes = getAllTerminalThemes();
+          const promptTheme =
+            projectTerminalConfig?.promptTheme ?? globalTerminalConfig.promptTheme;
+          const ompThemeName = resolveOmpThemeName(promptTheme);
+
+          // Ensure RC files are up to date
+          await ensureRcFilesUpToDate(
+            options.cwd || cwd,
+            currentTheme,
+            effectiveConfig,
+            themeColors,
+            allThemes
+          );
+
+          // Set shell-specific env vars
+          const shellName = getShellBasename(shell).toLowerCase();
+          if (ompThemeName && effectiveConfig.customPrompt) {
+            terminalConfigEnv[OMP_THEME_ENV_VAR] = ompThemeName;
+          }
+
+          if (shellName.includes(SHELL_NAME_BASH)) {
+            const bashRcFilePath = getRcFilePath(options.cwd || cwd, SHELL_NAME_BASH);
+            terminalConfigEnv.BASH_ENV = bashRcFilePath;
+            terminalConfigEnv.AUTOMAKER_CUSTOM_PROMPT = effectiveConfig.customPrompt
+              ? 'true'
+              : 'false';
+            terminalConfigEnv.AUTOMAKER_THEME = currentTheme;
+            shellArgs = applyBashRcFileArgs(shellArgs, bashRcFilePath);
+          } else if (shellName.includes(SHELL_NAME_ZSH)) {
+            terminalConfigEnv.ZDOTDIR = getTerminalDir(options.cwd || cwd);
+            terminalConfigEnv.AUTOMAKER_CUSTOM_PROMPT = effectiveConfig.customPrompt
+              ? 'true'
+              : 'false';
+            terminalConfigEnv.AUTOMAKER_THEME = currentTheme;
+          } else if (shellName === SHELL_NAME_SH) {
+            terminalConfigEnv.ENV = getRcFilePath(options.cwd || cwd, SHELL_NAME_SH);
+            terminalConfigEnv.AUTOMAKER_CUSTOM_PROMPT = effectiveConfig.customPrompt
+              ? 'true'
+              : 'false';
+            terminalConfigEnv.AUTOMAKER_THEME = currentTheme;
+          }
+
+          // Add custom env vars from config
+          Object.assign(terminalConfigEnv, effectiveConfig.customEnvVars);
+
+          logger.info(
+            `[createSession] Terminal config enabled for session ${id}, shell: ${shellName}`
+          );
+        }
+      } catch (error) {
+        logger.warn(`[createSession] Failed to apply terminal config: ${error}`);
+      }
+    }
+
     const env: Record<string, string> = {
       ...cleanEnv,
       TERM: 'xterm-256color',
@@ -341,6 +553,7 @@ export class TerminalService extends EventEmitter {
       LANG: process.env.LANG || 'en_US.UTF-8',
       LC_ALL: process.env.LC_ALL || process.env.LANG || 'en_US.UTF-8',
       ...options.env,
+      ...terminalConfigEnv, // Apply terminal config env vars last (highest priority)
     };
 
     logger.info(`Creating session ${id} with shell: ${shell} in ${cwd}`);
@@ -653,6 +866,44 @@ export class TerminalService extends EventEmitter {
   }
 
   /**
+   * Handle theme change - regenerate RC files with new theme colors
+   */
+  async onThemeChange(projectPath: string, newTheme: string): Promise<void> {
+    if (!this.settingsService) {
+      logger.warn('[onThemeChange] SettingsService not available');
+      return;
+    }
+
+    try {
+      const globalSettings = await this.settingsService.getGlobalSettings();
+      const terminalConfig = globalSettings?.terminalConfig;
+      const projectSettings = await this.settingsService.getProjectSettings(projectPath);
+      const projectTerminalConfig = projectSettings?.terminalConfig;
+      const effectiveConfig = buildEffectiveTerminalConfig(terminalConfig, projectTerminalConfig);
+
+      if (effectiveConfig.enabled && terminalConfig) {
+        const themeColors = getTerminalThemeColors(
+          newTheme as import('@automaker/types').ThemeMode
+        );
+        const allThemes = getAllTerminalThemes();
+
+        // Regenerate RC files with new theme
+        await ensureRcFilesUpToDate(
+          projectPath,
+          newTheme as import('@automaker/types').ThemeMode,
+          effectiveConfig,
+          themeColors,
+          allThemes
+        );
+
+        logger.info(`[onThemeChange] Regenerated RC files for theme: ${newTheme}`);
+      }
+    } catch (error) {
+      logger.error(`[onThemeChange] Failed to regenerate RC files: ${error}`);
+    }
+  }
+
+  /**
    * Clean up all sessions
    */
   cleanup(): void {
@@ -676,9 +927,9 @@ export class TerminalService extends EventEmitter {
 // Singleton instance
 let terminalService: TerminalService | null = null;
 
-export function getTerminalService(): TerminalService {
+export function getTerminalService(settingsService?: SettingsService): TerminalService {
   if (!terminalService) {
-    terminalService = new TerminalService();
+    terminalService = new TerminalService(settingsService);
   }
   return terminalService;
 }

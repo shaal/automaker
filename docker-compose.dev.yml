@@ -60,8 +60,9 @@ services:
       # This ensures native modules are built for the container's architecture
       - automaker-dev-node-modules:/app/node_modules
 
-      # Persist data across restarts
-      - automaker-data:/data
+      # IMPORTANT: Mount local ./data directory (not a Docker volume)
+      # This ensures data is consistent across Electron and web modes
+      - ./data:/data
 
       # Persist CLI configurations
       - automaker-claude-config:/home/automaker/.claude
@@ -140,9 +141,6 @@ volumes:
   automaker-dev-node-modules:
     name: automaker-dev-node-modules
     # Named volume for container-specific node_modules
-
-  automaker-data:
-    name: automaker-data
 
   automaker-claude-config:
     name: automaker-claude-config

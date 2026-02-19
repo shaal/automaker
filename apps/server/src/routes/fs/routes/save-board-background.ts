@@ -31,7 +31,9 @@ export function createSaveBoardBackgroundHandler() {
       await secureFs.mkdir(boardDir, { recursive: true });
 
       // Decode base64 data (remove data URL prefix if present)
-      const base64Data = data.replace(/^data:image\/\w+;base64,/, '');
+      // Use a regex that handles all data URL formats including those with extra params
+      // e.g., data:image/gif;charset=utf-8;base64,R0lGOD...
+      const base64Data = data.replace(/^data:[^,]+,/, '');
       const buffer = Buffer.from(base64Data, 'base64');
 
       // Use a fixed filename for the board background (overwrite previous)

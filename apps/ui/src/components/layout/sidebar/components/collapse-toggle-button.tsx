@@ -25,7 +25,7 @@ export function CollapseToggleButton({
     <button
       onClick={toggleSidebar}
       className={cn(
-        'flex absolute top-[68px] -right-3 z-9999',
+        'flex absolute top-[40px] -right-3.5 z-9999',
         'group/toggle items-center justify-center w-7 h-7 rounded-full',
         // Glass morphism button
         'bg-card/95 backdrop-blur-sm border border-border/80',

@@ -14,7 +14,8 @@ describe('worktree create route - repositories without commits', () => {
 
   async function initRepoWithoutCommit() {
     repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'automaker-no-commit-'));
-    await execAsync('git init', { cwd: repoPath });
+    // Initialize with 'main' as the default branch (matching GitHub's standard)
+    await execAsync('git init --initial-branch=main', { cwd: repoPath });
     // Don't set git config - use environment variables in commit operations instead
     // to avoid affecting user's git config
     // Intentionally skip creating an initial commit

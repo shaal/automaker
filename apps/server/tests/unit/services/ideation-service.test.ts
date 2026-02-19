@@ -15,13 +15,20 @@ import type {
 } from '@automaker/types';
 import { ProviderFactory } from '@/providers/provider-factory.js';
 
-// Create a shared mock logger instance for assertions using vi.hoisted
+// Create shared mock instances for assertions using vi.hoisted
 const mockLogger = vi.hoisted(() => ({
   info: vi.fn(),
   error: vi.fn(),
   warn: vi.fn(),
   debug: vi.fn(),
 }));
+
+const mockCreateChatOptions = vi.hoisted(() =>
+  vi.fn(() => ({
+    model: 'claude-sonnet-4-20250514',
+    systemPrompt: 'test prompt',
+  }))
+);
 
 // Mock dependencies
 vi.mock('@/lib/secure-fs.js');
@@ -37,10 +44,7 @@ vi.mock('@automaker/utils', async () => {
 });
 vi.mock('@/providers/provider-factory.js');
 vi.mock('@/lib/sdk-options.js', () => ({
-  createChatOptions: vi.fn(() => ({
-    model: 'claude-sonnet-4-20250514',
-    systemPrompt: 'test prompt',
-  })),
+  createChatOptions: mockCreateChatOptions,
   validateWorkingDirectory: vi.fn(),
 }));
 
@@ -63,7 +67,10 @@ describe('IdeationService', () => {
     } as unknown as EventEmitter;
 
     // Create mock settings service
-    mockSettingsService = {} as SettingsService;
+    mockSettingsService = {
+      getCredentials: vi.fn().mockResolvedValue({}),
+      getGlobalSettings: vi.fn().mockResolvedValue({}),
+    } as unknown as SettingsService;
 
     // Create mock feature loader
     mockFeatureLoader = {
@@ -782,6 +789,143 @@ describe('IdeationService', () => {
         await expect(
           service.generateSuggestions(testProjectPath, 'non-existent', 'features', 5)
         ).rejects.toThrow('Prompt non-existent not found');
+      });
+
+      it('should include app spec context when useAppSpec is enabled', async () => {
+        const mockAppSpec = `
+          <project_specification>
+            <project_name>Test Project</project_name>
+            <overview>A test application for unit testing</overview>
+            <core_capabilities>
+              <capability>User authentication</capability>
+              <capability>Data visualization</capability>
+            </core_capabilities>
+            <implemented_features>
+              <feature>
+                <name>Login System</name>
+                <description>Basic auth with email/password</description>
+              </feature>
+            </implemented_features>
+          </project_specification>
+        `;
+
+        vi.mocked(platform.getAppSpecPath).mockReturnValue('/test/project/.automaker/app_spec.txt');
+
+        // First call returns app spec, subsequent calls return empty JSON
+        vi.mocked(secureFs.readFile)
+          .mockResolvedValueOnce(mockAppSpec)
+          .mockResolvedValue(JSON.stringify({}));
+
+        const mockProvider = {
+          executeQuery: vi.fn().mockReturnValue({
+            async *[Symbol.asyncIterator]() {
+              yield {
+                type: 'result',
+                subtype: 'success',
+                result: JSON.stringify([{ title: 'Test', description: 'Test' }]),
+              };
+            },
+          }),
+        };
+        vi.mocked(ProviderFactory.getProviderForModel).mockReturnValue(mockProvider as any);
+
+        const prompts = service.getAllPrompts();
+        await service.generateSuggestions(testProjectPath, prompts[0].id, 'feature', 5, {
+          useAppSpec: true,
+          useContextFiles: false,
+          useMemoryFiles: false,
+          useExistingFeatures: false,
+          useExistingIdeas: false,
+        });
+
+        // Verify createChatOptions was called with systemPrompt containing app spec info
+        expect(mockCreateChatOptions).toHaveBeenCalled();
+        const chatOptionsCall = mockCreateChatOptions.mock.calls[0][0];
+        expect(chatOptionsCall.systemPrompt).toContain('Test Project');
+        expect(chatOptionsCall.systemPrompt).toContain('A test application for unit testing');
+        expect(chatOptionsCall.systemPrompt).toContain('User authentication');
+        expect(chatOptionsCall.systemPrompt).toContain('Login System');
+      });
+
+      it('should exclude app spec context when useAppSpec is disabled', async () => {
+        const mockAppSpec = `
+          <project_specification>
+            <project_name>Hidden Project</project_name>
+            <overview>This should not appear</overview>
+          </project_specification>
+        `;
+
+        vi.mocked(platform.getAppSpecPath).mockReturnValue('/test/project/.automaker/app_spec.txt');
+        vi.mocked(secureFs.readFile).mockResolvedValue(mockAppSpec);
+
+        const mockProvider = {
+          executeQuery: vi.fn().mockReturnValue({
+            async *[Symbol.asyncIterator]() {
+              yield {
+                type: 'result',
+                subtype: 'success',
+                result: JSON.stringify([{ title: 'Test', description: 'Test' }]),
+              };
+            },
+          }),
+        };
+        vi.mocked(ProviderFactory.getProviderForModel).mockReturnValue(mockProvider as any);
+
+        const prompts = service.getAllPrompts();
+        await service.generateSuggestions(testProjectPath, prompts[0].id, 'feature', 5, {
+          useAppSpec: false,
+          useContextFiles: false,
+          useMemoryFiles: false,
+          useExistingFeatures: false,
+          useExistingIdeas: false,
+        });
+
+        // Verify createChatOptions was called with systemPrompt NOT containing app spec info
+        expect(mockCreateChatOptions).toHaveBeenCalled();
+        const chatOptionsCall = mockCreateChatOptions.mock.calls[0][0];
+        expect(chatOptionsCall.systemPrompt).not.toContain('Hidden Project');
+        expect(chatOptionsCall.systemPrompt).not.toContain('This should not appear');
+      });
+
+      it('should handle missing app spec file gracefully', async () => {
+        vi.mocked(platform.getAppSpecPath).mockReturnValue('/test/project/.automaker/app_spec.txt');
+
+        const enoentError = new Error('ENOENT: no such file or directory') as NodeJS.ErrnoException;
+        enoentError.code = 'ENOENT';
+
+        // First call fails with ENOENT for app spec, subsequent calls return empty JSON
+        vi.mocked(secureFs.readFile)
+          .mockRejectedValueOnce(enoentError)
+          .mockResolvedValue(JSON.stringify({}));
+
+        const mockProvider = {
+          executeQuery: vi.fn().mockReturnValue({
+            async *[Symbol.asyncIterator]() {
+              yield {
+                type: 'result',
+                subtype: 'success',
+                result: JSON.stringify([{ title: 'Test', description: 'Test' }]),
+              };
+            },
+          }),
+        };
+        vi.mocked(ProviderFactory.getProviderForModel).mockReturnValue(mockProvider as any);
+
+        const prompts = service.getAllPrompts();
+
+        // Should not throw
+        await expect(
+          service.generateSuggestions(testProjectPath, prompts[0].id, 'feature', 5, {
+            useAppSpec: true,
+            useContextFiles: false,
+            useMemoryFiles: false,
+            useExistingFeatures: false,
+            useExistingIdeas: false,
+          })
+        ).resolves.toBeDefined();
+
+        // Should not log warning for ENOENT
+        expect(mockLogger.warn).not.toHaveBeenCalled();
       });
     });
   });

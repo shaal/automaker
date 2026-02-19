@@ -4,6 +4,7 @@ import { uxReviewTemplate } from './ux-review';
 import { testingTemplate } from './testing';
 import { documentationTemplate } from './documentation';
 import { optimizationTemplate } from './optimization';
+import { commitTemplate } from './commit';
 
 export interface PipelineStepTemplate {
   id: string;
@@ -19,6 +20,7 @@ export const STEP_TEMPLATES: PipelineStepTemplate[] = [
   testingTemplate,
   documentationTemplate,
   optimizationTemplate,
+  commitTemplate,
 ];
 
 // Helper to get template color class

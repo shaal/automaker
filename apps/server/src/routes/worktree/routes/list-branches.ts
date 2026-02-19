@@ -110,9 +110,22 @@ export function createListBranchesHandler() {
         }
       }
 
-      // Get ahead/behind count for current branch
+      // Check if any remotes are configured for this repository
+      let hasAnyRemotes = false;
+      try {
+        const { stdout: remotesOutput } = await execAsync('git remote', {
+          cwd: worktreePath,
+        });
+        hasAnyRemotes = remotesOutput.trim().length > 0;
+      } catch {
+        // If git remote fails, assume no remotes
+        hasAnyRemotes = false;
+      }
+
+      // Get ahead/behind count for current branch and check if remote branch exists
       let aheadCount = 0;
       let behindCount = 0;
+      let hasRemoteBranch = false;
       try {
         // First check if there's a remote tracking branch
         const { stdout: upstreamOutput } = await execAsync(
@@ -121,6 +134,7 @@ export function createListBranchesHandler() {
         );
 
         if (upstreamOutput.trim()) {
+          hasRemoteBranch = true;
           const { stdout: aheadBehindOutput } = await execAsync(
             `git rev-list --left-right --count ${currentBranch}@{upstream}...HEAD`,
             { cwd: worktreePath }
@@ -130,7 +144,18 @@ export function createListBranchesHandler() {
           behindCount = behind || 0;
         }
       } catch {
-        // No upstream branch set, that's okay
+        // No upstream branch set - check if the branch exists on any remote
+        try {
+          // Check if there's a matching branch on origin (most common remote)
+          const { stdout: remoteBranchOutput } = await execAsync(
+            `git ls-remote --heads origin ${currentBranch}`,
+            { cwd: worktreePath, timeout: 5000 }
+          );
+          hasRemoteBranch = remoteBranchOutput.trim().length > 0;
+        } catch {
+          // No remote branch found or origin doesn't exist
+          hasRemoteBranch = false;
+        }
       }
 
       res.json({
@@ -140,6 +165,8 @@ export function createListBranchesHandler() {
           branches,
           aheadCount,
           behindCount,
+          hasRemoteBranch,
+          hasAnyRemotes,
         },
       });
     } catch (error) {

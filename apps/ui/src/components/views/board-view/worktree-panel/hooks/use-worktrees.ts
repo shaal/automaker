@@ -1,11 +1,10 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { createLogger } from '@automaker/utils/logger';
+import { useEffect, useCallback, useRef } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useAppStore } from '@/store/app-store';
-import { getElectronAPI } from '@/lib/electron';
+import { useWorktrees as useWorktreesQuery } from '@/hooks/queries';
+import { queryKeys } from '@/lib/query-keys';
 import { pathsEqual } from '@/lib/utils';
 import type { WorktreeInfo } from '../types';
-
-const logger = createLogger('Worktrees');
 
 interface UseWorktreesOptions {
   projectPath: string;
@@ -18,62 +17,46 @@ export function useWorktrees({
   refreshTrigger = 0,
   onRemovedWorktrees,
 }: UseWorktreesOptions) {
-  const [isLoading, setIsLoading] = useState(false);
-  const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
+  const queryClient = useQueryClient();
 
   const currentWorktree = useAppStore((s) => s.getCurrentWorktree(projectPath));
   const setCurrentWorktree = useAppStore((s) => s.setCurrentWorktree);
   const setWorktreesInStore = useAppStore((s) => s.setWorktrees);
   const useWorktreesEnabled = useAppStore((s) => s.useWorktrees);
 
-  const fetchWorktrees = useCallback(
-    async (options?: { silent?: boolean }) => {
-      if (!projectPath) return;
-      const silent = options?.silent ?? false;
-      if (!silent) {
-        setIsLoading(true);
-      }
-      try {
-        const api = getElectronAPI();
-        if (!api?.worktree?.listAll) {
-          logger.warn('Worktree API not available');
-          return;
-        }
-        // Pass forceRefreshGitHub when this is a manual refresh (not silent polling)
-        // This clears the GitHub remote cache so users can re-detect after adding a remote
-        const forceRefreshGitHub = !silent;
-        const result = await api.worktree.listAll(projectPath, true, forceRefreshGitHub);
-        if (result.success && result.worktrees) {
-          setWorktrees(result.worktrees);
-          setWorktreesInStore(projectPath, result.worktrees);
-        }
-        // Return removed worktrees so they can be handled by the caller
-        return result.removedWorktrees;
-      } catch (error) {
-        logger.error('Failed to fetch worktrees:', error);
-        return undefined;
-      } finally {
-        if (!silent) {
-          setIsLoading(false);
-        }
-      }
-    },
-    [projectPath, setWorktreesInStore]
-  );
+  // Use the React Query hook
+  const { data, isLoading, refetch } = useWorktreesQuery(projectPath);
+  const worktrees = (data?.worktrees ?? []) as WorktreeInfo[];
 
+  // Sync worktrees to Zustand store when they change
   useEffect(() => {
-    fetchWorktrees();
-  }, [fetchWorktrees]);
+    if (worktrees.length > 0) {
+      setWorktreesInStore(projectPath, worktrees);
+    }
+  }, [worktrees, projectPath, setWorktreesInStore]);
 
+  // Handle removed worktrees callback when data changes
+  const prevRemovedWorktreesRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (data?.removedWorktrees && data.removedWorktrees.length > 0) {
+      // Create a stable key to avoid duplicate callbacks
+      const key = JSON.stringify(data.removedWorktrees);
+      if (key !== prevRemovedWorktreesRef.current) {
+        prevRemovedWorktreesRef.current = key;
+        onRemovedWorktrees?.(data.removedWorktrees);
+      }
+    }
+  }, [data?.removedWorktrees, onRemovedWorktrees]);
+
+  // Handle refresh trigger
   useEffect(() => {
     if (refreshTrigger > 0) {
-      fetchWorktrees().then((removedWorktrees) => {
-        if (removedWorktrees && removedWorktrees.length > 0 && onRemovedWorktrees) {
-          onRemovedWorktrees(removedWorktrees);
-        }
+      // Invalidate and refetch to get fresh data including any removed worktrees
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.worktrees.all(projectPath),
       });
     }
-  }, [refreshTrigger, fetchWorktrees, onRemovedWorktrees]);
+  }, [refreshTrigger, projectPath, queryClient]);
 
   // Use a ref to track the current worktree to avoid running validation
   // when selection changes (which could cause a race condition with stale worktrees list)
@@ -109,6 +92,22 @@ export function useWorktrees({
       setCurrentWorktree(projectPath, worktree.isMain ? null : worktree.path, worktree.branch);
     },
     [projectPath, setCurrentWorktree]
+  );
+
+  // fetchWorktrees for backward compatibility - now just triggers a refetch
+  // The silent option is accepted but not used (React Query handles loading states)
+  // Returns removed worktrees array if any were detected, undefined otherwise
+  const fetchWorktrees = useCallback(
+    async (_options?: {
+      silent?: boolean;
+    }): Promise<Array<{ path: string; branch: string }> | undefined> => {
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.worktrees.all(projectPath),
+      });
+      const result = await refetch();
+      return result.data?.removedWorktrees;
+    },
+    [projectPath, queryClient, refetch]
   );
 
   const currentWorktreePath = currentWorktree?.path ?? null;

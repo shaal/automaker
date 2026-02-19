@@ -85,8 +85,9 @@ export function createApplyHandler() {
         if (!change.feature) continue;
 
         try {
-          // Create the new feature
+          // Create the new feature - use the AI-generated ID if provided
           const newFeature = await featureLoader.create(projectPath, {
+            id: change.feature.id, // Use descriptive ID from AI if provided
             title: change.feature.title,
             description: change.feature.description || '',
             category: change.feature.category || 'Uncategorized',

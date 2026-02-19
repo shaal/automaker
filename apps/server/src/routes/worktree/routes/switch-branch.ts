@@ -16,6 +16,21 @@ import { getErrorMessage, logError } from '../common.js';
 
 const execAsync = promisify(exec);
 
+function isUntrackedLine(line: string): boolean {
+  return line.startsWith('?? ');
+}
+
+function isExcludedWorktreeLine(line: string): boolean {
+  return line.includes('.worktrees/') || line.endsWith('.worktrees');
+}
+
+function isBlockingChangeLine(line: string): boolean {
+  if (!line.trim()) return false;
+  if (isExcludedWorktreeLine(line)) return false;
+  if (isUntrackedLine(line)) return false;
+  return true;
+}
+
 /**
  * Check if there are uncommitted changes in the working directory
  * Excludes .worktrees/ directory which is created by automaker
@@ -23,15 +38,7 @@ const execAsync = promisify(exec);
 async function hasUncommittedChanges(cwd: string): Promise<boolean> {
   try {
     const { stdout } = await execAsync('git status --porcelain', { cwd });
-    const lines = stdout
-      .trim()
-      .split('\n')
-      .filter((line) => {
-        if (!line.trim()) return false;
-        // Exclude .worktrees/ directory (created by automaker)
-        if (line.includes('.worktrees/') || line.endsWith('.worktrees')) return false;
-        return true;
-      });
+    const lines = stdout.trim().split('\n').filter(isBlockingChangeLine);
     return lines.length > 0;
   } catch {
     return false;
@@ -45,15 +52,7 @@ async function hasUncommittedChanges(cwd: string): Promise<boolean> {
 async function getChangesSummary(cwd: string): Promise<string> {
   try {
     const { stdout } = await execAsync('git status --short', { cwd });
-    const lines = stdout
-      .trim()
-      .split('\n')
-      .filter((line) => {
-        if (!line.trim()) return false;
-        // Exclude .worktrees/ directory
-        if (line.includes('.worktrees/') || line.endsWith('.worktrees')) return false;
-        return true;
-      });
+    const lines = stdout.trim().split('\n').filter(isBlockingChangeLine);
     if (lines.length === 0) return '';
     if (lines.length <= 5) return lines.join(', ');
     return `${lines.slice(0, 5).join(', ')} and ${lines.length - 5} more files`;

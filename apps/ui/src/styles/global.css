@@ -132,6 +132,7 @@
 :root {
   /* Default to light mode */
   --radius: 0.625rem;
+  --perf-contain-intrinsic-size: 500px;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -1119,4 +1120,10 @@
   .graph-node-matched {
     animation: none;
   }
+}
+
+.perf-contain {
+  contain: layout paint;
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--perf-contain-intrinsic-size);
 }

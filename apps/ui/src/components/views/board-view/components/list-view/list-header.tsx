@@ -23,7 +23,6 @@ interface ColumnDef {
 
 /**
  * Default column definitions for the list view
- * Only showing title column with full width for a cleaner, more spacious layout
  */
 export const LIST_COLUMNS: ColumnDef[] = [
   {
@@ -33,6 +32,14 @@ export const LIST_COLUMNS: ColumnDef[] = [
     width: 'flex-1',
     minWidth: 'min-w-0',
     align: 'left',
+  },
+  {
+    id: 'priority',
+    label: 'Priority',
+    sortable: true,
+    width: 'w-20',
+    minWidth: 'min-w-[60px]',
+    align: 'center',
   },
 ];
 
@@ -117,6 +124,7 @@ const SortableColumnHeader = memo(function SortableColumnHeader({
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
         column.width,
         column.minWidth,
+        column.width !== 'flex-1' && 'shrink-0',
         column.align === 'center' && 'justify-center',
         column.align === 'right' && 'justify-end',
         isSorted && 'text-foreground',
@@ -124,7 +132,7 @@ const SortableColumnHeader = memo(function SortableColumnHeader({
       )}
       data-testid={`list-header-${column.id}`}
     >
-      <span>{column.label}</span>
+      <span className="whitespace-nowrap truncate">{column.label}</span>
       <SortIcon column={column.id} sortConfig={sortConfig} />
     </div>
   );
@@ -141,13 +149,14 @@ const StaticColumnHeader = memo(function StaticColumnHeader({ column }: { column
         'flex items-center px-3 py-2 text-xs font-medium text-muted-foreground',
         column.width,
         column.minWidth,
+        column.width !== 'flex-1' && 'shrink-0',
         column.align === 'center' && 'justify-center',
         column.align === 'right' && 'justify-end',
         column.className
       )}
       data-testid={`list-header-${column.id}`}
     >
-      <span>{column.label}</span>
+      <span className="whitespace-nowrap truncate">{column.label}</span>
     </div>
   );
 });

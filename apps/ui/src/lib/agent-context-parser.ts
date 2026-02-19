@@ -237,39 +237,34 @@ function cleanFragmentedText(content: string): string {
 /**
  * Extracts a summary from completed feature context
  * Looks for content between <summary> and </summary> tags
+ * Returns the LAST summary found to ensure we get the most recent/updated one
  */
 function extractSummary(content: string): string | undefined {
   // First, clean up any fragmented text from streaming
   const cleanedContent = cleanFragmentedText(content);
 
-  // Look for <summary> tags - capture everything between opening and closing tags
-  const summaryTagMatch = cleanedContent.match(/<summary>([\s\S]*?)<\/summary>/i);
-  if (summaryTagMatch) {
-    // Clean up the extracted summary content as well
-    return cleanFragmentedText(summaryTagMatch[1]).trim();
-  }
+  // Define regex patterns to try in order of priority
+  // Each pattern specifies which capture group contains the summary content
+  const regexesToTry = [
+    { regex: /<summary>([\s\S]*?)<\/summary>/gi, group: 1 },
+    { regex: /## Summary[^\n]*\n([\s\S]*?)(?=\n## [^#]|\n🔧|$)/gi, group: 1 },
+    {
+      regex:
+        /✓ (?:Feature|Verification|Task) (?:successfully|completed|verified)[^\n]*(?:\n[^\n]{1,200})?/gi,
+      group: 0,
+    },
+    {
+      regex: /(?:What was done|Changes made|Implemented)[^\n]*\n([\s\S]*?)(?=\n## [^#]|\n🔧|$)/gi,
+      group: 1,
+    },
+  ];
 
-  // Fallback: Look for summary sections - capture everything including subsections (###)
-  // Stop at same-level ## sections (but not ###), or tool markers, or end
-  const summaryMatch = cleanedContent.match(/## Summary[^\n]*\n([\s\S]*?)(?=\n## [^#]|\n🔧|$)/i);
-  if (summaryMatch) {
-    return cleanFragmentedText(summaryMatch[1]).trim();
-  }
-
-  // Look for completion markers and extract surrounding text
-  const completionMatch = cleanedContent.match(
-    /✓ (?:Feature|Verification|Task) (?:successfully|completed|verified)[^\n]*(?:\n[^\n]{1,200})?/i
-  );
-  if (completionMatch) {
-    return cleanFragmentedText(completionMatch[0]).trim();
-  }
-
-  // Look for "What was done" type sections
-  const whatWasDoneMatch = cleanedContent.match(
-    /(?:What was done|Changes made|Implemented)[^\n]*\n([\s\S]*?)(?=\n## [^#]|\n🔧|$)/i
-  );
-  if (whatWasDoneMatch) {
-    return cleanFragmentedText(whatWasDoneMatch[1]).trim();
+  for (const { regex, group } of regexesToTry) {
+    const matches = [...cleanedContent.matchAll(regex)];
+    if (matches.length > 0) {
+      const lastMatch = matches[matches.length - 1];
+      return cleanFragmentedText(lastMatch[group]).trim();
+    }
   }
 
   return undefined;

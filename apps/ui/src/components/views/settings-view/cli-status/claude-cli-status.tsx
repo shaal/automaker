@@ -1,5 +1,7 @@
 import { useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
+import { SkeletonPulse } from '@/components/ui/skeleton';
+import { Spinner } from '@/components/ui/spinner';
 import { CheckCircle2, AlertCircle, RefreshCw, XCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { CliStatus } from '../shared/types';
@@ -32,10 +34,6 @@ function getAuthMethodLabel(method: string): string {
     default:
       return method || 'Unknown';
   }
-}
-
-function SkeletonPulse({ className }: { className?: string }) {
-  return <div className={cn('animate-pulse bg-muted/50 rounded', className)} />;
 }
 
 function ClaudeCliStatusSkeleton() {
@@ -91,7 +89,17 @@ export function ClaudeCliStatus({ status, authStatus, isChecking, onRefresh }: C
     setIsAuthenticating(true);
     try {
       const api = getElectronAPI();
-      const result = await api.setup.authClaude();
+      // Check if authClaude method exists on the API
+      const authClaude = (api.setup as Record<string, unknown> | undefined)?.authClaude as
+        | (() => Promise<{ success: boolean; error?: string }>)
+        | undefined;
+      if (!authClaude) {
+        toast.error('Authentication Failed', {
+          description: 'Claude authentication is not available',
+        });
+        return;
+      }
+      const result = await authClaude();
 
       if (result.success) {
         toast.success('Signed In', {
@@ -116,7 +124,17 @@ export function ClaudeCliStatus({ status, authStatus, isChecking, onRefresh }: C
     setIsDeauthenticating(true);
     try {
       const api = getElectronAPI();
-      const result = await api.setup.deauthClaude();
+      // Check if deauthClaude method exists on the API
+      const deauthClaude = (api.setup as Record<string, unknown> | undefined)?.deauthClaude as
+        | (() => Promise<{ success: boolean; error?: string }>)
+        | undefined;
+      if (!deauthClaude) {
+        toast.error('Sign Out Failed', {
+          description: 'Claude sign out is not available',
+        });
+        return;
+      }
+      const result = await deauthClaude();
 
       if (result.success) {
         toast.success('Signed Out', {
@@ -172,7 +190,7 @@ export function ClaudeCliStatus({ status, authStatus, isChecking, onRefresh }: C
               'transition-all duration-200'
             )}
           >
-            <RefreshCw className={cn('w-4 h-4', isChecking && 'animate-spin')} />
+            {isChecking ? <Spinner size="sm" /> : <RefreshCw className="w-4 h-4" />}
           </Button>
         </div>
         <p className="text-sm text-muted-foreground/80 ml-12">

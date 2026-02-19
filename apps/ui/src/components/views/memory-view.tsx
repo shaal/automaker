@@ -19,6 +19,7 @@ import {
   FilePlus,
   MoreVertical,
 } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 import {
   Dialog,
   DialogContent,
@@ -299,7 +300,7 @@ export function MemoryView() {
   if (isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center" data-testid="memory-view-loading">
-        <RefreshCw className="w-6 h-6 animate-spin text-muted-foreground" />
+        <Spinner size="lg" />
       </div>
     );
   }

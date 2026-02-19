@@ -1,17 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import type { ParsedTask } from '@automaker/types';
 
 /**
  * Test the task parsing logic by reimplementing the parsing functions
  * These mirror the logic in auto-mode-service.ts parseTasksFromSpec and parseTaskLine
  */
-
-interface ParsedTask {
-  id: string;
-  description: string;
-  filePath?: string;
-  phase?: string;
-  status: 'pending' | 'in_progress' | 'completed';
-}
 
 function parseTaskLine(line: string, currentPhase?: string): ParsedTask | null {
   // Match pattern: - [ ] T###: Description | File: path
@@ -340,6 +333,238 @@ Some other text
       expect(fullModeOutput).toContain('Phase 2');
       expect(fullModeOutput).toContain('Phase 3');
       expect(fullModeOutput).toContain('[SPEC_GENERATED]');
+    });
+  });
+
+  describe('detectSpecFallback - non-Claude model support', () => {
+    /**
+     * Reimplementation of detectSpecFallback for testing
+     * This mirrors the logic in auto-mode-service.ts for detecting specs
+     * when the [SPEC_GENERATED] marker is missing (common with non-Claude models)
+     */
+    function detectSpecFallback(text: string): boolean {
+      // Check for key structural elements of a spec
+      const hasTasksBlock = /```tasks[\s\S]*```/.test(text);
+      const hasTaskLines = /- \[ \] T\d{3}:/.test(text);
+
+      // Check for common spec sections (case-insensitive)
+      const hasAcceptanceCriteria = /acceptance criteria/i.test(text);
+      const hasTechnicalContext = /technical context/i.test(text);
+      const hasProblemStatement = /problem statement/i.test(text);
+      const hasUserStory = /user story/i.test(text);
+      // Additional patterns for different model outputs
+      const hasGoal = /\*\*Goal\*\*:/i.test(text);
+      const hasSolution = /\*\*Solution\*\*:/i.test(text);
+      const hasImplementation = /implementation\s*(plan|steps|approach)/i.test(text);
+      const hasOverview = /##\s*(overview|summary)/i.test(text);
+
+      // Spec is detected if we have task structure AND at least some spec content
+      const hasTaskStructure = hasTasksBlock || hasTaskLines;
+      const hasSpecContent =
+        hasAcceptanceCriteria ||
+        hasTechnicalContext ||
+        hasProblemStatement ||
+        hasUserStory ||
+        hasGoal ||
+        hasSolution ||
+        hasImplementation ||
+        hasOverview;
+
+      return hasTaskStructure && hasSpecContent;
+    }
+
+    it('should detect spec with tasks block and acceptance criteria', () => {
+      const content = `
+## Acceptance Criteria
+- GIVEN a user, WHEN they login, THEN they see the dashboard
+
+\`\`\`tasks
+- [ ] T001: Create login form | File: src/Login.tsx
+\`\`\`
+`;
+      expect(detectSpecFallback(content)).toBe(true);
+    });
+
+    it('should detect spec with task lines and problem statement', () => {
+      const content = `
+## Problem Statement
+Users cannot currently log in to the application.
+
+## Implementation Plan
+- [ ] T001: Add authentication endpoint
+- [ ] T002: Create login UI
+`;
+      expect(detectSpecFallback(content)).toBe(true);
+    });
+
+    it('should detect spec with Goal section (lite planning mode style)', () => {
+      const content = `
+**Goal**: Implement user authentication
+
+**Solution**: Use JWT tokens for session management
+
+- [ ] T001: Setup auth middleware
+- [ ] T002: Create token service
+`;
+      expect(detectSpecFallback(content)).toBe(true);
+    });
+
+    it('should detect spec with User Story format', () => {
+      const content = `
+## User Story
+As a user, I want to reset my password, so that I can regain access.
+
+## Technical Context
+This will modify the auth module.
+
+\`\`\`tasks
+- [ ] T001: Add reset endpoint
+\`\`\`
+`;
+      expect(detectSpecFallback(content)).toBe(true);
+    });
+
+    it('should detect spec with Overview section', () => {
+      const content = `
+## Overview
+This feature adds dark mode support.
+
+\`\`\`tasks
+- [ ] T001: Add theme toggle
+- [ ] T002: Update CSS variables
+\`\`\`
+`;
+      expect(detectSpecFallback(content)).toBe(true);
+    });
+
+    it('should detect spec with Summary section', () => {
+      const content = `
+## Summary
+Adding a new dashboard component.
+
+- [ ] T001: Create dashboard layout
+- [ ] T002: Add widgets
+`;
+      expect(detectSpecFallback(content)).toBe(true);
+    });
+
+    it('should detect spec with implementation plan', () => {
+      const content = `
+## Implementation Plan
+We will add the feature in two phases.
+
+- [ ] T001: Phase 1 setup
+- [ ] T002: Phase 2 implementation
+`;
+      expect(detectSpecFallback(content)).toBe(true);
+    });
+
+    it('should detect spec with implementation steps', () => {
+      const content = `
+## Implementation Steps
+Follow these steps:
+
+- [ ] T001: Step one
+- [ ] T002: Step two
+`;
+      expect(detectSpecFallback(content)).toBe(true);
+    });
+
+    it('should detect spec with implementation approach', () => {
+      const content = `
+## Implementation Approach
+We will use a modular approach.
+
+- [ ] T001: Create modules
+`;
+      expect(detectSpecFallback(content)).toBe(true);
+    });
+
+    it('should NOT detect spec without task structure', () => {
+      const content = `
+## Problem Statement
+Users cannot log in.
+
+## Acceptance Criteria
+- GIVEN a user, WHEN they try to login, THEN it works
+`;
+      expect(detectSpecFallback(content)).toBe(false);
+    });
+
+    it('should NOT detect spec without spec content sections', () => {
+      const content = `
+Here are some tasks:
+
+- [ ] T001: Do something
+- [ ] T002: Do another thing
+`;
+      expect(detectSpecFallback(content)).toBe(false);
+    });
+
+    it('should NOT detect random text as spec', () => {
+      const content = 'Just some random text without any structure';
+      expect(detectSpecFallback(content)).toBe(false);
+    });
+
+    it('should handle case-insensitive matching for spec sections', () => {
+      const content = `
+## ACCEPTANCE CRITERIA
+All caps section header
+
+- [ ] T001: Task
+`;
+      expect(detectSpecFallback(content)).toBe(true);
+
+      const content2 = `
+## acceptance criteria
+Lower case section header
+
+- [ ] T001: Task
+`;
+      expect(detectSpecFallback(content2)).toBe(true);
+    });
+
+    it('should detect OpenAI-style output without explicit marker', () => {
+      // Non-Claude models may format specs differently but still have the key elements
+      const openAIStyleOutput = `
+# Feature Specification: User Authentication
+
+**Goal**: Allow users to securely log into the application
+
+**Solution**: Implement JWT-based authentication with refresh tokens
+
+## Acceptance Criteria
+1. Users can log in with email and password
+2. Invalid credentials show error message
+3. Sessions persist across page refreshes
+
+## Implementation Tasks
+\`\`\`tasks
+- [ ] T001: Create auth service | File: src/services/auth.ts
+- [ ] T002: Build login component | File: src/components/Login.tsx
+- [ ] T003: Add protected routes | File: src/App.tsx
+\`\`\`
+`;
+      expect(detectSpecFallback(openAIStyleOutput)).toBe(true);
+    });
+
+    it('should detect Gemini-style output without explicit marker', () => {
+      const geminiStyleOutput = `
+## Overview
+
+This specification describes the implementation of a user profile page.
+
+## Technical Context
+- Framework: React
+- State: Redux
+
+## Tasks
+
+- [ ] T001: Create ProfilePage component
+- [ ] T002: Add profile API endpoint
+- [ ] T003: Style the profile page
+`;
+      expect(detectSpecFallback(geminiStyleOutput)).toBe(true);
     });
   });
 });

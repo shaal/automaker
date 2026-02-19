@@ -97,6 +97,8 @@ export interface LoadContextFilesOptions {
   projectPath: string;
   /** Optional custom secure fs module (for dependency injection) */
   fsModule?: ContextFsModule;
+  /** Whether to include context files from .automaker/context/ (default: true) */
+  includeContextFiles?: boolean;
   /** Whether to include memory files from .automaker/memory/ (default: true) */
   includeMemory?: boolean;
   /** Whether to initialize memory folder if it doesn't exist (default: true) */
@@ -210,6 +212,7 @@ export async function loadContextFiles(
   const {
     projectPath,
     fsModule = secureFs,
+    includeContextFiles = true,
     includeMemory = true,
     initializeMemory = true,
     taskContext,
@@ -220,42 +223,44 @@ export async function loadContextFiles(
   const files: ContextFileInfo[] = [];
   const memoryFiles: MemoryFileInfo[] = [];
 
-  // Load context files
-  try {
-    // Check if directory exists
-    await fsModule.access(contextDir);
+  // Load context files if enabled
+  if (includeContextFiles) {
+    try {
+      // Check if directory exists
+      await fsModule.access(contextDir);
 
-    // Read directory contents
-    const allFiles = await fsModule.readdir(contextDir);
+      // Read directory contents
+      const allFiles = await fsModule.readdir(contextDir);
 
-    // Filter for text-based context files (case-insensitive for cross-platform)
-    const textFiles = allFiles.filter((f) => {
-      const lower = f.toLowerCase();
-      return (lower.endsWith('.md') || lower.endsWith('.txt')) && f !== 'context-metadata.json';
-    });
+      // Filter for text-based context files (case-insensitive for cross-platform)
+      const textFiles = allFiles.filter((f) => {
+        const lower = f.toLowerCase();
+        return (lower.endsWith('.md') || lower.endsWith('.txt')) && f !== 'context-metadata.json';
+      });
 
-    if (textFiles.length > 0) {
-      // Load metadata for descriptions
-      const metadata = await loadContextMetadata(contextDir, fsModule);
+      if (textFiles.length > 0) {
+        // Load metadata for descriptions
+        const metadata = await loadContextMetadata(contextDir, fsModule);
 
-      // Load each file with its content and metadata
-      for (const fileName of textFiles) {
-        const filePath = path.join(contextDir, fileName);
-        try {
-          const content = await fsModule.readFile(filePath, 'utf-8');
-          files.push({
-            name: fileName,
-            path: filePath,
-            content: content as string,
-            description: metadata.files[fileName]?.description,
-          });
-        } catch (error) {
-          console.warn(`[ContextLoader] Failed to read context file ${fileName}:`, error);
+        // Load each file with its content and metadata
+        for (const fileName of textFiles) {
+          const filePath = path.join(contextDir, fileName);
+          try {
+            const content = await fsModule.readFile(filePath, 'utf-8');
+            files.push({
+              name: fileName,
+              path: filePath,
+              content: content as string,
+              description: metadata.files[fileName]?.description,
+            });
+          } catch (error) {
+            console.warn(`[ContextLoader] Failed to read context file ${fileName}:`, error);
+          }
         }
       }
+    } catch {
+      // Context directory doesn't exist or is inaccessible - that's fine
     }
-  } catch {
-    // Context directory doesn't exist or is inaccessible - that's fine
   }
 
   // Load memory files if enabled (with smart selection)

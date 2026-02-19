@@ -5,9 +5,11 @@ import { createLogger } from '@automaker/utils/logger';
 import { cn } from '@/lib/utils';
 
 const logger = createLogger('TaskProgressPanel');
-import { Check, Loader2, Circle, ChevronDown, ChevronRight, FileCode } from 'lucide-react';
+import { Check, Circle, ChevronDown, ChevronRight, FileCode } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 import { getElectronAPI } from '@/lib/electron';
 import type { AutoModeEvent } from '@/types/electron';
+import type { Feature, ParsedTask } from '@automaker/types';
 import { Badge } from '@/components/ui/badge';
 
 interface TaskInfo {
@@ -35,7 +37,7 @@ export function TaskProgressPanel({
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const [isLoading, setIsLoading] = useState(true);
-  const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
+  const [, setCurrentTaskId] = useState<string | null>(null);
 
   // Load initial tasks from feature's planSpec
   const loadInitialTasks = useCallback(async () => {
@@ -52,26 +54,29 @@ export function TaskProgressPanel({
       }
 
       const result = await api.features.get(projectPath, featureId);
-      const feature: any = (result as any).feature;
+      const feature = (result as { success: boolean; feature?: Feature }).feature;
       if (result.success && feature?.planSpec?.tasks) {
-        const planSpec = feature.planSpec as any;
-        const planTasks = planSpec.tasks;
+        const planSpec = feature.planSpec;
+        const planTasks = planSpec.tasks; // Already guarded by the if condition above
         const currentId = planSpec.currentTaskId;
         const completedCount = planSpec.tasksCompleted || 0;
 
         // Convert planSpec tasks to TaskInfo with proper status
-        const initialTasks: TaskInfo[] = planTasks.map((t: any, index: number) => ({
-          id: t.id,
-          description: t.description,
-          filePath: t.filePath,
-          phase: t.phase,
-          status:
-            index < completedCount
-              ? ('completed' as const)
-              : t.id === currentId
-                ? ('in_progress' as const)
-                : ('pending' as const),
-        }));
+        // planTasks is guaranteed to be defined due to the if condition check
+        const initialTasks: TaskInfo[] = (planTasks as ParsedTask[]).map(
+          (t: ParsedTask, index: number) => ({
+            id: t.id,
+            description: t.description,
+            filePath: t.filePath,
+            phase: t.phase,
+            status:
+              index < completedCount
+                ? ('completed' as const)
+                : t.id === currentId
+                  ? ('in_progress' as const)
+                  : ('pending' as const),
+          })
+        );
 
         setTasks(initialTasks);
         setCurrentTaskId(currentId || null);
@@ -235,7 +240,7 @@ export function TaskProgressPanel({
             <div className="absolute left-[2.35rem] top-4 bottom-8 w-px bg-linear-to-b from-border/80 via-border/40 to-transparent" />
 
             <div className="space-y-5">
-              {tasks.map((task, index) => {
+              {tasks.map((task, _index) => {
                 const isActive = task.status === 'in_progress';
                 const isCompleted = task.status === 'completed';
                 const isPending = task.status === 'pending';
@@ -260,7 +265,7 @@ export function TaskProgressPanel({
                       )}
                     >
                       {isCompleted && <Check className="h-3.5 w-3.5" />}
-                      {isActive && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                      {isActive && <Spinner size="xs" variant="foreground" />}
                       {isPending && <Circle className="h-2 w-2 fill-current opacity-50" />}
                     </div>
 

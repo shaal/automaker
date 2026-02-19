@@ -124,6 +124,59 @@ describe('claude-usage-service.ts', () => {
 
       expect(result).toBe('Plain text');
     });
+
+    it('should strip OSC sequences (window title, etc.)', () => {
+      const service = new ClaudeUsageService();
+      // OSC sequence to set window title: ESC ] 0 ; title BEL
+      const input = '\x1B]0;Claude Code\x07Regular text';
+      // @ts-expect-error - accessing private method for testing
+      const result = service.stripAnsiCodes(input);
+
+      expect(result).toBe('Regular text');
+    });
+
+    it('should strip DEC private mode sequences', () => {
+      const service = new ClaudeUsageService();
+      // DEC private mode sequences like ESC[?2026h and ESC[?2026l
+      const input = '\x1B[?2026lClaude Code\x1B[?2026h more text';
+      // @ts-expect-error - accessing private method for testing
+      const result = service.stripAnsiCodes(input);
+
+      expect(result).toBe('Claude Code more text');
+    });
+
+    it('should handle complex terminal output with mixed escape sequences', () => {
+      const service = new ClaudeUsageService();
+      // Simulate the garbled output seen in the bug: "[?2026l ]0;❇ Claude Code [?2026h"
+      // This contains OSC (set title) and DEC private mode sequences
+      const input =
+        '\x1B[?2026l\x1B]0;❇ Claude Code\x07\x1B[?2026hCurrent session 0%used Resets3am';
+      // @ts-expect-error - accessing private method for testing
+      const result = service.stripAnsiCodes(input);
+
+      expect(result).toBe('Current session 0%used Resets3am');
+    });
+
+    it('should strip single character escape sequences', () => {
+      const service = new ClaudeUsageService();
+      // ESC c is the reset terminal command
+      const input = '\x1BcReset text';
+      // @ts-expect-error - accessing private method for testing
+      const result = service.stripAnsiCodes(input);
+
+      expect(result).toBe('Reset text');
+    });
+
+    it('should remove control characters but preserve newlines and tabs', () => {
+      const service = new ClaudeUsageService();
+      // BEL character (\x07) should be stripped, but the word "Bell" is regular text
+      const input = 'Line 1\nLine 2\tTabbed\x07 with bell';
+      // @ts-expect-error - accessing private method for testing
+      const result = service.stripAnsiCodes(input);
+
+      // BEL is stripped, newlines and tabs preserved
+      expect(result).toBe('Line 1\nLine 2\tTabbed with bell');
+    });
   });
 
   describe('parseResetTime', () => {

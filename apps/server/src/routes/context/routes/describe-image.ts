@@ -13,7 +13,7 @@
 
 import type { Request, Response } from 'express';
 import { createLogger, readImageAsBase64 } from '@automaker/utils';
-import { DEFAULT_PHASE_MODELS, isCursorModel } from '@automaker/types';
+import { isCursorModel } from '@automaker/types';
 import { resolvePhaseModel } from '@automaker/model-resolver';
 import { simpleQuery } from '../../../providers/simple-query-service.js';
 import * as secureFs from '../../../lib/secure-fs.js';
@@ -22,6 +22,7 @@ import type { SettingsService } from '../../../services/settings-service.js';
 import {
   getAutoLoadClaudeMdSetting,
   getPromptCustomization,
+  getPhaseModelWithOverrides,
 } from '../../../lib/settings-helpers.js';
 
 const logger = createLogger('DescribeImage');
@@ -273,13 +274,23 @@ export function createDescribeImageHandler(
         '[DescribeImage]'
       );
 
-      // Get model from phase settings
-      const settings = await settingsService?.getGlobalSettings();
-      const phaseModelEntry =
-        settings?.phaseModels?.imageDescriptionModel || DEFAULT_PHASE_MODELS.imageDescriptionModel;
+      // Get model from phase settings with provider info
+      const {
+        phaseModel: phaseModelEntry,
+        provider,
+        credentials,
+      } = await getPhaseModelWithOverrides(
+        'imageDescriptionModel',
+        settingsService,
+        cwd,
+        '[DescribeImage]'
+      );
       const { model, thinkingLevel } = resolvePhaseModel(phaseModelEntry);
 
-      logger.info(`[${requestId}] Using model: ${model}`);
+      logger.info(
+        `[${requestId}] Using model: ${model}`,
+        provider ? `via provider: ${provider.name}` : 'direct API'
+      );
 
       // Get customized prompts from settings
       const prompts = await getPromptCustomization(settingsService, '[DescribeImage]');
@@ -325,6 +336,8 @@ export function createDescribeImageHandler(
         thinkingLevel,
         readOnly: true, // Image description only reads, doesn't write
         settingSources: autoLoadClaudeMd ? ['user', 'project', 'local'] : undefined,
+        claudeCompatibleProvider: provider, // Pass provider for alternative endpoint configuration
+        credentials, // Pass credentials for resolving 'credentials' apiKeySource
       });
 
       logger.info(`[${requestId}] simpleQuery completed in ${Date.now() - queryStart}ms`);

@@ -4,7 +4,6 @@ import {
   X,
   Wand2,
   ExternalLink,
-  Loader2,
   CheckCircle,
   Clock,
   GitPullRequest,
@@ -14,6 +13,7 @@ import {
   ChevronDown,
   ChevronUp,
 } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -86,8 +86,7 @@ export function IssueDetailPanel({
           {(() => {
             if (isValidating) {
               return (
-                <Button variant="default" size="sm" disabled>
-                  <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                <Button variant="default" size="sm" loading>
                   Validating...
                 </Button>
               );
@@ -297,9 +296,7 @@ export function IssueDetailPanel({
               <span className="text-sm font-medium">
                 Comments {totalCount > 0 && `(${totalCount})`}
               </span>
-              {commentsLoading && (
-                <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
-              )}
+              {commentsLoading && <Spinner size="xs" />}
               {commentsExpanded ? (
                 <ChevronUp className="h-4 w-4 text-muted-foreground" />
               ) : (
@@ -336,16 +333,9 @@ export function IssueDetailPanel({
                       size="sm"
                       className="w-full"
                       onClick={loadMore}
-                      disabled={loadingMore}
+                      loading={loadingMore}
                     >
-                      {loadingMore ? (
-                        <>
-                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                          Loading...
-                        </>
-                      ) : (
-                        'Load More Comments'
-                      )}
+                      {loadingMore ? 'Loading...' : 'Load More Comments'}
                     </Button>
                   )}
                 </div>

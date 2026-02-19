@@ -10,9 +10,9 @@ import {
   Save,
   RotateCcw,
   Trash2,
-  Loader2,
   PanelBottomClose,
 } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
 import { apiGet, apiPut, apiDelete } from '@/lib/api-fetch';
 import { toast } from 'sonner';
@@ -409,7 +409,7 @@ export function WorktreePreferencesSection({ project }: WorktreePreferencesSecti
 
           {isLoading ? (
             <div className="flex items-center justify-center py-8">
-              <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+              <Spinner size="md" />
             </div>
           ) : (
             <>
@@ -448,11 +448,7 @@ npm install
                   disabled={!scriptExists || isSaving || isDeleting}
                   className="gap-1.5 text-destructive hover:text-destructive hover:bg-destructive/10"
                 >
-                  {isDeleting ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <Trash2 className="w-3.5 h-3.5" />
-                  )}
+                  {isDeleting ? <Spinner size="xs" /> : <Trash2 className="w-3.5 h-3.5" />}
                   Delete
                 </Button>
                 <Button
@@ -461,11 +457,7 @@ npm install
                   disabled={!hasChanges || isSaving || isDeleting}
                   className="gap-1.5"
                 >
-                  {isSaving ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <Save className="w-3.5 h-3.5" />
-                  )}
+                  {isSaving ? <Spinner size="xs" /> : <Save className="w-3.5 h-3.5" />}
                   Save
                 </Button>
               </div>

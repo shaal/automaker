@@ -1,6 +1,6 @@
 import { CircleDot, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { cn } from '@/lib/utils';
+import { Spinner } from '@/components/ui/spinner';
 import type { IssuesStateFilter } from '../types';
 import { IssuesFilterControls } from './issues-filter-controls';
 
@@ -77,7 +77,7 @@ export function IssuesListHeader({
           </div>
         </div>
         <Button variant="outline" size="sm" onClick={onRefresh} disabled={refreshing}>
-          <RefreshCw className={cn('h-4 w-4', refreshing && 'animate-spin')} />
+          {refreshing ? <Spinner size="sm" /> : <RefreshCw className="h-4 w-4" />}
         </Button>
       </div>
 

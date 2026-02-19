@@ -4,7 +4,8 @@
  */
 
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import { Loader2, AlertCircle, Plus, X, Sparkles, Lightbulb, Trash2 } from 'lucide-react';
+import { AlertCircle, Plus, X, Sparkles, Lightbulb, Trash2 } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -109,7 +110,7 @@ function SuggestionCard({
               )}
             >
               {isAdding ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
+                <Spinner size="sm" />
               ) : (
                 <>
                   <Plus className="w-4 h-4" />
@@ -153,11 +154,7 @@ function GeneratingCard({ job }: { job: GenerationJob }) {
                 isError ? 'bg-destructive/10 text-destructive' : 'bg-blue-500/10 text-blue-500'
               )}
             >
-              {isError ? (
-                <AlertCircle className="w-5 h-5" />
-              ) : (
-                <Loader2 className="w-5 h-5 animate-spin" />
-              )}
+              {isError ? <AlertCircle className="w-5 h-5" /> : <Spinner size="md" />}
             </div>
             <div>
               <p className="font-medium">{job.prompt.title}</p>

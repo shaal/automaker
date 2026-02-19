@@ -1,6 +1,5 @@
 import { useCallback, useMemo, useRef } from 'react';
 import dagre from 'dagre';
-import { Node, Edge } from '@xyflow/react';
 import { TaskNode, DependencyEdge } from './use-graph-nodes';
 
 const NODE_WIDTH = 280;

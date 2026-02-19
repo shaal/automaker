@@ -1,4 +1,4 @@
-import { useCallback, useState, useEffect, useRef } from 'react';
+import { useCallback, useState, useEffect, useMemo, useRef } from 'react';
 import {
   ReactFlow,
   Background,
@@ -39,6 +39,12 @@ import { useDebounceValue } from 'usehooks-ts';
 import { SearchX, Plus, Wand2, ClipboardCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { PlanSettingsPopover } from '../board-view/dialogs/plan-settings-popover';
+import {
+  GRAPH_LARGE_EDGE_COUNT,
+  GRAPH_LARGE_NODE_COUNT,
+  GRAPH_RENDER_MODE_COMPACT,
+  GRAPH_RENDER_MODE_FULL,
+} from './constants';
 
 // Define custom node and edge types - using any to avoid React Flow's strict typing
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -169,9 +175,7 @@ function GraphCanvasInner({
       mql.addEventListener('change', update);
       return () => mql.removeEventListener('change', update);
     }
-    // eslint-disable-next-line deprecation/deprecation
     mql.addListener(update);
-    // eslint-disable-next-line deprecation/deprecation
     return () => mql.removeListener(update);
   }, [effectiveTheme]);
 
@@ -198,6 +202,17 @@ function GraphCanvasInner({
   // Calculate filter results
   const filterResult = useGraphFilter(features, filterState, runningAutoTasks);
 
+  const estimatedEdgeCount = useMemo(() => {
+    return features.reduce((total, feature) => {
+      const deps = feature.dependencies as string[] | undefined;
+      return total + (deps?.length ?? 0);
+    }, 0);
+  }, [features]);
+
+  const isLargeGraph =
+    features.length >= GRAPH_LARGE_NODE_COUNT || estimatedEdgeCount >= GRAPH_LARGE_EDGE_COUNT;
+  const renderMode = isLargeGraph ? GRAPH_RENDER_MODE_COMPACT : GRAPH_RENDER_MODE_FULL;
+
   // Transform features to nodes and edges with filter results
   const { nodes: initialNodes, edges: initialEdges } = useGraphNodes({
     features,
@@ -205,6 +220,8 @@ function GraphCanvasInner({
     filterResult,
     actionCallbacks: nodeActionCallbacks,
     backgroundSettings,
+    renderMode,
+    enableEdgeAnimations: !isLargeGraph,
   });
 
   // Apply layout
@@ -457,6 +474,8 @@ function GraphCanvasInner({
     }
   }, []);
 
+  const shouldRenderVisibleOnly = isLargeGraph;
+
   return (
     <div className={cn('w-full h-full', className)} style={backgroundStyle}>
       <ReactFlow
@@ -478,6 +497,7 @@ function GraphCanvasInner({
         maxZoom={2}
         selectionMode={SelectionMode.Partial}
         connectionMode={ConnectionMode.Loose}
+        onlyRenderVisibleElements={shouldRenderVisibleOnly}
         proOptions={{ hideAttribution: true }}
         className="graph-canvas"
       >

@@ -43,10 +43,14 @@ export function createInitGitHandler() {
         // .git doesn't exist, continue with initialization
       }
 
-      // Initialize git and create an initial empty commit
-      await execAsync(`git init && git commit --allow-empty -m "Initial commit"`, {
-        cwd: projectPath,
-      });
+      // Initialize git with 'main' as the default branch (matching GitHub's standard since 2020)
+      // and create an initial empty commit
+      await execAsync(
+        `git init --initial-branch=main && git commit --allow-empty -m "Initial commit"`,
+        {
+          cwd: projectPath,
+        }
+      );
 
       res.json({
         success: true,

@@ -6,7 +6,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Loader2, List, FileText, GitBranch, ClipboardList } from 'lucide-react';
+import { List, FileText, GitBranch, ClipboardList } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 import { getElectronAPI } from '@/lib/electron';
 import { LogViewer } from '@/components/ui/log-viewer';
 import { GitDiffPanel } from '@/components/ui/git-diff-panel';
@@ -14,7 +15,9 @@ import { TaskProgressPanel } from '@/components/ui/task-progress-panel';
 import { Markdown } from '@/components/ui/markdown';
 import { useAppStore } from '@/store/app-store';
 import { extractSummary } from '@/lib/log-parser';
+import { useAgentOutput } from '@/hooks/queries';
 import type { AutoModeEvent } from '@/types/electron';
+import type { BacklogPlanEvent } from '@automaker/types';
 
 interface AgentOutputModalProps {
   open: boolean;
@@ -27,6 +30,8 @@ interface AgentOutputModalProps {
   onNumberKeyPress?: (key: string) => void;
   /** Project path - if not provided, falls back to window.__currentProject for backward compatibility */
   projectPath?: string;
+  /** Branch name for the feature worktree - used when viewing changes */
+  branchName?: string;
 }
 
 type ViewMode = 'summary' | 'parsed' | 'raw' | 'changes';
@@ -39,12 +44,31 @@ export function AgentOutputModal({
   featureStatus,
   onNumberKeyPress,
   projectPath: projectPathProp,
+  branchName,
 }: AgentOutputModalProps) {
   const isBacklogPlan = featureId.startsWith('backlog-plan:');
-  const [output, setOutput] = useState<string>('');
-  const [isLoading, setIsLoading] = useState(true);
+
+  // Resolve project path - prefer prop, fallback to window.__currentProject
+  const resolvedProjectPath = projectPathProp || window.__currentProject?.path || '';
+
+  // Track additional content from WebSocket events (appended to query data)
+  const [streamedContent, setStreamedContent] = useState<string>('');
   const [viewMode, setViewMode] = useState<ViewMode | null>(null);
-  const [projectPath, setProjectPath] = useState<string>('');
+
+  // Use React Query for initial output loading
+  const { data: initialOutput = '', isLoading } = useAgentOutput(resolvedProjectPath, featureId, {
+    enabled: open && !!resolvedProjectPath,
+  });
+
+  // Reset streamed content when modal opens or featureId changes
+  useEffect(() => {
+    if (open) {
+      setStreamedContent('');
+    }
+  }, [open, featureId]);
+
+  // Combine initial output from query with streamed content from WebSocket
+  const output = initialOutput + streamedContent;
 
   // Extract summary from output
   const summary = useMemo(() => extractSummary(output), [output]);
@@ -53,7 +77,6 @@ export function AgentOutputModal({
   const effectiveViewMode = viewMode ?? (summary ? 'summary' : 'parsed');
   const scrollRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
-  const projectPathRef = useRef<string>('');
   const useWorktrees = useAppStore((state) => state.useWorktrees);
 
   // Auto-scroll to bottom when output changes
@@ -62,55 +85,6 @@ export function AgentOutputModal({
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [output]);
-
-  // Load existing output from file
-  useEffect(() => {
-    if (!open) return;
-
-    const loadOutput = async () => {
-      const api = getElectronAPI();
-      if (!api) return;
-
-      setIsLoading(true);
-
-      try {
-        // Use projectPath prop if provided, otherwise fall back to window.__currentProject for backward compatibility
-        const resolvedProjectPath = projectPathProp || (window as any).__currentProject?.path;
-        if (!resolvedProjectPath) {
-          setIsLoading(false);
-          return;
-        }
-
-        projectPathRef.current = resolvedProjectPath;
-        setProjectPath(resolvedProjectPath);
-
-        if (isBacklogPlan) {
-          setOutput('');
-          return;
-        }
-
-        // Use features API to get agent output
-        if (api.features) {
-          const result = await api.features.getAgentOutput(resolvedProjectPath, featureId);
-
-          if (result.success) {
-            setOutput(result.content || '');
-          } else {
-            setOutput('');
-          }
-        } else {
-          setOutput('');
-        }
-      } catch (error) {
-        console.error('Failed to load output:', error);
-        setOutput('');
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    loadOutput();
-  }, [open, featureId, projectPathProp, isBacklogPlan]);
 
   // Listen to auto mode events and update output
   useEffect(() => {
@@ -270,8 +244,8 @@ export function AgentOutputModal({
       }
 
       if (newContent) {
-        // Only update local state - server is the single source of truth for file writes
-        setOutput((prev) => prev + newContent);
+        // Append new content from WebSocket to streamed content
+        setStreamedContent((prev) => prev + newContent);
       }
     });
 
@@ -287,7 +261,8 @@ export function AgentOutputModal({
     const api = getElectronAPI();
     if (!api?.backlogPlan) return;
 
-    const unsubscribe = api.backlogPlan.onEvent((event: any) => {
+    const unsubscribe = api.backlogPlan.onEvent((data: unknown) => {
+      const event = data as BacklogPlanEvent;
       if (!event?.type) return;
 
       let newContent = '';
@@ -307,7 +282,7 @@ export function AgentOutputModal({
       }
 
       if (newContent) {
-        setOutput((prev) => `${prev}${newContent}`);
+        setStreamedContent((prev) => prev + newContent);
       }
     });
 
@@ -353,7 +328,7 @@ export function AgentOutputModal({
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pr-8">
             <DialogTitle className="flex items-center gap-2">
               {featureStatus !== 'verified' && featureStatus !== 'waiting_approval' && (
-                <Loader2 className="w-5 h-5 text-primary animate-spin" />
+                <Spinner size="md" />
               )}
               Agent Output
             </DialogTitle>
@@ -422,24 +397,24 @@ export function AgentOutputModal({
         {!isBacklogPlan && (
           <TaskProgressPanel
             featureId={featureId}
-            projectPath={projectPath}
+            projectPath={resolvedProjectPath}
             className="shrink-0 mx-3 my-2"
           />
         )}
 
         {effectiveViewMode === 'changes' ? (
           <div className="flex-1 min-h-0 sm:min-h-[200px] sm:max-h-[60vh] overflow-y-auto scrollbar-visible">
-            {projectPath ? (
+            {resolvedProjectPath ? (
               <GitDiffPanel
-                projectPath={projectPath}
-                featureId={featureId}
+                projectPath={resolvedProjectPath}
+                featureId={branchName || featureId}
                 compact={false}
                 useWorktrees={useWorktrees}
                 className="border-0 rounded-lg"
               />
             ) : (
               <div className="flex items-center justify-center h-full text-muted-foreground">
-                <Loader2 className="w-6 h-6 animate-spin mr-2" />
+                <Spinner size="lg" className="mr-2" />
                 Loading...
               </div>
             )}
@@ -457,7 +432,7 @@ export function AgentOutputModal({
             >
               {isLoading && !output ? (
                 <div className="flex items-center justify-center h-full text-muted-foreground">
-                  <Loader2 className="w-6 h-6 animate-spin mr-2" />
+                  <Spinner size="lg" className="mr-2" />
                   Loading output...
                 </div>
               ) : !output ? (

@@ -68,7 +68,7 @@ export {
 } from './atomic-writer.js';
 
 // Path utilities
-export { normalizePath, pathsEqual } from './path-utils.js';
+export { normalizePath, pathsEqual, sanitizeFilename } from './path-utils.js';
 
 // Context file loading
 export {
@@ -105,3 +105,12 @@ export {
   type LearningEntry,
   type SimpleMemoryFile,
 } from './memory-loader.js';
+
+// Debounce and throttle utilities
+export {
+  debounce,
+  throttle,
+  type DebounceOptions,
+  type ThrottleOptions,
+  type DebouncedFunction,
+} from './debounce.js';

@@ -62,19 +62,6 @@ test.describe('Feature Manual Review Flow', () => {
     const featureDir = path.join(automakerDir, 'features', featureId);
     fs.mkdirSync(featureDir, { recursive: true });
 
-    const feature = {
-      id: featureId,
-      description: 'Test feature for manual review flow',
-      category: 'test',
-      status: 'waiting_approval',
-      skipTests: true,
-      model: 'sonnet',
-      thinkingLevel: 'none',
-      createdAt: new Date().toISOString(),
-      branchName: '',
-      priority: 2,
-    };
-
     // Note: Feature is created via HTTP API in the test itself, not in beforeAll
     // This ensures the feature exists when the board view loads it
   });
@@ -103,7 +90,9 @@ test.describe('Feature Manual Review Flow', () => {
 
         // Add to projects if not already there
         const existingProjects = json.settings.projects || [];
-        const hasProject = existingProjects.some((p: any) => p.path === projectPath);
+        const hasProject = existingProjects.some(
+          (p: { id: string; path: string }) => p.path === projectPath
+        );
         if (!hasProject) {
           json.settings.projects = [testProject, ...existingProjects];
         }
@@ -130,8 +119,10 @@ test.describe('Feature Manual Review Flow', () => {
       await page.waitForTimeout(300);
     }
 
-    // Verify we're on the correct project (project switcher button shows project name)
-    await expect(page.getByTestId(`project-switcher-project-${projectName}`)).toBeVisible({
+    // Verify we're on the correct project (project dropdown trigger shows project name)
+    await expect(
+      page.locator('[data-testid="project-dropdown-trigger"]').getByText(projectName)
+    ).toBeVisible({
       timeout: 10000,
     });
 

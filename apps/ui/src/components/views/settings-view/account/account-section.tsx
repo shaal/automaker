@@ -8,9 +8,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from 'sonner';
 import { LogOut, User, Code2, RefreshCw } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
 import { logout } from '@/lib/http-api-client';
 import { useAuthStore } from '@/store/auth-store';
@@ -18,6 +19,7 @@ import { useAppStore } from '@/store/app-store';
 import {
   useAvailableEditors,
   useEffectiveDefaultEditor,
+  type EditorInfo,
 } from '@/components/views/board-view/worktree-panel/hooks/use-available-editors';
 import { getEditorIcon } from '@/components/icons/editor-icons';
 
@@ -35,7 +37,7 @@ export function AccountSection() {
 
   // Normalize Select value: if saved editor isn't found, show 'auto'
   const hasSavedEditor =
-    !!defaultEditorCommand && editors.some((e) => e.command === defaultEditorCommand);
+    !!defaultEditorCommand && editors.some((e: EditorInfo) => e.command === defaultEditorCommand);
   const selectValue = hasSavedEditor ? defaultEditorCommand : 'auto';
 
   // Get icon component for the effective editor
@@ -120,7 +122,7 @@ export function AccountSection() {
                     Auto-detect
                   </span>
                 </SelectItem>
-                {editors.map((editor) => {
+                {editors.map((editor: EditorInfo) => {
                   const Icon = getEditorIcon(editor.command);
                   return (
                     <SelectItem key={editor.command} value={editor.command}>
@@ -133,24 +135,22 @@ export function AccountSection() {
                 })}
               </SelectContent>
             </Select>
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={handleRefreshEditors}
-                    disabled={isRefreshing || isLoadingEditors}
-                    className="shrink-0 h-9 w-9"
-                  >
-                    <RefreshCw className={cn('w-4 h-4', isRefreshing && 'animate-spin')} />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  <p>Refresh available editors</p>
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={handleRefreshEditors}
+                  disabled={isRefreshing || isLoadingEditors}
+                  className="shrink-0 h-9 w-9"
+                >
+                  {isRefreshing ? <Spinner size="sm" /> : <RefreshCw className="w-4 h-4" />}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>Refresh available editors</p>
+              </TooltipContent>
+            </Tooltip>
           </div>
         </div>
 

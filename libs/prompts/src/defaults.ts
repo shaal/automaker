@@ -115,6 +115,23 @@ When approved, execute tasks SEQUENTIALLY in order. For each task:
 3. AFTER completing, output: "[TASK_COMPLETE] T###: Brief summary"
 
 This allows real-time progress tracking during implementation.
+
+**CRITICAL: After completing ALL tasks, you MUST output a final summary using this EXACT format:**
+
+<summary>
+## Summary: [Feature Title]
+
+### Changes Implemented
+- [List all changes made across all tasks]
+
+### Files Modified
+- [List all files that were created or modified]
+
+### Notes for Developer
+- [Any important notes or considerations]
+</summary>
+
+The <summary> and </summary> tags MUST be on their own lines. This summary is REQUIRED for the system to properly track completion.
 `;
 
 export const DEFAULT_AUTO_MODE_PLANNING_FULL = `## Full Specification Phase (Full SDD Mode)
@@ -188,6 +205,23 @@ After completing all tasks in a phase, output:
 "[PHASE_COMPLETE] Phase N complete"
 
 This allows real-time progress tracking during implementation.
+
+**CRITICAL: After completing ALL phases and ALL tasks, you MUST output a final summary using this EXACT format:**
+
+<summary>
+## Summary: [Feature Title]
+
+### Changes Implemented
+- [List all changes made across all phases and tasks]
+
+### Files Modified
+- [List all files that were created or modified]
+
+### Notes for Developer
+- [Any important notes or considerations]
+</summary>
+
+The <summary> and </summary> tags MUST be on their own lines. This summary is REQUIRED for the system to properly track completion.
 `;
 
 export const DEFAULT_AUTO_MODE_FEATURE_PROMPT_TEMPLATE = `## Feature Implementation Task
@@ -339,7 +373,7 @@ IMPORTANT CONTEXT (automatically injected):
 - When deleting a feature, identify which other features depend on it
 
 Your task is to analyze the request and produce a structured JSON plan with:
-1. Features to ADD (include title, description, category, and dependencies)
+1. Features to ADD (include id, title, description, category, and dependencies)
 2. Features to UPDATE (specify featureId and the updates)
 3. Features to DELETE (specify featureId)
 4. A summary of the changes
@@ -352,6 +386,7 @@ Respond with ONLY a JSON object in this exact format:
     {
       "type": "add",
       "feature": {
+        "id": "descriptive-kebab-case-id",
         "title": "Feature title",
         "description": "Feature description",
         "category": "feature" | "bug" | "enhancement" | "refactor",
@@ -386,6 +421,8 @@ Respond with ONLY a JSON object in this exact format:
 \`\`\`
 
 Important rules:
+- CRITICAL: For new features, always include a descriptive "id" in kebab-case (e.g., "user-authentication", "design-system-foundation")
+- Dependencies must reference these exact IDs - both for existing features and new features being added in the same plan
 - Only include fields that need to change in updates
 - Ensure dependency references are valid (don't reference deleted features)
 - Provide clear, actionable descriptions
@@ -600,13 +637,15 @@ Focus on practical, implementable suggestions that would genuinely improve the p
 
 export const DEFAULT_SUGGESTIONS_SYSTEM_PROMPT = `You are an AI product strategist helping brainstorm feature ideas for a software project.
 
-IMPORTANT: You do NOT have access to any tools. You CANNOT read files, search code, or run commands.
-You must generate suggestions based ONLY on the project context provided below.
-Do NOT say "I'll analyze" or "Let me explore" - you cannot do those things.
+CRITICAL INSTRUCTIONS:
+1. You do NOT have access to any tools. You CANNOT read files, search code, or run commands.
+2. You must NEVER write, create, or edit any files. DO NOT use Write, Edit, or any file modification tools.
+3. You must generate suggestions based ONLY on the project context provided below.
+4. Do NOT say "I'll analyze" or "Let me explore" - you cannot do those things.
 
 Based on the project context and the user's prompt, generate exactly {{count}} creative and actionable feature suggestions.
 
-YOUR RESPONSE MUST BE ONLY A JSON ARRAY - nothing else. No explanation, no preamble, no markdown code fences.
+YOUR RESPONSE MUST BE ONLY A JSON ARRAY - nothing else. No explanation, no preamble, no markdown code fences. Do not create any files.
 
 Each suggestion must have this structure:
 {
@@ -803,7 +842,26 @@ You are executing a specific task as part of a larger feature implementation.
 1. Focus ONLY on completing task {{taskId}}: "{{taskDescription}}"
 2. Do not work on other tasks
 3. Use the existing codebase patterns
-4. When done, summarize what you implemented
+4. When done, output "[TASK_COMPLETE] {{taskId}}: Brief summary of what you did"
+
+{{#unless remainingTasks}}
+**IMPORTANT - THIS IS THE FINAL TASK**: After completing this task, you MUST output a complete feature summary using this EXACT format:
+
+<summary>
+## Summary: [Feature Title]
+
+### Changes Implemented
+- [List ALL changes made across ALL tasks in this feature]
+
+### Files Modified
+- [List ALL files created or modified]
+
+### Notes for Developer
+- [Any important notes]
+</summary>
+
+The <summary> and </summary> tags MUST be on their own lines. This is REQUIRED.
+{{/unless}}
 
 Begin implementing task {{taskId}} now.`;
 
@@ -815,7 +873,11 @@ Implement this feature by:
 3. Write the necessary code changes
 4. Ensure the code follows existing patterns and conventions
 
-When done, wrap your final summary in <summary> tags like this:
+## CRITICAL: Summary Output Requirement
+
+**IMPORTANT**: After completing ALL implementation work, you MUST output a final summary using the EXACT format below. This is REQUIRED for the system to track your work properly.
+
+**You MUST wrap your summary in <summary> tags like this:**
 
 <summary>
 ## Summary: [Feature Title]
@@ -830,7 +892,14 @@ When done, wrap your final summary in <summary> tags like this:
 - [Any important notes]
 </summary>
 
-This helps parse your summary correctly in the output logs.`;
+**Rules for summary output:**
+- The <summary> opening tag MUST be on its own line
+- The </summary> closing tag MUST be on its own line
+- Include ALL changes you made during implementation
+- Output this summary as the FINAL thing before stopping
+- Do NOT skip the summary even if you think the feature is simple
+
+This is not optional - the system parses this to update the feature status.`;
 
 export const DEFAULT_PLAYWRIGHT_VERIFICATION_INSTRUCTIONS = `## Verification with Playwright (REQUIRED)
 
@@ -896,8 +965,20 @@ export const DEFAULT_PLAN_REVISION_TEMPLATE = `The user has requested revisions 
 
 ## Instructions
 Please regenerate the specification incorporating the user's feedback.
-Keep the same format with the \`\`\`tasks block for task definitions.
-After generating the revised spec, output:
+**Current planning mode: {{planningMode}}**
+
+**CRITICAL REQUIREMENT**: Your revised specification MUST include a \`\`\`tasks code block containing task definitions in the EXACT format shown below. This is MANDATORY - without the tasks block, the system cannot track or execute tasks properly.
+
+### Required Task Format
+{{taskFormatExample}}
+
+**IMPORTANT**:
+1. The \`\`\`tasks block must appear in your response
+2. Each task MUST start with "- [ ] T###:" where ### is a sequential number (T001, T002, T003, etc.)
+3. Each task MUST include "| File:" followed by the primary file path
+4. Tasks should be ordered by dependencies (foundational tasks first)
+
+After generating the revised spec with the tasks block, output:
 "[SPEC_GENERATED] Please review the revised specification above."`;
 
 export const DEFAULT_CONTINUATION_AFTER_APPROVAL_TEMPLATE = `The plan/specification has been approved. Now implement it.
@@ -913,7 +994,24 @@ export const DEFAULT_CONTINUATION_AFTER_APPROVAL_TEMPLATE = `The plan/specificat
 
 ## Instructions
 
-Implement all the changes described in the plan above.`;
+Implement all the changes described in the plan above.
+
+**CRITICAL: After completing ALL implementation work, you MUST output a final summary using this EXACT format:**
+
+<summary>
+## Summary: [Feature Title]
+
+### Changes Implemented
+- [List ALL changes made during implementation]
+
+### Files Modified
+- [List ALL files created or modified]
+
+### Notes for Developer
+- [Any important notes]
+</summary>
+
+The <summary> and </summary> tags MUST be on their own lines. This summary is REQUIRED for the system to track your work.`;
 
 export const DEFAULT_RESUME_FEATURE_TEMPLATE = `## Continuing Feature Implementation
 
@@ -925,7 +1023,24 @@ The following is the output from a previous implementation attempt. Continue fro
 {{previousContext}}
 
 ## Instructions
-Review the previous work and continue the implementation. If the feature appears complete, verify it works correctly.`;
+Review the previous work and continue the implementation. If the feature appears complete, verify it works correctly.
+
+**CRITICAL: When the feature is complete, you MUST output a final summary using this EXACT format:**
+
+<summary>
+## Summary: [Feature Title]
+
+### Changes Implemented
+- [List ALL changes made, including from previous context]
+
+### Files Modified
+- [List ALL files created or modified]
+
+### Notes for Developer
+- [Any important notes]
+</summary>
+
+The <summary> and </summary> tags MUST be on their own lines. This summary is REQUIRED.`;
 
 export const DEFAULT_PROJECT_ANALYSIS_PROMPT = `Analyze this project and provide a summary of:
 1. Project structure and architecture

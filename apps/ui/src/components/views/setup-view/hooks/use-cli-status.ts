@@ -1,11 +1,38 @@
 import { useState, useCallback } from 'react';
 import { createLogger } from '@automaker/utils/logger';
+import type { ModelProvider } from '@automaker/types';
+import type { CliStatus, ClaudeAuthStatus, CodexAuthStatus } from '@/store/setup-store';
+
+interface CliStatusApiResponse {
+  success: boolean;
+  status?: string;
+  installed?: boolean;
+  method?: string;
+  version?: string;
+  path?: string;
+  auth?: {
+    authenticated: boolean;
+    method: string;
+    hasCredentialsFile?: boolean;
+    hasToken?: boolean;
+    hasStoredOAuthToken?: boolean;
+    hasStoredApiKey?: boolean;
+    hasEnvApiKey?: boolean;
+    hasEnvOAuthToken?: boolean;
+    hasCliAuth?: boolean;
+    hasRecentActivity?: boolean;
+    hasAuthFile?: boolean;
+    hasApiKey?: boolean;
+    hasOAuthToken?: boolean;
+  };
+  error?: string;
+}
 
 interface UseCliStatusOptions {
-  cliType: 'claude' | 'codex';
-  statusApi: () => Promise<any>;
-  setCliStatus: (status: any) => void;
-  setAuthStatus: (status: any) => void;
+  cliType: ModelProvider;
+  statusApi: () => Promise<CliStatusApiResponse>;
+  setCliStatus: (status: CliStatus | null) => void;
+  setAuthStatus: (status: ClaudeAuthStatus | CodexAuthStatus | null) => void;
 }
 
 const VALID_AUTH_METHODS = {

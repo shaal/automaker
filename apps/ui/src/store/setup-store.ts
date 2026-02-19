@@ -63,6 +63,38 @@ export interface OpencodeCliStatus {
   error?: string;
 }
 
+// Gemini CLI Status
+export interface GeminiCliStatus {
+  installed: boolean;
+  version?: string | null;
+  path?: string | null;
+  auth?: {
+    authenticated: boolean;
+    method: string;
+    hasApiKey?: boolean;
+    hasEnvApiKey?: boolean;
+  };
+  installCommand?: string;
+  loginCommand?: string;
+  error?: string;
+}
+
+// Copilot SDK Status
+export interface CopilotCliStatus {
+  installed: boolean;
+  version?: string | null;
+  path?: string | null;
+  auth?: {
+    authenticated: boolean;
+    method: string;
+    login?: string;
+    host?: string;
+  };
+  installCommand?: string;
+  loginCommand?: string;
+  error?: string;
+}
+
 // Codex Auth Method
 export type CodexAuthMethod =
   | 'api_key_env' // OPENAI_API_KEY environment variable
@@ -120,6 +152,8 @@ export type SetupStep =
   | 'cursor'
   | 'codex'
   | 'opencode'
+  | 'gemini'
+  | 'copilot'
   | 'github'
   | 'complete';
 
@@ -148,6 +182,12 @@ export interface SetupState {
 
   // OpenCode CLI state
   opencodeCliStatus: OpencodeCliStatus | null;
+
+  // Gemini CLI state
+  geminiCliStatus: GeminiCliStatus | null;
+
+  // Copilot SDK state
+  copilotCliStatus: CopilotCliStatus | null;
 
   // Setup preferences
   skipClaudeSetup: boolean;
@@ -183,6 +223,12 @@ export interface SetupActions {
   // OpenCode CLI
   setOpencodeCliStatus: (status: OpencodeCliStatus | null) => void;
 
+  // Gemini CLI
+  setGeminiCliStatus: (status: GeminiCliStatus | null) => void;
+
+  // Copilot SDK
+  setCopilotCliStatus: (status: CopilotCliStatus | null) => void;
+
   // Preferences
   setSkipClaudeSetup: (skip: boolean) => void;
 }
@@ -215,6 +261,10 @@ const initialState: SetupState = {
   codexInstallProgress: { ...initialInstallProgress },
 
   opencodeCliStatus: null,
+
+  geminiCliStatus: null,
+
+  copilotCliStatus: null,
 
   skipClaudeSetup: shouldSkipSetup,
 };
@@ -287,6 +337,12 @@ export const useSetupStore = create<SetupState & SetupActions>()((set, get) => (
 
   // OpenCode CLI
   setOpencodeCliStatus: (status) => set({ opencodeCliStatus: status }),
+
+  // Gemini CLI
+  setGeminiCliStatus: (status) => set({ geminiCliStatus: status }),
+
+  // Copilot SDK
+  setCopilotCliStatus: (status) => set({ copilotCliStatus: status }),
 
   // Preferences
   setSkipClaudeSetup: (skip) => set({ skipClaudeSetup: skip }),

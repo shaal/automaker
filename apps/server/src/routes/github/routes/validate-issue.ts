@@ -23,6 +23,7 @@ import {
   isCodexModel,
   isCursorModel,
   isOpencodeModel,
+  supportsStructuredOutput,
 } from '@automaker/types';
 import { resolvePhaseModel } from '@automaker/model-resolver';
 import { extractJson } from '../../../lib/json-extractor.js';
@@ -34,7 +35,11 @@ import {
   ValidationComment,
   ValidationLinkedPR,
 } from './validation-schema.js';
-import { getPromptCustomization } from '../../../lib/settings-helpers.js';
+import {
+  getPromptCustomization,
+  getAutoLoadClaudeMdSetting,
+  getProviderByModelId,
+} from '../../../lib/settings-helpers.js';
 import {
   trySetValidationRunning,
   clearValidationStatus,
@@ -43,7 +48,6 @@ import {
   logger,
 } from './validation-common.js';
 import type { SettingsService } from '../../../services/settings-service.js';
-import { getAutoLoadClaudeMdSetting } from '../../../lib/settings-helpers.js';
 
 /**
  * Request body for issue validation
@@ -121,8 +125,9 @@ async function runValidation(
     const prompts = await getPromptCustomization(settingsService, '[ValidateIssue]');
     const issueValidationSystemPrompt = prompts.issueValidation.systemPrompt;
 
-    // Determine if we should use structured output (Claude/Codex support it, Cursor/OpenCode don't)
-    const useStructuredOutput = isClaudeModel(model) || isCodexModel(model);
+    // Determine if we should use structured output based on model type
+    // Claude and Codex support it; Cursor, Gemini, OpenCode, Copilot don't
+    const useStructuredOutput = supportsStructuredOutput(model);
 
     // Build the final prompt - for Cursor, include system prompt and JSON schema instructions
     let finalPrompt = basePrompt;
@@ -164,12 +169,33 @@ ${basePrompt}`;
       }
     }
 
-    logger.info(`Using model: ${model}`);
+    // Check if the model is a provider model (like "GLM-4.5-Air")
+    // If so, get the provider config and resolved Claude model
+    let claudeCompatibleProvider: import('@automaker/types').ClaudeCompatibleProvider | undefined;
+    let providerResolvedModel: string | undefined;
+    let credentials = await settingsService?.getCredentials();
+
+    if (settingsService) {
+      const providerResult = await getProviderByModelId(model, settingsService, '[ValidateIssue]');
+      if (providerResult.provider) {
+        claudeCompatibleProvider = providerResult.provider;
+        providerResolvedModel = providerResult.resolvedModel;
+        credentials = providerResult.credentials;
+        logger.info(
+          `Using provider "${providerResult.provider.name}" for model "${model}"` +
+            (providerResolvedModel ? ` -> resolved to "${providerResolvedModel}"` : '')
+        );
+      }
+    }
+
+    // Use provider resolved model if available, otherwise use original model
+    const effectiveModel = providerResolvedModel || (model as string);
+    logger.info(`Using model: ${effectiveModel}`);
 
     // Use streamingQuery with event callbacks
     const result = await streamingQuery({
       prompt: finalPrompt,
-      model: model as string,
+      model: effectiveModel,
       cwd: projectPath,
       systemPrompt: useStructuredOutput ? issueValidationSystemPrompt : undefined,
       abortController,
@@ -177,6 +203,8 @@ ${basePrompt}`;
       reasoningEffort: effectiveReasoningEffort,
       readOnly: true, // Issue validation only reads code, doesn't write
       settingSources: autoLoadClaudeMd ? ['user', 'project', 'local'] : undefined,
+      claudeCompatibleProvider, // Pass provider for alternative endpoint configuration
+      credentials, // Pass credentials for resolving 'credentials' apiKeySource
       outputFormat: useStructuredOutput
         ? {
             type: 'json_schema',

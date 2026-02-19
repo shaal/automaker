@@ -4,6 +4,8 @@ import { ClaudeProvider } from '@/providers/claude-provider.js';
 import { CursorProvider } from '@/providers/cursor-provider.js';
 import { CodexProvider } from '@/providers/codex-provider.js';
 import { OpencodeProvider } from '@/providers/opencode-provider.js';
+import { GeminiProvider } from '@/providers/gemini-provider.js';
+import { CopilotProvider } from '@/providers/copilot-provider.js';
 
 describe('provider-factory.ts', () => {
   let consoleSpy: any;
@@ -11,6 +13,8 @@ describe('provider-factory.ts', () => {
   let detectCursorSpy: any;
   let detectCodexSpy: any;
   let detectOpencodeSpy: any;
+  let detectGeminiSpy: any;
+  let detectCopilotSpy: any;
 
   beforeEach(() => {
     consoleSpy = {
@@ -30,6 +34,12 @@ describe('provider-factory.ts', () => {
     detectOpencodeSpy = vi
       .spyOn(OpencodeProvider.prototype, 'detectInstallation')
       .mockResolvedValue({ installed: true });
+    detectGeminiSpy = vi
+      .spyOn(GeminiProvider.prototype, 'detectInstallation')
+      .mockResolvedValue({ installed: true });
+    detectCopilotSpy = vi
+      .spyOn(CopilotProvider.prototype, 'detectInstallation')
+      .mockResolvedValue({ installed: true });
   });
 
   afterEach(() => {
@@ -38,6 +48,8 @@ describe('provider-factory.ts', () => {
     detectCursorSpy.mockRestore();
     detectCodexSpy.mockRestore();
     detectOpencodeSpy.mockRestore();
+    detectGeminiSpy.mockRestore();
+    detectCopilotSpy.mockRestore();
   });
 
   describe('getProviderForModel', () => {
@@ -166,9 +178,21 @@ describe('provider-factory.ts', () => {
       expect(hasClaudeProvider).toBe(true);
     });
 
-    it('should return exactly 4 providers', () => {
+    it('should return exactly 6 providers', () => {
       const providers = ProviderFactory.getAllProviders();
-      expect(providers).toHaveLength(4);
+      expect(providers).toHaveLength(6);
+    });
+
+    it('should include CopilotProvider', () => {
+      const providers = ProviderFactory.getAllProviders();
+      const hasCopilotProvider = providers.some((p) => p instanceof CopilotProvider);
+      expect(hasCopilotProvider).toBe(true);
+    });
+
+    it('should include GeminiProvider', () => {
+      const providers = ProviderFactory.getAllProviders();
+      const hasGeminiProvider = providers.some((p) => p instanceof GeminiProvider);
+      expect(hasGeminiProvider).toBe(true);
     });
 
     it('should include CursorProvider', () => {
@@ -206,7 +230,9 @@ describe('provider-factory.ts', () => {
       expect(keys).toContain('cursor');
       expect(keys).toContain('codex');
       expect(keys).toContain('opencode');
-      expect(keys).toHaveLength(4);
+      expect(keys).toContain('gemini');
+      expect(keys).toContain('copilot');
+      expect(keys).toHaveLength(6);
     });
 
     it('should include cursor status', async () => {

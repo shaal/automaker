@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
 import { createLogger } from '@automaker/utils/logger';
 import { useNavigate } from '@tanstack/react-router';
-import { useAppStore, type ThemeMode } from '@/store/app-store';
+import { useAppStore } from '@/store/app-store';
 import { useOSDetection } from '@/hooks/use-os-detection';
 import { getElectronAPI, isElectron } from '@/lib/electron';
 import { initializeProject } from '@/lib/project-init';
@@ -18,16 +18,17 @@ import {
   Folder,
   Star,
   Clock,
-  Loader2,
   ChevronDown,
   MessageSquare,
   MoreVertical,
   Trash2,
   Search,
   X,
+  LayoutDashboard,
   type LucideIcon,
 } from 'lucide-react';
 import * as LucideIcons from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 import { Input } from '@/components/ui/input';
 import { getAuthenticatedImageUrl } from '@/lib/api-fetch';
 import {
@@ -76,14 +77,11 @@ export function DashboardView() {
 
   const {
     projects,
-    trashedProjects,
-    currentProject,
     upsertAndSetCurrentProject,
     addProject,
     setCurrentProject,
     toggleProjectFavorite,
     moveProjectToTrash,
-    theme: globalTheme,
   } = useAppStore();
 
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
@@ -124,18 +122,27 @@ export function DashboardView() {
         const initResult = await initializeProject(path);
 
         if (!initResult.success) {
+          // If the project directory doesn't exist, automatically remove it from the project list
+          if (initResult.error?.includes('does not exist')) {
+            const projectToRemove = projects.find((p) => p.path === path);
+            if (projectToRemove) {
+              logger.warn(`[Dashboard] Removing project with non-existent path: ${path}`);
+              moveProjectToTrash(projectToRemove.id);
+              toast.error('Project directory not found', {
+                description: `Removed ${name} from your projects list since the directory no longer exists.`,
+              });
+              return;
+            }
+          }
+
           toast.error('Failed to initialize project', {
             description: initResult.error || 'Unknown error occurred',
           });
           return;
         }
 
-        const trashedProject = trashedProjects.find((p) => p.path === path);
-        const effectiveTheme =
-          (trashedProject?.theme as ThemeMode | undefined) ||
-          (currentProject?.theme as ThemeMode | undefined) ||
-          globalTheme;
-        upsertAndSetCurrentProject(path, name, effectiveTheme);
+        // Theme handling (trashed project recovery or undefined for global) is done by the store
+        upsertAndSetCurrentProject(path, name);
 
         toast.success('Project opened', {
           description: `Opened ${name}`,
@@ -151,7 +158,7 @@ export function DashboardView() {
         setIsOpening(false);
       }
     },
-    [trashedProjects, currentProject, globalTheme, upsertAndSetCurrentProject, navigate]
+    [projects, upsertAndSetCurrentProject, navigate, moveProjectToTrash]
   );
 
   const handleOpenProject = useCallback(async () => {
@@ -550,9 +557,32 @@ export function DashboardView() {
             </div>
           </div>
 
+          {/* Projects Overview button */}
+          {hasProjects && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigate({ to: '/overview' })}
+              className="hidden sm:flex gap-2 titlebar-no-drag"
+              data-testid="projects-overview-button"
+            >
+              <LayoutDashboard className="w-4 h-4" />
+              Overview
+            </Button>
+          )}
+
           {/* Mobile action buttons in header */}
           {hasProjects && (
             <div className="flex sm:hidden gap-2 titlebar-no-drag">
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => navigate({ to: '/overview' })}
+                title="Projects Overview"
+                data-testid="projects-overview-button-mobile"
+              >
+                <LayoutDashboard className="w-4 h-4" />
+              </Button>
               <Button variant="outline" size="icon" onClick={handleOpenProject}>
                 <FolderOpen className="w-4 h-4" />
               </Button>
@@ -992,7 +1022,7 @@ export function DashboardView() {
           data-testid="project-opening-overlay"
         >
           <div className="flex flex-col items-center gap-4 p-8 rounded-2xl bg-card border border-border shadow-2xl">
-            <Loader2 className="w-10 h-10 text-brand-500 animate-spin" />
+            <Spinner size="xl" />
             <p className="text-foreground font-medium">Opening project...</p>
           </div>
         </div>

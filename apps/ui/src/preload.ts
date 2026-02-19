@@ -7,6 +7,7 @@
 
 import { contextBridge, ipcRenderer, OpenDialogOptions, SaveDialogOptions } from 'electron';
 import { createLogger } from '@automaker/utils/logger';
+import { IPC_CHANNELS } from './electron/ipc/channels';
 
 const logger = createLogger('Preload');
 
@@ -17,48 +18,49 @@ contextBridge.exposeInMainWorld('electronAPI', {
   isElectron: true,
 
   // Connection check
-  ping: (): Promise<string> => ipcRenderer.invoke('ping'),
+  ping: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.PING),
 
   // Get server URL for HTTP client
-  getServerUrl: (): Promise<string> => ipcRenderer.invoke('server:getUrl'),
+  getServerUrl: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.SERVER.GET_URL),
 
   // Get API key for authentication
-  getApiKey: (): Promise<string | null> => ipcRenderer.invoke('auth:getApiKey'),
+  getApiKey: (): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.AUTH.GET_API_KEY),
 
   // Check if running in external server mode (Docker API)
-  isExternalServerMode: (): Promise<boolean> => ipcRenderer.invoke('auth:isExternalServerMode'),
+  isExternalServerMode: (): Promise<boolean> =>
+    ipcRenderer.invoke(IPC_CHANNELS.AUTH.IS_EXTERNAL_SERVER_MODE),
 
   // Native dialogs - better UX than prompt()
   openDirectory: (): Promise<Electron.OpenDialogReturnValue> =>
-    ipcRenderer.invoke('dialog:openDirectory'),
+    ipcRenderer.invoke(IPC_CHANNELS.DIALOG.OPEN_DIRECTORY),
   openFile: (options?: OpenDialogOptions): Promise<Electron.OpenDialogReturnValue> =>
-    ipcRenderer.invoke('dialog:openFile', options),
+    ipcRenderer.invoke(IPC_CHANNELS.DIALOG.OPEN_FILE, options),
   saveFile: (options?: SaveDialogOptions): Promise<Electron.SaveDialogReturnValue> =>
-    ipcRenderer.invoke('dialog:saveFile', options),
+    ipcRenderer.invoke(IPC_CHANNELS.DIALOG.SAVE_FILE, options),
 
   // Shell operations
   openExternalLink: (url: string): Promise<{ success: boolean; error?: string }> =>
-    ipcRenderer.invoke('shell:openExternal', url),
+    ipcRenderer.invoke(IPC_CHANNELS.SHELL.OPEN_EXTERNAL, url),
   openPath: (filePath: string): Promise<{ success: boolean; error?: string }> =>
-    ipcRenderer.invoke('shell:openPath', filePath),
+    ipcRenderer.invoke(IPC_CHANNELS.SHELL.OPEN_PATH, filePath),
   openInEditor: (
     filePath: string,
     line?: number,
     column?: number
   ): Promise<{ success: boolean; error?: string }> =>
-    ipcRenderer.invoke('shell:openInEditor', filePath, line, column),
+    ipcRenderer.invoke(IPC_CHANNELS.SHELL.OPEN_IN_EDITOR, filePath, line, column),
 
   // App info
-  getPath: (name: string): Promise<string> => ipcRenderer.invoke('app:getPath', name),
-  getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion'),
-  isPackaged: (): Promise<boolean> => ipcRenderer.invoke('app:isPackaged'),
+  getPath: (name: string): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.APP.GET_PATH, name),
+  getVersion: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.APP.GET_VERSION),
+  isPackaged: (): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.APP.IS_PACKAGED),
 
   // Window management
   updateMinWidth: (sidebarExpanded: boolean): Promise<void> =>
-    ipcRenderer.invoke('window:updateMinWidth', sidebarExpanded),
+    ipcRenderer.invoke(IPC_CHANNELS.WINDOW.UPDATE_MIN_WIDTH, sidebarExpanded),
 
   // App control
-  quit: (): Promise<void> => ipcRenderer.invoke('app:quit'),
+  quit: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.APP.QUIT),
 });
 
 logger.info('Electron API exposed (TypeScript)');

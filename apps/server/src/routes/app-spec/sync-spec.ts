@@ -10,12 +10,16 @@
 import * as secureFs from '../../lib/secure-fs.js';
 import type { EventEmitter } from '../../lib/events.js';
 import { createLogger } from '@automaker/utils';
-import { DEFAULT_PHASE_MODELS } from '@automaker/types';
+import { DEFAULT_PHASE_MODELS, supportsStructuredOutput } from '@automaker/types';
 import { resolvePhaseModel } from '@automaker/model-resolver';
 import { streamingQuery } from '../../providers/simple-query-service.js';
+import { extractJson } from '../../lib/json-extractor.js';
 import { getAppSpecPath } from '@automaker/platform';
 import type { SettingsService } from '../../services/settings-service.js';
-import { getAutoLoadClaudeMdSetting } from '../../lib/settings-helpers.js';
+import {
+  getAutoLoadClaudeMdSetting,
+  getPhaseModelWithOverrides,
+} from '../../lib/settings-helpers.js';
 import { FeatureLoader } from '../../services/feature-loader.js';
 import {
   extractImplementedFeatures,
@@ -30,6 +34,28 @@ import {
 import { getNotificationService } from '../../services/notification-service.js';
 
 const logger = createLogger('SpecSync');
+
+/**
+ * Type for extracted tech stack JSON response
+ */
+interface TechStackExtractionResult {
+  technologies: string[];
+}
+
+/**
+ * JSON schema for tech stack analysis output (Claude/Codex structured output)
+ */
+const techStackOutputSchema = {
+  type: 'object',
+  properties: {
+    technologies: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'List of technologies detected in the project',
+    },
+  },
+  required: ['technologies'],
+} as const;
 
 /**
  * Result of a sync operation
@@ -152,13 +178,35 @@ export async function syncSpec(
     '[SpecSync]'
   );
 
-  const settings = await settingsService?.getGlobalSettings();
-  const phaseModelEntry =
-    settings?.phaseModels?.specGenerationModel || DEFAULT_PHASE_MODELS.specGenerationModel;
+  // Get model from phase settings with provider info
+  const {
+    phaseModel: phaseModelEntry,
+    provider,
+    credentials,
+  } = settingsService
+    ? await getPhaseModelWithOverrides(
+        'specGenerationModel',
+        settingsService,
+        projectPath,
+        '[SpecSync]'
+      )
+    : {
+        phaseModel: DEFAULT_PHASE_MODELS.specGenerationModel,
+        provider: undefined,
+        credentials: undefined,
+      };
   const { model, thinkingLevel } = resolvePhaseModel(phaseModelEntry);
 
+  logger.info('Using model:', model, provider ? `via provider: ${provider.name}` : 'direct API');
+
+  // Determine if we should use structured output based on model type
+  const useStructuredOutput = supportsStructuredOutput(model);
+  logger.info(
+    `Structured output mode: ${useStructuredOutput ? 'enabled (Claude/Codex)' : 'disabled (using JSON instructions)'}`
+  );
+
   // Use AI to analyze tech stack
-  const techAnalysisPrompt = `Analyze this project and return ONLY a JSON object with the current technology stack.
+  let techAnalysisPrompt = `Analyze this project and return ONLY a JSON object with the current technology stack.
 
 Current known technologies: ${currentTechStack.join(', ')}
 
@@ -174,6 +222,16 @@ Return ONLY this JSON format, no other text:
   "technologies": ["Technology 1", "Technology 2", ...]
 }`;
 
+  // Add explicit JSON instructions for non-Claude/Codex models
+  if (!useStructuredOutput) {
+    techAnalysisPrompt = `${techAnalysisPrompt}
+
+CRITICAL INSTRUCTIONS:
+1. DO NOT write any files. Return the JSON in your response only.
+2. Your entire response should be valid JSON starting with { and ending with }.
+3. No explanations, no markdown, no text before or after the JSON.`;
+  }
+
   try {
     const techResult = await streamingQuery({
       prompt: techAnalysisPrompt,
@@ -185,44 +243,69 @@ Return ONLY this JSON format, no other text:
       thinkingLevel,
       readOnly: true,
       settingSources: autoLoadClaudeMd ? ['user', 'project', 'local'] : undefined,
+      claudeCompatibleProvider: provider, // Pass provider for alternative endpoint configuration
+      credentials, // Pass credentials for resolving 'credentials' apiKeySource
+      outputFormat: useStructuredOutput
+        ? {
+            type: 'json_schema',
+            schema: techStackOutputSchema,
+          }
+        : undefined,
       onText: (text) => {
         logger.debug(`Tech analysis text: ${text.substring(0, 100)}`);
       },
     });
 
-    // Parse tech stack from response
-    const jsonMatch = techResult.text.match(/\{[\s\S]*"technologies"[\s\S]*\}/);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
-      if (Array.isArray(parsed.technologies)) {
-        const newTechStack = parsed.technologies as string[];
+    // Parse tech stack from response - prefer structured output if available
+    let parsedTechnologies: string[] | null = null;
 
-        // Calculate differences
-        const currentSet = new Set(currentTechStack.map((t) => t.toLowerCase()));
-        const newSet = new Set(newTechStack.map((t) => t.toLowerCase()));
+    if (techResult.structured_output) {
+      // Use structured output from Claude/Codex models
+      const structured = techResult.structured_output as unknown as TechStackExtractionResult;
+      if (Array.isArray(structured.technologies)) {
+        parsedTechnologies = structured.technologies;
+        logger.info('✅ Received structured output for tech analysis');
+      }
+    } else {
+      // Fall back to text parsing for non-Claude/Codex models
+      const extracted = extractJson<TechStackExtractionResult>(techResult.text, {
+        logger,
+        requiredKey: 'technologies',
+        requireArray: true,
+      });
+      if (extracted && Array.isArray(extracted.technologies)) {
+        parsedTechnologies = extracted.technologies;
+        logger.info('✅ Extracted tech stack from text response');
+      } else {
+        logger.warn('⚠️ Failed to extract tech stack JSON from response');
+      }
+    }
 
-        for (const tech of newTechStack) {
-          if (!currentSet.has(tech.toLowerCase())) {
-            result.techStackUpdates.added.push(tech);
-          }
+    if (parsedTechnologies) {
+      const newTechStack = parsedTechnologies;
+
+      // Calculate differences
+      const currentSet = new Set(currentTechStack.map((t) => t.toLowerCase()));
+      const newSet = new Set(newTechStack.map((t) => t.toLowerCase()));
+
+      for (const tech of newTechStack) {
+        if (!currentSet.has(tech.toLowerCase())) {
+          result.techStackUpdates.added.push(tech);
         }
+      }
 
-        for (const tech of currentTechStack) {
-          if (!newSet.has(tech.toLowerCase())) {
-            result.techStackUpdates.removed.push(tech);
-          }
+      for (const tech of currentTechStack) {
+        if (!newSet.has(tech.toLowerCase())) {
+          result.techStackUpdates.removed.push(tech);
         }
+      }
 
-        // Update spec with new tech stack if there are changes
-        if (
-          result.techStackUpdates.added.length > 0 ||
-          result.techStackUpdates.removed.length > 0
-        ) {
-          specContent = updateTechnologyStack(specContent, newTechStack);
-          logger.info(
-            `Updated tech stack: +${result.techStackUpdates.added.length}, -${result.techStackUpdates.removed.length}`
-          );
-        }
+      // Update spec with new tech stack if there are changes
+      if (result.techStackUpdates.added.length > 0 || result.techStackUpdates.removed.length > 0) {
+        specContent = updateTechnologyStack(specContent, newTechStack);
+        logger.info(
+          `Updated tech stack: +${result.techStackUpdates.added.length}, -${result.techStackUpdates.removed.length}`
+        );
       }
     }
   } catch (error) {

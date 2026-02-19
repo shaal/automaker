@@ -25,7 +25,6 @@ export type EventType =
   | 'project:analysis-progress'
   | 'project:analysis-completed'
   | 'project:analysis-error'
-  | 'suggestions:event'
   | 'spec-regeneration:event'
   | 'issue-validation:event'
   | 'ideation:stream'
@@ -47,6 +46,12 @@ export type EventType =
   | 'dev-server:started'
   | 'dev-server:output'
   | 'dev-server:stopped'
+  | 'test-runner:started'
+  | 'test-runner:progress'
+  | 'test-runner:output'
+  | 'test-runner:completed'
+  | 'test-runner:error'
+  | 'test-runner:result'
   | 'notification:created';
 
 export type EventCallback = (type: EventType, payload: unknown) => void;

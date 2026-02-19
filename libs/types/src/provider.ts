@@ -2,7 +2,12 @@
  * Shared types for AI model providers
  */
 
-import type { ThinkingLevel } from './settings.js';
+import type {
+  ThinkingLevel,
+  ClaudeApiProfile,
+  ClaudeCompatibleProvider,
+  Credentials,
+} from './settings.js';
 import type { CodexSandboxMode, CodexApprovalPolicy } from './codex.js';
 
 /**
@@ -209,6 +214,25 @@ export interface ExecuteOptions {
     type: 'json_schema';
     schema: Record<string, unknown>;
   };
+  /**
+   * Active Claude API profile for alternative endpoint configuration.
+   * When set, uses profile's settings (base URL, auth, model mappings) instead of direct Anthropic API.
+   * When undefined, uses direct Anthropic API (via API key or Claude Max CLI OAuth).
+   * @deprecated Use claudeCompatibleProvider instead
+   */
+  claudeApiProfile?: ClaudeApiProfile;
+  /**
+   * Claude-compatible provider for alternative endpoint configuration.
+   * When set, uses provider's connection settings (base URL, auth) instead of direct Anthropic API.
+   * Models are passed directly without alias mapping.
+   * Takes precedence over claudeApiProfile if both are set.
+   */
+  claudeCompatibleProvider?: ClaudeCompatibleProvider;
+  /**
+   * Credentials for resolving 'credentials' apiKeySource in Claude API profiles/providers.
+   * When a profile/provider has apiKeySource='credentials', the Anthropic key from this object is used.
+   */
+  credentials?: Credentials;
 }
 
 /**

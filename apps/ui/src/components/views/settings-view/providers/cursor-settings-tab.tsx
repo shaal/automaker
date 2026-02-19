@@ -44,7 +44,7 @@ export function CursorSettingsTab() {
     try {
       setCursorDefaultModel(model);
       toast.success('Default model updated');
-    } catch (error) {
+    } catch {
       toast.error('Failed to update default model');
     } finally {
       setIsSaving(false);
@@ -55,7 +55,7 @@ export function CursorSettingsTab() {
     setIsSaving(true);
     try {
       toggleCursorModel(model, enabled);
-    } catch (error) {
+    } catch {
       toast.error('Failed to update models');
     } finally {
       setIsSaving(false);

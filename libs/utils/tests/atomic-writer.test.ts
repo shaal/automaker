@@ -64,16 +64,17 @@ describe('atomic-writer.ts', () => {
       await atomicWriteJson(filePath, data);
 
       // Verify writeFile was called with temp file path and JSON content
+      // Format: .tmp.{timestamp}.{random-hex}
       expect(secureFs.writeFile).toHaveBeenCalledTimes(1);
       const writeCall = (secureFs.writeFile as unknown as MockInstance).mock.calls[0];
-      expect(writeCall[0]).toMatch(/\.tmp\.\d+$/);
+      expect(writeCall[0]).toMatch(/\.tmp\.\d+\.[a-f0-9]+$/);
       expect(writeCall[1]).toBe(JSON.stringify(data, null, 2));
       expect(writeCall[2]).toBe('utf-8');
 
       // Verify rename was called with temp -> target
       expect(secureFs.rename).toHaveBeenCalledTimes(1);
       const renameCall = (secureFs.rename as unknown as MockInstance).mock.calls[0];
-      expect(renameCall[0]).toMatch(/\.tmp\.\d+$/);
+      expect(renameCall[0]).toMatch(/\.tmp\.\d+\.[a-f0-9]+$/);
       expect(renameCall[1]).toBe(path.resolve(filePath));
     });
 

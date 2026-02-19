@@ -100,14 +100,8 @@ export function ProjectSelectorWithOptions({
 
   const { sensors, handleDragEnd } = useDragAndDrop({ projects, reorderProjects });
 
-  const {
-    globalTheme,
-    setTheme,
-    setProjectTheme,
-    setPreviewTheme,
-    handlePreviewEnter,
-    handlePreviewLeave,
-  } = useProjectTheme();
+  const { globalTheme, setProjectTheme, setPreviewTheme, handlePreviewEnter, handlePreviewLeave } =
+    useProjectTheme();
 
   if (!sidebarOpen || projects.length === 0) {
     return null;
@@ -281,11 +275,8 @@ export function ProjectSelectorWithOptions({
                   onValueChange={(value) => {
                     if (currentProject) {
                       setPreviewTheme(null);
-                      if (value !== '') {
-                        setTheme(value as ThemeMode);
-                      } else {
-                        setTheme(globalTheme);
-                      }
+                      // Only set project theme - don't change global theme
+                      // The UI uses getEffectiveTheme() which handles: previewTheme ?? projectTheme ?? globalTheme
                       setProjectTheme(
                         currentProject.id,
                         value === '' ? null : (value as ThemeMode)

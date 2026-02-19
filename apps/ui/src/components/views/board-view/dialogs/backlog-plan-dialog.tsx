@@ -11,16 +11,8 @@ import {
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
-import {
-  Loader2,
-  Wand2,
-  Check,
-  Plus,
-  Pencil,
-  Trash2,
-  ChevronDown,
-  ChevronRight,
-} from 'lucide-react';
+import { Wand2, Check, Plus, Pencil, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 import { getElectronAPI } from '@/lib/electron';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
@@ -287,8 +279,7 @@ export function BacklogPlanDialog({
             </div>
             {isGeneratingPlan && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground bg-muted/50 rounded-lg p-3">
-                <Loader2 className="w-4 h-4 animate-spin" />A plan is currently being generated in
-                the background...
+                <Spinner size="sm" />A plan is currently being generated in the background...
               </div>
             )}
           </div>
@@ -405,7 +396,7 @@ export function BacklogPlanDialog({
       case 'applying':
         return (
           <div className="flex flex-col items-center justify-center py-12">
-            <Loader2 className="w-8 h-8 animate-spin text-primary mb-4" />
+            <Spinner size="xl" className="mb-4" />
             <p className="text-muted-foreground">Applying changes...</p>
           </div>
         );
@@ -452,7 +443,7 @@ export function BacklogPlanDialog({
               <Button onClick={handleGenerate} disabled={!prompt.trim() || isGeneratingPlan}>
                 {isGeneratingPlan ? (
                   <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    <Spinner size="sm" className="mr-2" />
                     Generating...
                   </>
                 ) : (

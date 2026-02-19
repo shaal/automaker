@@ -1,9 +1,7 @@
-// TODO: Remove @ts-nocheck after fixing BaseFeature's index signature issue
-// The `[key: string]: unknown` in BaseFeature causes property access type errors
-// @ts-nocheck
+// @ts-nocheck - BaseFeature index signature causes property access type errors
 import { memo, useCallback, useState, useEffect } from 'react';
 import { cn } from '@/lib/utils';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { AlertCircle, Lock, Hand, Sparkles, FileText } from 'lucide-react';
 import type { Feature } from '@/store/app-store';
 import { RowActions, type RowActionHandlers } from './row-actions';
@@ -149,29 +147,27 @@ const IndicatorBadges = memo(function IndicatorBadges({
 
   return (
     <div className="flex items-center gap-1 ml-2">
-      <TooltipProvider delayDuration={200}>
-        {badges.map((badge) => (
-          <Tooltip key={badge.key}>
-            <TooltipTrigger asChild>
-              <div
-                className={cn(
-                  'inline-flex items-center justify-center w-5 h-5 rounded border',
-                  badge.colorClass,
-                  badge.bgClass,
-                  badge.borderClass,
-                  badge.animate && 'animate-pulse'
-                )}
-                data-testid={`list-row-badge-${badge.key}`}
-              >
-                <badge.icon className="w-3 h-3" />
-              </div>
-            </TooltipTrigger>
-            <TooltipContent side="top" className="text-xs max-w-[250px]">
-              <p>{badge.tooltip}</p>
-            </TooltipContent>
-          </Tooltip>
-        ))}
-      </TooltipProvider>
+      {badges.map((badge) => (
+        <Tooltip key={badge.key}>
+          <TooltipTrigger asChild>
+            <div
+              className={cn(
+                'inline-flex items-center justify-center w-5 h-5 rounded border',
+                badge.colorClass,
+                badge.bgClass,
+                badge.borderClass,
+                badge.animate && 'animate-pulse'
+              )}
+              data-testid={`list-row-badge-${badge.key}`}
+            >
+              <badge.icon className="w-3 h-3" />
+            </div>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="text-xs max-w-[250px]">
+            <p>{badge.tooltip}</p>
+          </TooltipContent>
+        </Tooltip>
+      ))}
     </div>
   );
 });
@@ -281,7 +277,7 @@ export const ListRow = memo(function ListRow({
       <div
         role="cell"
         className={cn(
-          'flex items-center px-3 py-3 gap-2',
+          'flex items-center pl-3 pr-0 py-3 gap-0',
           getColumnWidth('title'),
           getColumnAlign('title')
         )}
@@ -313,6 +309,42 @@ export const ListRow = memo(function ListRow({
             </p>
           )}
         </div>
+      </div>
+
+      {/* Priority column */}
+      <div
+        role="cell"
+        className={cn(
+          'flex items-center pl-0 pr-3 py-3 shrink-0',
+          getColumnWidth('priority'),
+          getColumnAlign('priority')
+        )}
+        data-testid={`list-row-priority-${feature.id}`}
+      >
+        {feature.priority ? (
+          <span
+            className={cn(
+              'inline-flex items-center justify-center w-6 h-6 rounded-md border-[1.5px] font-bold text-xs',
+              feature.priority === 1 &&
+                'bg-[var(--status-error-bg)] border-[var(--status-error)]/40 text-[var(--status-error)]',
+              feature.priority === 2 &&
+                'bg-[var(--status-warning-bg)] border-[var(--status-warning)]/40 text-[var(--status-warning)]',
+              feature.priority === 3 &&
+                'bg-[var(--status-info-bg)] border-[var(--status-info)]/40 text-[var(--status-info)]'
+            )}
+            title={
+              feature.priority === 1
+                ? 'High Priority'
+                : feature.priority === 2
+                  ? 'Medium Priority'
+                  : 'Low Priority'
+            }
+          >
+            {feature.priority === 1 ? 'H' : feature.priority === 2 ? 'M' : 'L'}
+          </span>
+        ) : (
+          <span className="text-muted-foreground text-xs">-</span>
+        )}
       </div>
 
       {/* Actions column */}

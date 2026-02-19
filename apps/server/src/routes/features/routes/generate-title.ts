@@ -16,6 +16,7 @@ const logger = createLogger('GenerateTitle');
 
 interface GenerateTitleRequestBody {
   description: string;
+  projectPath?: string;
 }
 
 interface GenerateTitleSuccessResponse {
@@ -33,7 +34,7 @@ export function createGenerateTitleHandler(
 ): (req: Request, res: Response) => Promise<void> {
   return async (req: Request, res: Response): Promise<void> => {
     try {
-      const { description } = req.body as GenerateTitleRequestBody;
+      const { description, projectPath } = req.body as GenerateTitleRequestBody;
 
       if (!description || typeof description !== 'string') {
         const response: GenerateTitleErrorResponse = {
@@ -60,6 +61,9 @@ export function createGenerateTitleHandler(
       const prompts = await getPromptCustomization(settingsService, '[GenerateTitle]');
       const systemPrompt = prompts.titleGeneration.systemPrompt;
 
+      // Get credentials for API calls (uses hardcoded haiku model, no phase setting)
+      const credentials = await settingsService?.getCredentials();
+
       const userPrompt = `Generate a concise title for this feature:\n\n${trimmedDescription}`;
 
       // Use simpleQuery - provider abstraction handles all the streaming/extraction
@@ -69,6 +73,7 @@ export function createGenerateTitleHandler(
         cwd: process.cwd(),
         maxTurns: 1,
         allowedTools: [],
+        credentials, // Pass credentials for resolving 'credentials' apiKeySource
       });
 
       const title = result.text;

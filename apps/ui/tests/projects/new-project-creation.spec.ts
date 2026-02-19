@@ -6,14 +6,12 @@
 
 import { test, expect } from '@playwright/test';
 import * as fs from 'fs';
-import * as path from 'path';
 import {
   createTempDirPath,
   cleanupTempDir,
   setupWelcomeView,
   authenticateForTests,
   handleLoginScreenIfPresent,
-  waitForNetworkIdle,
 } from '../utils';
 
 const TEST_TEMP_DIR = createTempDirPath('project-creation-test');
@@ -77,8 +75,10 @@ test.describe('Project Creation', () => {
     }
 
     // Wait for project to be set as current and visible on the page
-    // The project name appears in the project switcher button
-    await expect(page.getByTestId(`project-switcher-project-${projectName}`)).toBeVisible({
+    // The project name appears in the project dropdown trigger
+    await expect(
+      page.locator('[data-testid="project-dropdown-trigger"]').getByText(projectName)
+    ).toBeVisible({
       timeout: 15000,
     });
 

@@ -1,4 +1,4 @@
-// @ts-nocheck
+// @ts-nocheck - Electron IPC boundary typing with stream events and message queuing
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { Message, StreamEvent } from '@/types/electron';
 import { useMessageQueue } from './use-message-queue';
@@ -161,16 +161,15 @@ export function useElectronAgent({
   );
 
   // Message queue for queuing messages when agent is busy
-  const { queuedMessages, isProcessingQueue, addToQueue, clearQueue, processNext } =
-    useMessageQueue({
-      onProcessNext: async (queuedMessage) => {
-        await sendMessageDirectly(
-          queuedMessage.content,
-          queuedMessage.images,
-          queuedMessage.textFiles
-        );
-      },
-    });
+  const { queuedMessages, isProcessingQueue, clearQueue, processNext } = useMessageQueue({
+    onProcessNext: async (queuedMessage) => {
+      await sendMessageDirectly(
+        queuedMessage.content,
+        queuedMessage.images,
+        queuedMessage.textFiles
+      );
+    },
+  });
 
   // Initialize connection and load history
   useEffect(() => {

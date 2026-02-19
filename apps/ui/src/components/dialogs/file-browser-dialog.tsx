@@ -40,8 +40,6 @@ interface FileBrowserDialogProps {
   initialPath?: string;
 }
 
-const MAX_RECENT_FOLDERS = 5;
-
 export function FileBrowserDialog({
   open,
   onOpenChange,

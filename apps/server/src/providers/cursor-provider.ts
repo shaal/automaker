@@ -14,6 +14,7 @@ import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { findCliInWsl, isWslAvailable } from '@automaker/platform';
 import {
   CliProvider,
   type CliSpawnConfig,
@@ -286,15 +287,113 @@ export class CursorProvider extends CliProvider {
 
   getSpawnConfig(): CliSpawnConfig {
     return {
-      windowsStrategy: 'wsl', // cursor-agent requires WSL on Windows
+      windowsStrategy: 'direct',
       commonPaths: {
         linux: [
           path.join(os.homedir(), '.local/bin/cursor-agent'), // Primary symlink location
           '/usr/local/bin/cursor-agent',
         ],
         darwin: [path.join(os.homedir(), '.local/bin/cursor-agent'), '/usr/local/bin/cursor-agent'],
-        // Windows paths are not used - we check for WSL installation instead
-        win32: [],
+        win32: [
+          path.join(
+            process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
+            'Programs',
+            'Cursor',
+            'resources',
+            'app',
+            'bin',
+            'cursor-agent.exe'
+          ),
+          path.join(
+            process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
+            'Programs',
+            'Cursor',
+            'resources',
+            'app',
+            'bin',
+            'cursor-agent.cmd'
+          ),
+          path.join(
+            process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
+            'Programs',
+            'Cursor',
+            'resources',
+            'app',
+            'bin',
+            'cursor.exe'
+          ),
+          path.join(
+            process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
+            'Programs',
+            'Cursor',
+            'cursor.exe'
+          ),
+          path.join(
+            process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
+            'Programs',
+            'cursor',
+            'resources',
+            'app',
+            'bin',
+            'cursor-agent.exe'
+          ),
+          path.join(
+            process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
+            'Programs',
+            'cursor',
+            'resources',
+            'app',
+            'bin',
+            'cursor-agent.cmd'
+          ),
+          path.join(
+            process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
+            'Programs',
+            'cursor',
+            'resources',
+            'app',
+            'bin',
+            'cursor.exe'
+          ),
+          path.join(
+            process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
+            'Programs',
+            'cursor',
+            'cursor.exe'
+          ),
+          path.join(
+            process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
+            'npm',
+            'cursor-agent.cmd'
+          ),
+          path.join(
+            process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
+            'npm',
+            'cursor.cmd'
+          ),
+          path.join(
+            process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
+            '.npm-global',
+            'bin',
+            'cursor-agent.cmd'
+          ),
+          path.join(
+            process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
+            '.npm-global',
+            'bin',
+            'cursor.cmd'
+          ),
+          path.join(
+            process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
+            'pnpm',
+            'cursor-agent.cmd'
+          ),
+          path.join(
+            process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
+            'pnpm',
+            'cursor.cmd'
+          ),
+        ],
       },
     };
   }
@@ -337,10 +436,11 @@ export class CursorProvider extends CliProvider {
       '--stream-partial-output' // Real-time streaming
     );
 
-    // Only add --force if NOT in read-only mode
-    // Without --force, Cursor CLI suggests changes but doesn't apply them
-    // With --force, Cursor CLI can actually edit files
-    if (!options.readOnly) {
+    // In read-only mode, use --mode ask for Q&A style (no tools)
+    // Otherwise, add --force to allow file edits
+    if (options.readOnly) {
+      cliArgs.push('--mode', 'ask');
+    } else {
       cliArgs.push('--force');
     }
 
@@ -486,6 +586,92 @@ export class CursorProvider extends CliProvider {
    * 2. Cursor IDE with 'cursor agent' subcommand support
    */
   protected detectCli(): CliDetectionResult {
+    if (process.platform === 'win32') {
+      const findInPath = (command: string): string | null => {
+        try {
+          const result = execSync(`where ${command}`, {
+            encoding: 'utf8',
+            timeout: 5000,
+            stdio: ['pipe', 'pipe', 'pipe'],
+            windowsHide: true,
+          })
+            .trim()
+            .split(/\r?\n/)[0];
+
+          if (result && fs.existsSync(result)) {
+            return result;
+          }
+        } catch {
+          // Not in PATH
+        }
+
+        return null;
+      };
+
+      const isCursorAgentBinary = (cliPath: string) =>
+        cliPath.toLowerCase().includes('cursor-agent');
+
+      const supportsCursorAgentSubcommand = (cliPath: string) => {
+        try {
+          execSync(`"${cliPath}" agent --version`, {
+            encoding: 'utf8',
+            timeout: 5000,
+            stdio: 'pipe',
+            windowsHide: true,
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
+      const pathResult = findInPath('cursor-agent') || findInPath('cursor');
+      if (pathResult) {
+        if (isCursorAgentBinary(pathResult) || supportsCursorAgentSubcommand(pathResult)) {
+          return {
+            cliPath: pathResult,
+            useWsl: false,
+            strategy: pathResult.toLowerCase().endsWith('.cmd') ? 'cmd' : 'direct',
+          };
+        }
+      }
+
+      const config = this.getSpawnConfig();
+      for (const candidate of config.commonPaths.win32 || []) {
+        const resolved = candidate;
+        if (!fs.existsSync(resolved)) {
+          continue;
+        }
+        if (isCursorAgentBinary(resolved) || supportsCursorAgentSubcommand(resolved)) {
+          return {
+            cliPath: resolved,
+            useWsl: false,
+            strategy: resolved.toLowerCase().endsWith('.cmd') ? 'cmd' : 'direct',
+          };
+        }
+      }
+
+      const wslLogger = (msg: string) => logger.debug(msg);
+      if (isWslAvailable({ logger: wslLogger })) {
+        const wslResult = findCliInWsl('cursor-agent', { logger: wslLogger });
+        if (wslResult) {
+          logger.debug(
+            `Using cursor-agent via WSL (${wslResult.distribution || 'default'}): ${wslResult.wslPath}`
+          );
+          return {
+            cliPath: 'wsl.exe',
+            useWsl: true,
+            wslCliPath: wslResult.wslPath,
+            wslDistribution: wslResult.distribution,
+            strategy: 'wsl',
+          };
+        }
+      }
+
+      logger.debug('cursor-agent not found on Windows');
+      return { cliPath: null, useWsl: false, strategy: 'direct' };
+    }
+
     // First try standard detection (PATH, common paths, WSL)
     const result = super.detectCli();
     if (result.cliPath) {
@@ -494,7 +680,7 @@ export class CursorProvider extends CliProvider {
 
     // Cursor-specific: Check versions directory for any installed version
     // This handles cases where cursor-agent is installed but not in PATH
-    if (process.platform !== 'win32' && fs.existsSync(CursorProvider.VERSIONS_DIR)) {
+    if (fs.existsSync(CursorProvider.VERSIONS_DIR)) {
       try {
         const versions = fs
           .readdirSync(CursorProvider.VERSIONS_DIR)
@@ -520,33 +706,31 @@ export class CursorProvider extends CliProvider {
 
     // If cursor-agent not found, try to find 'cursor' IDE and use 'cursor agent' subcommand
     // The Cursor IDE includes the agent as a subcommand: cursor agent
-    if (process.platform !== 'win32') {
-      const cursorPaths = [
-        '/usr/bin/cursor',
-        '/usr/local/bin/cursor',
-        path.join(os.homedir(), '.local/bin/cursor'),
-        '/opt/cursor/cursor',
-      ];
+    const cursorPaths = [
+      '/usr/bin/cursor',
+      '/usr/local/bin/cursor',
+      path.join(os.homedir(), '.local/bin/cursor'),
+      '/opt/cursor/cursor',
+    ];
 
-      for (const cursorPath of cursorPaths) {
-        if (fs.existsSync(cursorPath)) {
-          // Verify cursor agent subcommand works
-          try {
-            execSync(`"${cursorPath}" agent --version`, {
-              encoding: 'utf8',
-              timeout: 5000,
-              stdio: 'pipe',
-            });
-            logger.debug(`Using cursor agent via Cursor IDE: ${cursorPath}`);
-            // Return cursor path but we'll use 'cursor agent' subcommand
-            return {
-              cliPath: cursorPath,
-              useWsl: false,
-              strategy: 'native',
-            };
-          } catch {
-            // cursor agent subcommand doesn't work, try next path
-          }
+    for (const cursorPath of cursorPaths) {
+      if (fs.existsSync(cursorPath)) {
+        // Verify cursor agent subcommand works
+        try {
+          execSync(`"${cursorPath}" agent --version`, {
+            encoding: 'utf8',
+            timeout: 5000,
+            stdio: 'pipe',
+          });
+          logger.debug(`Using cursor agent via Cursor IDE: ${cursorPath}`);
+          // Return cursor path but we'll use 'cursor agent' subcommand
+          return {
+            cliPath: cursorPath,
+            useWsl: false,
+            strategy: 'native',
+          };
+        } catch {
+          // cursor agent subcommand doesn't work, try next path
         }
       }
     }
@@ -672,10 +856,13 @@ export class CursorProvider extends CliProvider {
       );
     }
 
-    // Extract prompt text to pass via stdin (avoids shell escaping issues)
-    const promptText = this.extractPromptText(options);
+    // Embed system prompt into user prompt (Cursor CLI doesn't support separate system messages)
+    const effectiveOptions = this.embedSystemPromptIntoPrompt(options);
 
-    const cliArgs = this.buildCliArgs(options);
+    // Extract prompt text to pass via stdin (avoids shell escaping issues)
+    const promptText = this.extractPromptText(effectiveOptions);
+
+    const cliArgs = this.buildCliArgs(effectiveOptions);
     const subprocessOptions = this.buildSubprocessOptions(options, cliArgs);
 
     // Pass prompt via stdin to avoid shell interpretation of special characters

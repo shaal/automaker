@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -14,7 +13,6 @@ import { useAppStore } from '@/store/app-store';
 import { getElectronAPI } from '@/lib/electron';
 import {
   CheckCircle2,
-  Loader2,
   Key,
   ArrowRight,
   ArrowLeft,
@@ -27,6 +25,7 @@ import {
   XCircle,
   Trash2,
 } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 import { toast } from 'sonner';
 import { StatusBadge, TerminalOutput } from '../components';
 import { useCliStatus, useCliInstallation, useTokenSave } from '../hooks';
@@ -44,6 +43,33 @@ import { PROVIDER_ICON_COMPONENTS } from '@/components/ui/provider-icon';
 type VerificationStatus = 'idle' | 'verifying' | 'verified' | 'error';
 
 type CliSetupAuthStatus = ClaudeAuthStatus | CodexAuthStatus;
+
+interface CliStatusApiResponse {
+  success: boolean;
+  status?: 'installed' | 'not_installed';
+  installed?: boolean;
+  method?: string;
+  version?: string;
+  path?: string;
+  auth?: {
+    authenticated: boolean;
+    method: string;
+    hasCredentialsFile?: boolean;
+    hasStoredOAuthToken?: boolean;
+    hasStoredApiKey?: boolean;
+    hasEnvApiKey?: boolean;
+    hasEnvOAuthToken?: boolean;
+    hasAuthFile?: boolean;
+    hasApiKey?: boolean;
+  };
+  error?: string;
+}
+
+interface InstallApiResponse {
+  success: boolean;
+  message?: string;
+  error?: string;
+}
 
 interface CliSetupConfig {
   cliType: ModelProvider;
@@ -73,8 +99,8 @@ interface CliSetupConfig {
   buildCliAuthStatus: (previous: CliSetupAuthStatus | null) => CliSetupAuthStatus;
   buildApiKeyAuthStatus: (previous: CliSetupAuthStatus | null) => CliSetupAuthStatus;
   buildClearedAuthStatus: (previous: CliSetupAuthStatus | null) => CliSetupAuthStatus;
-  statusApi: () => Promise<any>;
-  installApi: () => Promise<any>;
+  statusApi: () => Promise<CliStatusApiResponse>;
+  installApi: () => Promise<InstallApiResponse>;
   verifyAuthApi: (
     method: 'cli' | 'api_key',
     apiKey?: string
@@ -332,7 +358,7 @@ export function CliSetupStep({ config, state, onNext, onBack, onSkip }: CliSetup
               Authentication Methods
             </CardTitle>
             <Button variant="ghost" size="sm" onClick={checkStatus} disabled={isChecking}>
-              <RefreshCw className={`w-4 h-4 ${isChecking ? 'animate-spin' : ''}`} />
+              {isChecking ? <Spinner size="sm" /> : <RefreshCw className="w-4 h-4" />}
             </Button>
           </div>
           <CardDescription>Choose one of the following methods to authenticate:</CardDescription>
@@ -408,7 +434,7 @@ export function CliSetupStep({ config, state, onNext, onBack, onSkip }: CliSetup
                     >
                       {isInstalling ? (
                         <>
-                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          <Spinner size="sm" variant="foreground" className="mr-2" />
                           Installing...
                         </>
                       ) : (
@@ -427,7 +453,7 @@ export function CliSetupStep({ config, state, onNext, onBack, onSkip }: CliSetup
 
                 {cliVerificationStatus === 'verifying' && (
                   <div className="flex items-center gap-3 p-4 rounded-lg bg-blue-500/10 border border-blue-500/20">
-                    <Loader2 className="w-5 h-5 text-blue-500 animate-spin" />
+                    <Spinner size="md" />
                     <div>
                       <p className="font-medium text-foreground">Verifying CLI authentication...</p>
                       <p className="text-sm text-muted-foreground">Running a test query</p>
@@ -605,7 +631,7 @@ export function CliSetupStep({ config, state, onNext, onBack, onSkip }: CliSetup
                   >
                     {cliVerificationStatus === 'verifying' ? (
                       <>
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        <Spinner size="sm" className="mr-2" />
                         Verifying...
                       </>
                     ) : cliVerificationStatus === 'error' ? (
@@ -681,7 +707,7 @@ export function CliSetupStep({ config, state, onNext, onBack, onSkip }: CliSetup
                     >
                       {isSavingApiKey ? (
                         <>
-                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          <Spinner size="sm" variant="foreground" className="mr-2" />
                           Saving...
                         </>
                       ) : (
@@ -696,11 +722,7 @@ export function CliSetupStep({ config, state, onNext, onBack, onSkip }: CliSetup
                         className="border-red-500/50 text-red-500 hover:bg-red-500/10 hover:text-red-400"
                         data-testid={config.testIds.deleteApiKeyButton}
                       >
-                        {isDeletingApiKey ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <Trash2 className="w-4 h-4" />
-                        )}
+                        {isDeletingApiKey ? <Spinner size="sm" /> : <Trash2 className="w-4 h-4" />}
                       </Button>
                     )}
                   </div>
@@ -708,7 +730,7 @@ export function CliSetupStep({ config, state, onNext, onBack, onSkip }: CliSetup
 
                 {apiKeyVerificationStatus === 'verifying' && (
                   <div className="flex items-center gap-3 p-4 rounded-lg bg-blue-500/10 border border-blue-500/20">
-                    <Loader2 className="w-5 h-5 text-blue-500 animate-spin" />
+                    <Spinner size="md" />
                     <div>
                       <p className="font-medium text-foreground">Verifying API key...</p>
                       <p className="text-sm text-muted-foreground">Running a test query</p>
@@ -767,7 +789,7 @@ export function CliSetupStep({ config, state, onNext, onBack, onSkip }: CliSetup
                   >
                     {apiKeyVerificationStatus === 'verifying' ? (
                       <>
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        <Spinner size="sm" className="mr-2" />
                         Verifying...
                       </>
                     ) : apiKeyVerificationStatus === 'error' ? (

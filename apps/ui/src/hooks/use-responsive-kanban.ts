@@ -1,4 +1,4 @@
-// @ts-nocheck
+// @ts-nocheck - responsive breakpoint logic with layout state calculations
 import { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
 import { useAppStore } from '@/store/app-store';
 
@@ -14,8 +14,8 @@ export interface ResponsiveKanbanConfig {
  * Default configuration for responsive Kanban columns
  */
 const DEFAULT_CONFIG: ResponsiveKanbanConfig = {
-  columnWidth: 288, // 18rem = 288px (w-72)
-  columnMinWidth: 280, // Minimum column width - ensures usability
+  columnWidth: 320, // Increased from 288px to accommodate longer column titles
+  columnMinWidth: 320, // Increased from 280px to prevent title overflow
   columnMaxWidth: Infinity, // No max width - columns scale evenly to fill viewport
   gap: 20, // gap-5 = 20px
   padding: 40, // px-5 on both sides = 40px (matches gap between columns)

@@ -1,5 +1,7 @@
 import { useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
+import { SkeletonPulse } from '@/components/ui/skeleton';
+import { Spinner } from '@/components/ui/spinner';
 import { CheckCircle2, AlertCircle, RefreshCw, XCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { CliStatus } from '../shared/types';
@@ -27,10 +29,6 @@ function getAuthMethodLabel(method: string): string {
     default:
       return method || 'Unknown';
   }
-}
-
-function SkeletonPulse({ className }: { className?: string }) {
-  return <div className={cn('animate-pulse bg-muted/50 rounded', className)} />;
 }
 
 function CodexCliStatusSkeleton() {
@@ -86,7 +84,17 @@ export function CodexCliStatus({ status, authStatus, isChecking, onRefresh }: Cl
     setIsAuthenticating(true);
     try {
       const api = getElectronAPI();
-      const result = await api.setup.authCodex();
+      // Check if authCodex method exists on the API
+      const authCodex = (api.setup as Record<string, unknown> | undefined)?.authCodex as
+        | (() => Promise<{ success: boolean; error?: string }>)
+        | undefined;
+      if (!authCodex) {
+        toast.error('Authentication Failed', {
+          description: 'Codex authentication is not available',
+        });
+        return;
+      }
+      const result = await authCodex();
 
       if (result.success) {
         toast.success('Signed In', {
@@ -111,7 +119,17 @@ export function CodexCliStatus({ status, authStatus, isChecking, onRefresh }: Cl
     setIsDeauthenticating(true);
     try {
       const api = getElectronAPI();
-      const result = await api.setup.deauthCodex();
+      // Check if deauthCodex method exists on the API
+      const deauthCodex = (api.setup as Record<string, unknown> | undefined)?.deauthCodex as
+        | (() => Promise<{ success: boolean; error?: string }>)
+        | undefined;
+      if (!deauthCodex) {
+        toast.error('Sign Out Failed', {
+          description: 'Codex sign out is not available',
+        });
+        return;
+      }
+      const result = await deauthCodex();
 
       if (result.success) {
         toast.success('Signed Out', {
@@ -165,7 +183,7 @@ export function CodexCliStatus({ status, authStatus, isChecking, onRefresh }: Cl
               'transition-all duration-200'
             )}
           >
-            <RefreshCw className={cn('w-4 h-4', isChecking && 'animate-spin')} />
+            {isChecking ? <Spinner size="sm" /> : <RefreshCw className="w-4 h-4" />}
           </Button>
         </div>
         <p className="text-sm text-muted-foreground/80 ml-12">

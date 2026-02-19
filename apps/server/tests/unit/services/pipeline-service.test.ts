@@ -788,6 +788,367 @@ describe('pipeline-service.ts', () => {
       const nextStatus = pipelineService.getNextStatus('in_progress', config, false);
       expect(nextStatus).toBe('pipeline_step1'); // Should use step1 (order 0), not step2
     });
+
+    describe('with exclusions', () => {
+      it('should skip excluded step when coming from in_progress', () => {
+        const config: PipelineConfig = {
+          version: 1,
+          steps: [
+            {
+              id: 'step1',
+              name: 'Step 1',
+              order: 0,
+              instructions: 'Instructions',
+              colorClass: 'blue',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+            {
+              id: 'step2',
+              name: 'Step 2',
+              order: 1,
+              instructions: 'Instructions',
+              colorClass: 'green',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+          ],
+        };
+
+        const nextStatus = pipelineService.getNextStatus('in_progress', config, false, ['step1']);
+        expect(nextStatus).toBe('pipeline_step2'); // Should skip step1 and go to step2
+      });
+
+      it('should skip excluded step when moving between steps', () => {
+        const config: PipelineConfig = {
+          version: 1,
+          steps: [
+            {
+              id: 'step1',
+              name: 'Step 1',
+              order: 0,
+              instructions: 'Instructions',
+              colorClass: 'blue',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+            {
+              id: 'step2',
+              name: 'Step 2',
+              order: 1,
+              instructions: 'Instructions',
+              colorClass: 'green',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+            {
+              id: 'step3',
+              name: 'Step 3',
+              order: 2,
+              instructions: 'Instructions',
+              colorClass: 'red',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+          ],
+        };
+
+        const nextStatus = pipelineService.getNextStatus('pipeline_step1', config, false, [
+          'step2',
+        ]);
+        expect(nextStatus).toBe('pipeline_step3'); // Should skip step2 and go to step3
+      });
+
+      it('should go to final status when all remaining steps are excluded', () => {
+        const config: PipelineConfig = {
+          version: 1,
+          steps: [
+            {
+              id: 'step1',
+              name: 'Step 1',
+              order: 0,
+              instructions: 'Instructions',
+              colorClass: 'blue',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+            {
+              id: 'step2',
+              name: 'Step 2',
+              order: 1,
+              instructions: 'Instructions',
+              colorClass: 'green',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+          ],
+        };
+
+        const nextStatus = pipelineService.getNextStatus('pipeline_step1', config, false, [
+          'step2',
+        ]);
+        expect(nextStatus).toBe('verified'); // No more steps after exclusion
+      });
+
+      it('should go to waiting_approval when all remaining steps excluded and skipTests is true', () => {
+        const config: PipelineConfig = {
+          version: 1,
+          steps: [
+            {
+              id: 'step1',
+              name: 'Step 1',
+              order: 0,
+              instructions: 'Instructions',
+              colorClass: 'blue',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+            {
+              id: 'step2',
+              name: 'Step 2',
+              order: 1,
+              instructions: 'Instructions',
+              colorClass: 'green',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+          ],
+        };
+
+        const nextStatus = pipelineService.getNextStatus('pipeline_step1', config, true, ['step2']);
+        expect(nextStatus).toBe('waiting_approval');
+      });
+
+      it('should go to final status when all steps are excluded from in_progress', () => {
+        const config: PipelineConfig = {
+          version: 1,
+          steps: [
+            {
+              id: 'step1',
+              name: 'Step 1',
+              order: 0,
+              instructions: 'Instructions',
+              colorClass: 'blue',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+            {
+              id: 'step2',
+              name: 'Step 2',
+              order: 1,
+              instructions: 'Instructions',
+              colorClass: 'green',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+          ],
+        };
+
+        const nextStatus = pipelineService.getNextStatus('in_progress', config, false, [
+          'step1',
+          'step2',
+        ]);
+        expect(nextStatus).toBe('verified');
+      });
+
+      it('should handle empty exclusions array like no exclusions', () => {
+        const config: PipelineConfig = {
+          version: 1,
+          steps: [
+            {
+              id: 'step1',
+              name: 'Step 1',
+              order: 0,
+              instructions: 'Instructions',
+              colorClass: 'blue',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+          ],
+        };
+
+        const nextStatus = pipelineService.getNextStatus('in_progress', config, false, []);
+        expect(nextStatus).toBe('pipeline_step1');
+      });
+
+      it('should handle undefined exclusions like no exclusions', () => {
+        const config: PipelineConfig = {
+          version: 1,
+          steps: [
+            {
+              id: 'step1',
+              name: 'Step 1',
+              order: 0,
+              instructions: 'Instructions',
+              colorClass: 'blue',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+          ],
+        };
+
+        const nextStatus = pipelineService.getNextStatus('in_progress', config, false, undefined);
+        expect(nextStatus).toBe('pipeline_step1');
+      });
+
+      it('should skip multiple excluded steps in sequence', () => {
+        const config: PipelineConfig = {
+          version: 1,
+          steps: [
+            {
+              id: 'step1',
+              name: 'Step 1',
+              order: 0,
+              instructions: 'Instructions',
+              colorClass: 'blue',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+            {
+              id: 'step2',
+              name: 'Step 2',
+              order: 1,
+              instructions: 'Instructions',
+              colorClass: 'green',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+            {
+              id: 'step3',
+              name: 'Step 3',
+              order: 2,
+              instructions: 'Instructions',
+              colorClass: 'red',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+            {
+              id: 'step4',
+              name: 'Step 4',
+              order: 3,
+              instructions: 'Instructions',
+              colorClass: 'yellow',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+          ],
+        };
+
+        // Exclude step2 and step3
+        const nextStatus = pipelineService.getNextStatus('pipeline_step1', config, false, [
+          'step2',
+          'step3',
+        ]);
+        expect(nextStatus).toBe('pipeline_step4'); // Should skip step2 and step3
+      });
+
+      it('should handle exclusion of non-existent step IDs gracefully', () => {
+        const config: PipelineConfig = {
+          version: 1,
+          steps: [
+            {
+              id: 'step1',
+              name: 'Step 1',
+              order: 0,
+              instructions: 'Instructions',
+              colorClass: 'blue',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+            {
+              id: 'step2',
+              name: 'Step 2',
+              order: 1,
+              instructions: 'Instructions',
+              colorClass: 'green',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+          ],
+        };
+
+        // Exclude a non-existent step - should have no effect
+        const nextStatus = pipelineService.getNextStatus('in_progress', config, false, [
+          'nonexistent',
+        ]);
+        expect(nextStatus).toBe('pipeline_step1');
+      });
+
+      it('should find next valid step when current step becomes excluded mid-flow', () => {
+        const config: PipelineConfig = {
+          version: 1,
+          steps: [
+            {
+              id: 'step1',
+              name: 'Step 1',
+              order: 0,
+              instructions: 'Instructions',
+              colorClass: 'blue',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+            {
+              id: 'step2',
+              name: 'Step 2',
+              order: 1,
+              instructions: 'Instructions',
+              colorClass: 'green',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+            {
+              id: 'step3',
+              name: 'Step 3',
+              order: 2,
+              instructions: 'Instructions',
+              colorClass: 'red',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+          ],
+        };
+
+        // Feature is at step1 but step1 is now excluded - should find next valid step
+        const nextStatus = pipelineService.getNextStatus('pipeline_step1', config, false, [
+          'step1',
+          'step2',
+        ]);
+        expect(nextStatus).toBe('pipeline_step3');
+      });
+
+      it('should go to final status when current step is excluded and no steps remain', () => {
+        const config: PipelineConfig = {
+          version: 1,
+          steps: [
+            {
+              id: 'step1',
+              name: 'Step 1',
+              order: 0,
+              instructions: 'Instructions',
+              colorClass: 'blue',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+            {
+              id: 'step2',
+              name: 'Step 2',
+              order: 1,
+              instructions: 'Instructions',
+              colorClass: 'green',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+          ],
+        };
+
+        // Feature is at step1 but both steps are excluded
+        const nextStatus = pipelineService.getNextStatus('pipeline_step1', config, false, [
+          'step1',
+          'step2',
+        ]);
+        expect(nextStatus).toBe('verified');
+      });
+    });
   });
 
   describe('getStep', () => {

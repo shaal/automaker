@@ -4,6 +4,10 @@ import type React from 'react';
 export interface NavSection {
   label?: string;
   items: NavItem[];
+  /** Whether this section can be collapsed */
+  collapsible?: boolean;
+  /** Whether this section should start collapsed */
+  defaultCollapsed?: boolean;
 }
 
 export interface NavItem {

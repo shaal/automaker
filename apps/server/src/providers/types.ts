@@ -19,4 +19,7 @@ export type {
   InstallationStatus,
   ValidationResult,
   ModelDefinition,
+  AgentDefinition,
+  ReasoningEffort,
+  SystemPromptPreset,
 } from '@automaker/types';

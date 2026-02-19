@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
+import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
 import {
   History,
@@ -18,6 +19,7 @@ import type { StoredEventSummary, StoredEvent, EventHookTrigger } from '@automak
 import { EVENT_HOOK_TRIGGER_LABELS } from '@automaker/types';
 import { getHttpApiClient } from '@/lib/http-api-client';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { toast } from 'sonner';
 
 export function EventHistoryView() {
   const currentProject = useAppStore((state) => state.currentProject);
@@ -84,16 +86,18 @@ export function EventHistoryView() {
         const failCount = hookResults.filter((r) => !r.success).length;
 
         if (hooksTriggered === 0) {
-          alert('No matching hooks found for this event trigger.');
+          toast.info('No matching hooks found for this event trigger.');
         } else if (failCount === 0) {
-          alert(`Successfully ran ${successCount} hook(s).`);
+          toast.success(`Successfully ran ${successCount} hook(s).`);
         } else {
-          alert(`Ran ${hooksTriggered} hook(s): ${successCount} succeeded, ${failCount} failed.`);
+          toast.warning(
+            `Ran ${hooksTriggered} hook(s): ${successCount} succeeded, ${failCount} failed.`
+          );
         }
       }
     } catch (error) {
       console.error('Failed to replay event:', error);
-      alert('Failed to replay event. Check console for details.');
+      toast.error('Failed to replay event. Check console for details.');
     } finally {
       setReplayingEvent(null);
     }
@@ -184,7 +188,11 @@ export function EventHistoryView() {
         </p>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={loadEvents} disabled={loading}>
-            <RefreshCw className={cn('w-4 h-4 mr-2', loading && 'animate-spin')} />
+            {loading ? (
+              <Spinner size="sm" className="mr-2" />
+            ) : (
+              <RefreshCw className="w-4 h-4 mr-2" />
+            )}
             Refresh
           </Button>
           {events.length > 0 && (

@@ -15,6 +15,7 @@ import { getAuthenticatedImageUrl } from '@/lib/api-fetch';
 import { getHttpApiClient } from '@/lib/http-api-client';
 import type { Project } from '@/lib/electron';
 import { IconPicker } from './icon-picker';
+import { toast } from 'sonner';
 
 interface EditProjectDialogProps {
   project: Project;
@@ -25,9 +26,9 @@ interface EditProjectDialogProps {
 export function EditProjectDialog({ project, open, onOpenChange }: EditProjectDialogProps) {
   const { setProjectName, setProjectIcon, setProjectCustomIcon } = useAppStore();
   const [name, setName] = useState(project.name);
-  const [icon, setIcon] = useState<string | null>((project as any).icon || null);
+  const [icon, setIcon] = useState<string | null>(project.icon || null);
   const [customIconPath, setCustomIconPath] = useState<string | null>(
-    (project as any).customIconPath || null
+    project.customIconPath || null
   );
   const [isUploadingIcon, setIsUploadingIcon] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -36,10 +37,10 @@ export function EditProjectDialog({ project, open, onOpenChange }: EditProjectDi
     if (name.trim() !== project.name) {
       setProjectName(project.id, name.trim());
     }
-    if (icon !== (project as any).icon) {
+    if (icon !== project.icon) {
       setProjectIcon(project.id, icon);
     }
-    if (customIconPath !== (project as any).customIconPath) {
+    if (customIconPath !== project.customIconPath) {
       setProjectCustomIcon(project.id, customIconPath);
     }
     onOpenChange(false);
@@ -52,11 +53,18 @@ export function EditProjectDialog({ project, open, onOpenChange }: EditProjectDi
     // Validate file type
     const validTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
     if (!validTypes.includes(file.type)) {
+      toast.error(
+        `Invalid file type: ${file.type || 'unknown'}. Please use JPG, PNG, GIF or WebP.`
+      );
       return;
     }
 
-    // Validate file size (max 2MB for icons)
-    if (file.size > 2 * 1024 * 1024) {
+    // Validate file size (max 5MB for icons - allows animated GIFs)
+    const maxSize = 5 * 1024 * 1024;
+    if (file.size > maxSize) {
+      toast.error(
+        `File too large (${(file.size / 1024 / 1024).toFixed(2)} MB). Maximum size is 5 MB.`
+      );
       return;
     }
 
@@ -72,15 +80,24 @@ export function EditProjectDialog({ project, open, onOpenChange }: EditProjectDi
           file.type,
           project.path
         );
+
         if (result.success && result.path) {
           setCustomIconPath(result.path);
           // Clear the Lucide icon when custom icon is set
           setIcon(null);
+          toast.success('Icon uploaded successfully');
+        } else {
+          toast.error('Failed to upload icon');
         }
+        setIsUploadingIcon(false);
+      };
+      reader.onerror = () => {
+        toast.error('Failed to read file');
         setIsUploadingIcon(false);
       };
       reader.readAsDataURL(file);
     } catch {
+      toast.error('Failed to upload icon');
       setIsUploadingIcon(false);
     }
   };
@@ -162,7 +179,7 @@ export function EditProjectDialog({ project, open, onOpenChange }: EditProjectDi
                     {isUploadingIcon ? 'Uploading...' : 'Upload Custom Icon'}
                   </Button>
                   <p className="text-xs text-muted-foreground mt-1">
-                    PNG, JPG, GIF or WebP. Max 2MB.
+                    PNG, JPG, GIF or WebP. Max 5MB.
                   </p>
                 </div>
               </div>

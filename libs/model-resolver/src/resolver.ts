@@ -4,21 +4,35 @@
  * Provides centralized model resolution logic:
  * - Maps Claude model aliases to full model strings
  * - Passes through Cursor models unchanged (handled by CursorProvider)
+ * - Passes through Copilot models unchanged (handled by CopilotProvider)
+ * - Passes through Gemini models unchanged (handled by GeminiProvider)
  * - Provides default models per provider
  * - Handles multiple model sources with priority
+ *
+ * With canonical model IDs:
+ * - Cursor: cursor-auto, cursor-composer-1, cursor-gpt-5.2
+ * - OpenCode: opencode-big-pickle, opencode-grok-code
+ * - Copilot: copilot-gpt-5.1, copilot-claude-sonnet-4.5, copilot-gemini-3-pro-preview
+ * - Gemini: gemini-2.5-flash, gemini-2.5-pro
+ * - Claude: claude-haiku, claude-sonnet, claude-opus (also supports legacy aliases)
  */
 
 import {
   CLAUDE_MODEL_MAP,
+  CLAUDE_CANONICAL_MAP,
   CURSOR_MODEL_MAP,
   CODEX_MODEL_MAP,
   DEFAULT_MODELS,
   PROVIDER_PREFIXES,
   isCursorModel,
   isOpencodeModel,
+  isCopilotModel,
+  isGeminiModel,
   stripProviderPrefix,
+  migrateModelId,
   type PhaseModelEntry,
   type ThinkingLevel,
+  type ReasoningEffort,
 } from '@automaker/types';
 
 // Pattern definitions for Codex/OpenAI models
@@ -29,7 +43,11 @@ const OPENAI_O_SERIES_ALLOWED_MODELS = new Set<string>();
 /**
  * Resolve a model key/alias to a full model string
  *
- * @param modelKey - Model key (e.g., "opus", "cursor-composer-1", "claude-sonnet-4-20250514")
+ * Handles both canonical prefixed IDs and legacy aliases:
+ * - Canonical: cursor-auto, cursor-gpt-5.2, opencode-big-pickle, claude-sonnet
+ * - Legacy: auto, composer-1, sonnet, opus
+ *
+ * @param modelKey - Model key (e.g., "claude-opus", "cursor-composer-1", "sonnet")
  * @param defaultModel - Fallback model if modelKey is undefined
  * @returns Full model string
  */
@@ -47,75 +65,79 @@ export function resolveModelString(
     return defaultModel;
   }
 
-  // Cursor model with explicit prefix (e.g., "cursor-composer-1") - pass through unchanged
-  // CursorProvider will strip the prefix when calling the CLI
-  if (modelKey.startsWith(PROVIDER_PREFIXES.cursor)) {
-    const cursorModelId = stripProviderPrefix(modelKey);
-    // Verify it's a valid Cursor model
-    if (cursorModelId in CURSOR_MODEL_MAP) {
-      console.log(
-        `[ModelResolver] Using Cursor model: ${modelKey} (valid model ID: ${cursorModelId})`
-      );
-      return modelKey;
-    }
-    // Could be a cursor-prefixed model not in our map yet - still pass through
-    console.log(`[ModelResolver] Passing through cursor-prefixed model: ${modelKey}`);
-    return modelKey;
+  // First, migrate legacy IDs to canonical format
+  const canonicalKey = migrateModelId(modelKey);
+  if (canonicalKey !== modelKey) {
+    console.log(`[ModelResolver] Migrated legacy ID: "${modelKey}" -> "${canonicalKey}"`);
   }
 
-  // Codex model with explicit prefix (e.g., "codex-gpt-5.1-codex-max") - pass through unchanged
-  if (modelKey.startsWith(PROVIDER_PREFIXES.codex)) {
-    console.log(`[ModelResolver] Using Codex model: ${modelKey}`);
-    return modelKey;
+  // Cursor model with explicit prefix (e.g., "cursor-auto", "cursor-composer-1")
+  // Pass through unchanged - provider will extract bare ID for CLI
+  if (canonicalKey.startsWith(PROVIDER_PREFIXES.cursor)) {
+    console.log(`[ModelResolver] Using Cursor model: ${canonicalKey}`);
+    return canonicalKey;
   }
 
-  // OpenCode model (static or dynamic) - pass through unchanged
-  // This handles models like:
-  // - opencode-* (Automaker routing prefix)
-  // - opencode/* (free tier models)
-  // - amazon-bedrock/* (AWS Bedrock models)
-  // - provider/model-name (dynamic models like github-copilot/gpt-4o, google/gemini-2.5-pro)
-  if (isOpencodeModel(modelKey)) {
-    console.log(`[ModelResolver] Using OpenCode model: ${modelKey}`);
-    return modelKey;
+  // Codex model with explicit prefix (e.g., "codex-gpt-5.1-codex-max")
+  if (canonicalKey.startsWith(PROVIDER_PREFIXES.codex)) {
+    console.log(`[ModelResolver] Using Codex model: ${canonicalKey}`);
+    return canonicalKey;
   }
 
-  // Full Claude model string - pass through unchanged
-  if (modelKey.includes('claude-')) {
-    console.log(`[ModelResolver] Using full Claude model string: ${modelKey}`);
-    return modelKey;
+  // OpenCode model (static with opencode- prefix or dynamic with provider/model format)
+  if (isOpencodeModel(canonicalKey)) {
+    console.log(`[ModelResolver] Using OpenCode model: ${canonicalKey}`);
+    return canonicalKey;
   }
 
-  // Look up Claude model alias
-  const resolved = CLAUDE_MODEL_MAP[modelKey];
-  if (resolved) {
-    console.log(`[ModelResolver] Resolved Claude model alias: "${modelKey}" -> "${resolved}"`);
+  // Copilot model with explicit prefix (e.g., "copilot-gpt-5.1", "copilot-claude-sonnet-4.5")
+  if (isCopilotModel(canonicalKey)) {
+    console.log(`[ModelResolver] Using Copilot model: ${canonicalKey}`);
+    return canonicalKey;
+  }
+
+  // Gemini model with explicit prefix (e.g., "gemini-2.5-flash", "gemini-2.5-pro")
+  if (isGeminiModel(canonicalKey)) {
+    console.log(`[ModelResolver] Using Gemini model: ${canonicalKey}`);
+    return canonicalKey;
+  }
+
+  // Claude canonical ID (claude-haiku, claude-sonnet, claude-opus)
+  // Map to full model string
+  if (canonicalKey in CLAUDE_CANONICAL_MAP) {
+    const resolved = CLAUDE_CANONICAL_MAP[canonicalKey as keyof typeof CLAUDE_CANONICAL_MAP];
+    console.log(`[ModelResolver] Resolved Claude canonical ID: "${canonicalKey}" -> "${resolved}"`);
     return resolved;
   }
 
-  // OpenAI/Codex models - check for codex- or gpt- prefix
+  // Full Claude model string (e.g., claude-sonnet-4-5-20250929) - pass through
+  if (canonicalKey.includes('claude-')) {
+    console.log(`[ModelResolver] Using full Claude model string: ${canonicalKey}`);
+    return canonicalKey;
+  }
+
+  // Legacy Claude model alias (sonnet, opus, haiku) - support for backward compatibility
+  const resolved = CLAUDE_MODEL_MAP[canonicalKey];
+  if (resolved) {
+    console.log(`[ModelResolver] Resolved Claude legacy alias: "${canonicalKey}" -> "${resolved}"`);
+    return resolved;
+  }
+
+  // OpenAI/Codex models - check for gpt- prefix
   if (
-    CODEX_MODEL_PREFIXES.some((prefix) => modelKey.startsWith(prefix)) ||
-    (OPENAI_O_SERIES_PATTERN.test(modelKey) && OPENAI_O_SERIES_ALLOWED_MODELS.has(modelKey))
+    CODEX_MODEL_PREFIXES.some((prefix) => canonicalKey.startsWith(prefix)) ||
+    (OPENAI_O_SERIES_PATTERN.test(canonicalKey) && OPENAI_O_SERIES_ALLOWED_MODELS.has(canonicalKey))
   ) {
-    console.log(`[ModelResolver] Using OpenAI/Codex model: ${modelKey}`);
-    return modelKey;
+    console.log(`[ModelResolver] Using OpenAI/Codex model: ${canonicalKey}`);
+    return canonicalKey;
   }
 
-  // Check if it's a bare Cursor model ID (e.g., "composer-1", "auto", "gpt-4o")
-  // Note: This is checked AFTER Codex check to prioritize Codex for bare gpt-* models
-  if (modelKey in CURSOR_MODEL_MAP) {
-    // Return with cursor- prefix so provider routing works correctly
-    const prefixedModel = `${PROVIDER_PREFIXES.cursor}${modelKey}`;
-    console.log(
-      `[ModelResolver] Detected bare Cursor model ID: "${modelKey}" -> "${prefixedModel}"`
-    );
-    return prefixedModel;
-  }
-
-  // Unknown model key - use default
-  console.warn(`[ModelResolver] Unknown model key "${modelKey}", using default: "${defaultModel}"`);
-  return defaultModel;
+  // Unknown model key - pass through as-is (could be a provider model like GLM-4.7, MiniMax-M2.1)
+  // This allows ClaudeCompatibleProvider models to work without being registered here
+  console.log(
+    `[ModelResolver] Unknown model key "${canonicalKey}", passing through unchanged (may be a provider model)`
+  );
+  return canonicalKey;
 }
 
 /**
@@ -141,8 +163,12 @@ export function getEffectiveModel(
 export interface ResolvedPhaseModel {
   /** Resolved model string (full model ID) */
   model: string;
-  /** Optional thinking level for extended thinking */
+  /** Optional thinking level for extended thinking (Claude models) */
   thinkingLevel?: ThinkingLevel;
+  /** Optional reasoning effort for timeout calculation (Codex models) */
+  reasoningEffort?: ReasoningEffort;
+  /** Provider ID if using a ClaudeCompatibleProvider */
+  providerId?: string;
 }
 
 /**
@@ -182,6 +208,7 @@ export function resolvePhaseModel(
     return {
       model: resolveModelString(undefined, defaultModel),
       thinkingLevel: undefined,
+      reasoningEffort: undefined,
     };
   }
 
@@ -191,15 +218,33 @@ export function resolvePhaseModel(
     return {
       model: resolveModelString(phaseModel, defaultModel),
       thinkingLevel: undefined,
+      reasoningEffort: undefined,
     };
   }
 
   // Handle new PhaseModelEntry object format
   console.log(
-    `[ModelResolver] phaseModel is object format: model="${phaseModel.model}", thinkingLevel="${phaseModel.thinkingLevel}"`
+    `[ModelResolver] phaseModel is object format: model="${phaseModel.model}", thinkingLevel="${phaseModel.thinkingLevel}", reasoningEffort="${phaseModel.reasoningEffort}", providerId="${phaseModel.providerId}"`
   );
+
+  // If providerId is set, pass through the model string unchanged
+  // (it's a provider-specific model ID like "GLM-4.5-Air", not a Claude alias)
+  if (phaseModel.providerId) {
+    console.log(
+      `[ModelResolver] Using provider model: providerId="${phaseModel.providerId}", model="${phaseModel.model}"`
+    );
+    return {
+      model: phaseModel.model, // Pass through unchanged
+      thinkingLevel: phaseModel.thinkingLevel,
+      reasoningEffort: phaseModel.reasoningEffort,
+      providerId: phaseModel.providerId,
+    };
+  }
+
+  // No providerId - resolve through normal Claude model mapping
   return {
     model: resolveModelString(phaseModel.model, defaultModel),
     thinkingLevel: phaseModel.thinkingLevel,
+    reasoningEffort: phaseModel.reasoningEffort,
   };
 }

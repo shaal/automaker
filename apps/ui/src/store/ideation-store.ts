@@ -11,7 +11,9 @@ import type {
   IdeationPrompt,
   AnalysisSuggestion,
   ProjectAnalysisResult,
+  IdeationContextSources,
 } from '@automaker/types';
+import { DEFAULT_IDEATION_CONTEXT_SOURCES } from '@automaker/types';
 
 // ============================================================================
 // Generation Job Types
@@ -61,6 +63,9 @@ interface IdeationState {
   currentMode: IdeationMode;
   selectedCategory: IdeaCategory | null;
   filterStatus: IdeaStatus | 'all';
+
+  // Context sources per project
+  contextSourcesByProject: Record<string, Partial<IdeationContextSources>>;
 }
 
 // ============================================================================
@@ -110,6 +115,21 @@ interface IdeationActions {
   setCategory: (category: IdeaCategory | null) => void;
   setFilterStatus: (status: IdeaStatus | 'all') => void;
 
+  // Context sources
+  /**
+   * Returns the effective context-source settings for a project,
+   * merging defaults with any stored overrides.
+   */
+  getContextSources: (projectPath: string) => IdeationContextSources;
+  /**
+   * Updates a single context-source flag for a project.
+   */
+  setContextSource: (
+    projectPath: string,
+    key: keyof IdeationContextSources,
+    value: boolean
+  ) => void;
+
   // Reset
   reset: () => void;
   resetSuggestions: () => void;
@@ -135,6 +155,7 @@ const initialState: IdeationState = {
   currentMode: 'dashboard',
   selectedCategory: null,
   filterStatus: 'all',
+  contextSourcesByProject: {},
 };
 
 // ============================================================================
@@ -300,6 +321,24 @@ export const useIdeationStore = create<IdeationState & IdeationActions>()(
 
       setFilterStatus: (status) => set({ filterStatus: status }),
 
+      // Context sources
+      getContextSources: (projectPath) => {
+        const state = get();
+        const projectOverrides = state.contextSourcesByProject[projectPath] ?? {};
+        return { ...DEFAULT_IDEATION_CONTEXT_SOURCES, ...projectOverrides };
+      },
+
+      setContextSource: (projectPath, key, value) =>
+        set((state) => ({
+          contextSourcesByProject: {
+            ...state.contextSourcesByProject,
+            [projectPath]: {
+              ...state.contextSourcesByProject[projectPath],
+              [key]: value,
+            },
+          },
+        })),
+
       // Reset
       reset: () => set(initialState),
 
@@ -313,13 +352,14 @@ export const useIdeationStore = create<IdeationState & IdeationActions>()(
     }),
     {
       name: 'automaker-ideation-store',
-      version: 4,
+      version: 5,
       partialize: (state) => ({
         // Only persist these fields
         ideas: state.ideas,
         generationJobs: state.generationJobs,
         analysisResult: state.analysisResult,
         filterStatus: state.filterStatus,
+        contextSourcesByProject: state.contextSourcesByProject,
       }),
       migrate: (persistedState: unknown, version: number) => {
         const state = persistedState as Record<string, unknown>;
@@ -329,6 +369,13 @@ export const useIdeationStore = create<IdeationState & IdeationActions>()(
           return {
             ...state,
             generationJobs: jobs.filter((job) => job.projectPath !== undefined),
+          };
+        }
+        if (version < 5) {
+          // Initialize contextSourcesByProject if not present
+          return {
+            ...state,
+            contextSourcesByProject: state.contextSourcesByProject ?? {},
           };
         }
         return state;

@@ -1,4 +1,4 @@
-// @ts-nocheck
+// @ts-nocheck - dependency tree visualization with recursive feature relationships
 import { useState, useEffect } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Feature } from '@/store/app-store';

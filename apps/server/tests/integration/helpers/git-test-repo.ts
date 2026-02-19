@@ -20,8 +20,8 @@ export interface TestRepo {
 export async function createTestGitRepo(): Promise<TestRepo> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'automaker-test-'));
 
-  // Initialize git repo
-  await execAsync('git init', { cwd: tmpDir });
+  // Initialize git repo with 'main' as the default branch (matching GitHub's standard)
+  await execAsync('git init --initial-branch=main', { cwd: tmpDir });
 
   // Use environment variables instead of git config to avoid affecting user's git config
   // These env vars override git config without modifying it
@@ -37,9 +37,6 @@ export async function createTestGitRepo(): Promise<TestRepo> {
   await fs.writeFile(path.join(tmpDir, 'README.md'), '# Test Project\n');
   await execAsync('git add .', { cwd: tmpDir, env: gitEnv });
   await execAsync('git commit -m "Initial commit"', { cwd: tmpDir, env: gitEnv });
-
-  // Create main branch explicitly
-  await execAsync('git branch -M main', { cwd: tmpDir });
 
   return {
     path: tmpDir,

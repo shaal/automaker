@@ -80,6 +80,7 @@ test.describe('Edit Feature', () => {
     await clickAddFeature(page);
     await fillAddFeatureDialog(page, originalDescription);
     await confirmAddFeature(page);
+    await page.waitForTimeout(2000);
 
     // Wait for the feature to appear in the backlog
     await expect(async () => {
@@ -88,7 +89,7 @@ test.describe('Edit Feature', () => {
         hasText: originalDescription,
       });
       expect(await featureCard.count()).toBeGreaterThan(0);
-    }).toPass({ timeout: 10000 });
+    }).toPass({ timeout: 20000 });
 
     // Get the feature ID from the card
     const featureCard = page

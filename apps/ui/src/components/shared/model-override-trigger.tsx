@@ -1,8 +1,4 @@
-import * as React from 'react';
-import { Settings2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { Button } from '@/components/ui/button';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useAppStore } from '@/store/app-store';
 import type { ModelAlias, CursorModelId, PhaseModelKey, PhaseModelEntry } from '@automaker/types';
 import { PhaseModelSelector } from '@/components/views/settings-view/model-defaults/phase-model-selector';
@@ -72,12 +68,6 @@ export function ModelOverrideTrigger({
     sm: 'h-6 w-6',
     md: 'h-8 w-8',
     lg: 'h-10 w-10',
-  };
-
-  const iconSizes = {
-    sm: 'w-3.5 h-3.5',
-    md: 'w-4 h-4',
-    lg: 'w-5 h-5',
   };
 
   // For icon variant, wrap PhaseModelSelector and hide text/chevron with CSS

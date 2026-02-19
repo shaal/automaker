@@ -98,9 +98,14 @@ const TEXT_ENCODING = 'utf-8';
  * This is the "no output" timeout - if the CLI doesn't produce any JSONL output
  * for this duration, the process is killed. For reasoning models with high
  * reasoning effort, this timeout is dynamically extended via calculateReasoningTimeout().
+ *
+ * For feature generation (which can generate 50+ features), we use a much longer
+ * base timeout (5 minutes) since Codex models are slower at generating large JSON responses.
+ *
  * @see calculateReasoningTimeout from @automaker/types
  */
 const CODEX_CLI_TIMEOUT_MS = DEFAULT_TIMEOUT_MS;
+const CODEX_FEATURE_GENERATION_BASE_TIMEOUT_MS = 300000; // 5 minutes for feature generation
 const CONTEXT_WINDOW_256K = 256000;
 const MAX_OUTPUT_32K = 32000;
 const MAX_OUTPUT_16K = 16000;
@@ -827,7 +832,14 @@ export class CodexProvider extends BaseProvider {
       // Higher reasoning effort (e.g., 'xhigh' for "xtra thinking" mode) requires more time
       // for the model to generate reasoning tokens before producing output.
       // This fixes GitHub issue #530 where features would get stuck with reasoning models.
-      const timeout = calculateReasoningTimeout(options.reasoningEffort, CODEX_CLI_TIMEOUT_MS);
+      //
+      // For feature generation with 'xhigh', use the extended 5-minute base timeout
+      // since generating 50+ features takes significantly longer than normal operations.
+      const baseTimeout =
+        options.reasoningEffort === 'xhigh'
+          ? CODEX_FEATURE_GENERATION_BASE_TIMEOUT_MS
+          : CODEX_CLI_TIMEOUT_MS;
+      const timeout = calculateReasoningTimeout(options.reasoningEffort, baseTimeout);
 
       const stream = spawnJSONLProcess({
         command: commandPath,

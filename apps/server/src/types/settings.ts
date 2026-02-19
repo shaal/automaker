@@ -23,6 +23,16 @@ export type {
   PhaseModelConfig,
   PhaseModelKey,
   PhaseModelEntry,
+  // Claude-compatible provider types
+  ApiKeySource,
+  ClaudeCompatibleProviderType,
+  ClaudeModelAlias,
+  ProviderModel,
+  ClaudeCompatibleProvider,
+  ClaudeCompatibleProviderTemplate,
+  // Legacy profile types (deprecated)
+  ClaudeApiProfile,
+  ClaudeApiProfileTemplate,
 } from '@automaker/types';
 
 export {

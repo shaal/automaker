@@ -68,6 +68,13 @@ export default defineConfig(({ command }) => {
       host: process.env.HOST || '0.0.0.0',
       port: parseInt(process.env.TEST_PORT || '3007', 10),
       allowedHosts: true,
+      proxy: {
+        '/api': {
+          target: 'http://localhost:3008',
+          changeOrigin: true,
+          ws: true,
+        },
+      },
     },
     build: {
       outDir: 'dist',

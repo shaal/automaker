@@ -68,10 +68,10 @@ export function ProjectIdentitySection({ project }: ProjectIdentitySectionProps)
       return;
     }
 
-    // Validate file size (max 2MB for icons)
-    if (file.size > 2 * 1024 * 1024) {
+    // Validate file size (max 5MB for icons - allows animated GIFs)
+    if (file.size > 5 * 1024 * 1024) {
       toast.error('File too large', {
-        description: 'Please upload an image smaller than 2MB.',
+        description: 'Please upload an image smaller than 5MB.',
       });
       return;
     }
@@ -97,7 +97,7 @@ export function ProjectIdentitySection({ project }: ProjectIdentitySectionProps)
               description: result.error || 'Please try again.',
             });
           }
-        } catch (error) {
+        } catch {
           toast.error('Failed to upload icon', {
             description: 'Network error. Please try again.',
           });
@@ -208,7 +208,7 @@ export function ProjectIdentitySection({ project }: ProjectIdentitySectionProps)
                   {isUploadingIcon ? 'Uploading...' : 'Upload Custom Icon'}
                 </Button>
                 <p className="text-xs text-muted-foreground mt-1">
-                  PNG, JPG, GIF or WebP. Max 2MB.
+                  PNG, JPG, GIF or WebP. Max 5MB.
                 </p>
               </div>
             </div>

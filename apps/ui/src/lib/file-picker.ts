@@ -62,7 +62,7 @@ export async function openDirectoryPicker(): Promise<DirectoryPickerResult | nul
       }
     };
 
-    input.addEventListener('change', (e) => {
+    input.addEventListener('change', () => {
       changeEventFired = true;
       if (focusTimeout) {
         clearTimeout(focusTimeout);
@@ -162,9 +162,13 @@ export async function openDirectoryPicker(): Promise<DirectoryPickerResult | nul
     logger.info('Opening directory picker...');
 
     // Try to show picker programmatically
-    if ('showPicker' in HTMLInputElement.prototype) {
+    // Note: showPicker() is available in modern browsers but not in standard TypeScript types
+    if (
+      'showPicker' in input &&
+      typeof (input as { showPicker?: () => void }).showPicker === 'function'
+    ) {
       try {
-        (input as any).showPicker();
+        (input as { showPicker: () => void }).showPicker();
         logger.info('Using showPicker()');
       } catch (error) {
         logger.info('showPicker() failed, using click()', error);
@@ -263,11 +267,13 @@ export async function openFilePicker(options?: {
     document.body.appendChild(input);
 
     // Try to show picker programmatically
-    // Note: showPicker() is available in modern browsers but TypeScript types it as void
-    // In practice, it may return a Promise in some implementations, but we'll handle errors via try/catch
-    if ('showPicker' in HTMLInputElement.prototype) {
+    // Note: showPicker() is available in modern browsers but not in standard TypeScript types
+    if (
+      'showPicker' in input &&
+      typeof (input as { showPicker?: () => void }).showPicker === 'function'
+    ) {
       try {
-        (input as any).showPicker();
+        (input as { showPicker: () => void }).showPicker();
       } catch {
         // Fallback to click if showPicker fails
         input.click();

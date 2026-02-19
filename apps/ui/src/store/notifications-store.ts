@@ -62,7 +62,7 @@ const initialState: NotificationsState = {
 // ============================================================================
 
 export const useNotificationsStore = create<NotificationsState & NotificationsActions>(
-  (set, get) => ({
+  (set, _get) => ({
     ...initialState,
 
     // Data management

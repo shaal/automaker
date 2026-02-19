@@ -13,8 +13,8 @@ import {
   Gauge,
   Accessibility,
   BarChart3,
-  Loader2,
 } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 import { Card, CardContent } from '@/components/ui/card';
 import { useGuidedPrompts } from '@/hooks/use-guided-prompts';
 import type { IdeaCategory } from '@automaker/types';
@@ -53,7 +53,7 @@ export function PromptCategoryGrid({ onSelect, onBack }: PromptCategoryGridProps
 
         {isLoading && (
           <div className="flex items-center justify-center py-12">
-            <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+            <Spinner size="lg" />
             <span className="ml-2 text-muted-foreground">Loading categories...</span>
           </div>
         )}

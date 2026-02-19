@@ -1,17 +1,15 @@
-// @ts-nocheck
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Brain, AlertTriangle } from 'lucide-react';
 import { AnthropicIcon, CursorIcon, OpenAIIcon } from '@/components/ui/provider-icon';
 import { cn } from '@/lib/utils';
-import type { ModelAlias } from '@/store/app-store';
 import { useAppStore } from '@/store/app-store';
 import { useSetupStore } from '@/store/setup-store';
-import { getModelProvider, PROVIDER_PREFIXES, stripProviderPrefix } from '@automaker/types';
-import type { ModelProvider } from '@automaker/types';
+import { getModelProvider } from '@automaker/types';
+import type { ModelProvider, CursorModelId } from '@automaker/types';
 import { CLAUDE_MODELS, CURSOR_MODELS, ModelOption } from './model-constants';
 import { useEffect } from 'react';
-import { RefreshCw } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 
 interface ModelSelectorProps {
   selectedModel: string; // Can be ModelAlias or "cursor-{id}"
@@ -41,6 +39,7 @@ export function ModelSelector({
   const isCursorAvailable = cursorCliStatus?.installed && cursorCliStatus?.auth?.authenticated;
 
   // Check if Codex CLI is available
+  // @ts-expect-error - codexCliStatus uses CliStatus type but should use CodexCliStatus which has auth
   const isCodexAvailable = codexCliStatus?.installed && codexCliStatus?.auth?.authenticated;
 
   // Fetch Codex models on mount
@@ -70,22 +69,30 @@ export function ModelSelector({
 
   // Filter Cursor models based on enabled models from global settings
   const filteredCursorModels = CURSOR_MODELS.filter((model) => {
-    // Compare model.id directly since both model.id and enabledCursorModels use full IDs with prefix
-    return enabledCursorModels.includes(model.id as any);
+    // enabledCursorModels stores CursorModelIds which may or may not have "cursor-" prefix
+    // (e.g., 'auto', 'sonnet-4.5' without prefix, but 'cursor-gpt-5.2' with prefix)
+    // CURSOR_MODELS always has the "cursor-" prefix added in model-constants.ts
+    // Check both the full ID (for GPT models) and the unprefixed version (for non-GPT models)
+    const unprefixedId = model.id.startsWith('cursor-') ? model.id.slice(7) : model.id;
+    return (
+      enabledCursorModels.includes(model.id as CursorModelId) ||
+      enabledCursorModels.includes(unprefixedId as CursorModelId)
+    );
   });
 
   const handleProviderChange = (provider: ModelProvider) => {
     if (provider === 'cursor' && selectedProvider !== 'cursor') {
       // Switch to Cursor's default model (from global settings)
-      onModelSelect(`${PROVIDER_PREFIXES.cursor}${cursorDefaultModel}`);
+      // cursorDefaultModel is now canonical (e.g., 'cursor-auto'), so use directly
+      onModelSelect(cursorDefaultModel);
     } else if (provider === 'codex' && selectedProvider !== 'codex') {
       // Switch to Codex's default model (use isDefault flag from dynamic models)
       const defaultModel = codexModels.find((m) => m.isDefault);
       const defaultModelId = defaultModel?.id || codexModels[0]?.id || 'codex-gpt-5.2-codex';
       onModelSelect(defaultModelId);
     } else if (provider === 'claude' && selectedProvider !== 'claude') {
-      // Switch to Claude's default model
-      onModelSelect('sonnet');
+      // Switch to Claude's default model (canonical format)
+      onModelSelect('claude-sonnet');
     }
   };
 
@@ -294,7 +301,7 @@ export function ModelSelector({
           {/* Loading state */}
           {codexModelsLoading && dynamicCodexModels.length === 0 && (
             <div className="flex items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
-              <RefreshCw className="w-4 h-4 animate-spin" />
+              <Spinner size="sm" />
               Loading models...
             </div>
           )}

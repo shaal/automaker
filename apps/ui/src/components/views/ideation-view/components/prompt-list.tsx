@@ -3,14 +3,14 @@
  */
 
 import { useState, useMemo } from 'react';
-import { ArrowLeft, Lightbulb, Loader2, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, Lightbulb, CheckCircle2 } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 import { Card, CardContent } from '@/components/ui/card';
 import { useGuidedPrompts } from '@/hooks/use-guided-prompts';
 import { useIdeationStore } from '@/store/ideation-store';
 import { useAppStore } from '@/store/app-store';
-import { getElectronAPI } from '@/lib/electron';
+import { useGenerateIdeationSuggestions } from '@/hooks/mutations';
 import { toast } from 'sonner';
-import { useNavigate } from '@tanstack/react-router';
 import type { IdeaCategory, IdeationPrompt } from '@automaker/types';
 
 interface PromptListProps {
@@ -23,10 +23,11 @@ export function PromptList({ category, onBack }: PromptListProps) {
   const generationJobs = useIdeationStore((s) => s.generationJobs);
   const setMode = useIdeationStore((s) => s.setMode);
   const addGenerationJob = useIdeationStore((s) => s.addGenerationJob);
-  const updateJobStatus = useIdeationStore((s) => s.updateJobStatus);
   const [loadingPromptId, setLoadingPromptId] = useState<string | null>(null);
   const [startedPrompts, setStartedPrompts] = useState<Set<string>>(new Set());
-  const navigate = useNavigate();
+
+  // React Query mutation
+  const generateMutation = useGenerateIdeationSuggestions(currentProject?.path ?? '');
   const {
     getPromptsByCategory,
     isLoading: isLoadingPrompts,
@@ -56,7 +57,7 @@ export function PromptList({ category, onBack }: PromptListProps) {
       return;
     }
 
-    if (loadingPromptId || generatingPromptIds.has(prompt.id)) return;
+    if (loadingPromptId || generateMutation.isPending || generatingPromptIds.has(prompt.id)) return;
 
     setLoadingPromptId(prompt.id);
 
@@ -68,42 +69,17 @@ export function PromptList({ category, onBack }: PromptListProps) {
     toast.info(`Generating ideas for "${prompt.title}"...`);
     setMode('dashboard');
 
-    try {
-      const api = getElectronAPI();
-      const result = await api.ideation?.generateSuggestions(
-        currentProject.path,
-        prompt.id,
-        category
-      );
-
-      if (result?.success && result.suggestions) {
-        updateJobStatus(jobId, 'ready', result.suggestions);
-        toast.success(`Generated ${result.suggestions.length} ideas for "${prompt.title}"`, {
-          duration: 10000,
-          action: {
-            label: 'View Ideas',
-            onClick: () => {
-              setMode('dashboard');
-              navigate({ to: '/ideation' });
-            },
-          },
-        });
-      } else {
-        updateJobStatus(
-          jobId,
-          'error',
-          undefined,
-          result?.error || 'Failed to generate suggestions'
-        );
-        toast.error(result?.error || 'Failed to generate suggestions');
+    // Start mutation - onSuccess/onError are handled at the hook level to ensure
+    // they fire even after this component unmounts (which happens due to setMode above)
+    generateMutation.mutate(
+      { promptId: prompt.id, category, jobId, promptTitle: prompt.title },
+      {
+        // Optional: reset local loading state if component is still mounted
+        onSettled: () => {
+          setLoadingPromptId(null);
+        },
       }
-    } catch (error) {
-      console.error('Failed to generate suggestions:', error);
-      updateJobStatus(jobId, 'error', undefined, (error as Error).message);
-      toast.error((error as Error).message);
-    } finally {
-      setLoadingPromptId(null);
-    }
+    );
   };
 
   return (
@@ -121,7 +97,7 @@ export function PromptList({ category, onBack }: PromptListProps) {
         <div className="space-y-3">
           {isLoadingPrompts && (
             <div className="flex items-center justify-center py-8">
-              <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+              <Spinner size="lg" />
               <span className="ml-2 text-muted-foreground">Loading prompts...</span>
             </div>
           )}
@@ -162,7 +138,7 @@ export function PromptList({ category, onBack }: PromptListProps) {
                         }`}
                       >
                         {isLoading || isGenerating ? (
-                          <Loader2 className="w-5 h-5 animate-spin" />
+                          <Spinner size="md" />
                         ) : isStarted ? (
                           <CheckCircle2 className="w-5 h-5" />
                         ) : (

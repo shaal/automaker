@@ -2,14 +2,15 @@
  * Notifications View - Full page view for all notifications
  */
 
-import { useEffect, useCallback } from 'react';
+import { useCallback } from 'react';
 import { useAppStore } from '@/store/app-store';
 import { useNotificationsStore } from '@/store/notifications-store';
 import { useLoadNotifications, useNotificationEvents } from '@/hooks/use-notification-events';
 import { getHttpApiClient } from '@/lib/http-api-client';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Bell, Check, CheckCheck, Trash2, ExternalLink, Loader2 } from 'lucide-react';
+import { Card, CardContent, CardDescription, CardTitle } from '@/components/ui/card';
+import { Bell, Check, CheckCheck, Trash2, ExternalLink } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 import { useNavigate } from '@tanstack/react-router';
 import type { Notification } from '@automaker/types';
 
@@ -41,8 +42,6 @@ export function NotificationsView() {
     unreadCount,
     isLoading,
     error,
-    setNotifications,
-    setUnreadCount,
     markAsRead,
     dismissNotification,
     markAllAsRead,
@@ -146,7 +145,7 @@ export function NotificationsView() {
   if (isLoading) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center p-8">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        <Spinner size="xl" />
         <p className="text-muted-foreground mt-4">Loading notifications...</p>
       </div>
     );

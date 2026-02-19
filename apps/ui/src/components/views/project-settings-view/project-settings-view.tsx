@@ -5,6 +5,9 @@ import { Button } from '@/components/ui/button';
 import { ProjectIdentitySection } from './project-identity-section';
 import { ProjectThemeSection } from './project-theme-section';
 import { WorktreePreferencesSection } from './worktree-preferences-section';
+import { CommandsSection } from './commands-section';
+import { ProjectModelsSection } from './project-models-section';
+import { DataManagementSection } from './data-management-section';
 import { DangerZoneSection } from '../settings-view/danger-zone/danger-zone-section';
 import { DeleteProjectDialog } from '../settings-view/components/delete-project-dialog';
 import { ProjectSettingsNavigation } from './components/project-settings-navigation';
@@ -84,6 +87,12 @@ export function ProjectSettingsView() {
         return <ProjectThemeSection project={currentProject} />;
       case 'worktrees':
         return <WorktreePreferencesSection project={currentProject} />;
+      case 'commands':
+        return <CommandsSection project={currentProject} />;
+      case 'claude':
+        return <ProjectModelsSection project={currentProject} />;
+      case 'data':
+        return <DataManagementSection project={currentProject} />;
       case 'danger':
         return (
           <DangerZoneSection

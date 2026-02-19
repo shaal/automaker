@@ -6,20 +6,37 @@ import { SplashScreen } from './components/splash-screen';
 import { useSettingsSync } from './hooks/use-settings-sync';
 import { useCursorStatusInit } from './hooks/use-cursor-status-init';
 import { useProviderAuthInit } from './hooks/use-provider-auth-init';
+import { useAppStore } from './store/app-store';
+import { TooltipProvider } from '@/components/ui/tooltip';
 import './styles/global.css';
 import './styles/theme-imports';
 import './styles/font-imports';
 
 const logger = createLogger('App');
 
+// Key for localStorage to persist splash screen preference
+const DISABLE_SPLASH_KEY = 'automaker-disable-splash';
+
 export default function App() {
+  const disableSplashScreen = useAppStore((state) => state.disableSplashScreen);
+
   const [showSplash, setShowSplash] = useState(() => {
+    // Check localStorage for user preference (available synchronously)
+    const savedPreference = localStorage.getItem(DISABLE_SPLASH_KEY);
+    if (savedPreference === 'true') {
+      return false;
+    }
     // Only show splash once per session
     if (sessionStorage.getItem('automaker-splash-shown')) {
       return false;
     }
     return true;
   });
+
+  // Sync the disableSplashScreen setting to localStorage for fast access on next startup
+  useEffect(() => {
+    localStorage.setItem(DISABLE_SPLASH_KEY, String(disableSplashScreen));
+  }, [disableSplashScreen]);
 
   // Clear accumulated PerformanceMeasure entries to prevent memory leak in dev mode
   // React's internal scheduler creates performance marks/measures that accumulate without cleanup
@@ -59,9 +76,9 @@ export default function App() {
   }, []);
 
   return (
-    <>
+    <TooltipProvider delayDuration={300}>
       <RouterProvider router={router} />
-      {showSplash && <SplashScreen onComplete={handleSplashComplete} />}
-    </>
+      {showSplash && !disableSplashScreen && <SplashScreen onComplete={handleSplashComplete} />}
+    </TooltipProvider>
   );
 }

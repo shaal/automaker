@@ -325,8 +325,12 @@ describe('codex-provider.ts', () => {
       );
 
       const call = vi.mocked(spawnJSONLProcess).mock.calls[0][0];
-      // xhigh reasoning effort should have 4x the default timeout (120000ms)
-      expect(call.timeout).toBe(DEFAULT_TIMEOUT_MS * REASONING_TIMEOUT_MULTIPLIERS.xhigh);
+      // xhigh reasoning effort uses 5-minute base timeout (300000ms) for feature generation
+      // then applies 4x multiplier: 300000 * 4.0 = 1200000ms (20 minutes)
+      const CODEX_FEATURE_GENERATION_BASE_TIMEOUT_MS = 300000;
+      expect(call.timeout).toBe(
+        CODEX_FEATURE_GENERATION_BASE_TIMEOUT_MS * REASONING_TIMEOUT_MULTIPLIERS.xhigh
+      );
     });
 
     it('uses default timeout when no reasoning effort is specified', async () => {

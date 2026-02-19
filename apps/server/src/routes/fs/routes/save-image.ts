@@ -7,6 +7,7 @@ import * as secureFs from '../../../lib/secure-fs.js';
 import path from 'path';
 import { getErrorMessage, logError } from '../common.js';
 import { getImagesDir } from '@automaker/platform';
+import { sanitizeFilename } from '@automaker/utils';
 
 export function createSaveImageHandler() {
   return async (req: Request, res: Response): Promise<void> => {
@@ -31,13 +32,15 @@ export function createSaveImageHandler() {
       await secureFs.mkdir(imagesDir, { recursive: true });
 
       // Decode base64 data (remove data URL prefix if present)
-      const base64Data = data.replace(/^data:image\/\w+;base64,/, '');
+      // Use a regex that handles all data URL formats including those with extra params
+      // e.g., data:image/gif;charset=utf-8;base64,R0lGOD...
+      const base64Data = data.replace(/^data:[^,]+,/, '');
       const buffer = Buffer.from(base64Data, 'base64');
 
       // Generate unique filename with timestamp
       const timestamp = Date.now();
       const ext = path.extname(filename) || '.png';
-      const baseName = path.basename(filename, ext);
+      const baseName = sanitizeFilename(path.basename(filename, ext), 'image');
       const uniqueFilename = `${baseName}-${timestamp}${ext}`;
       const filePath = path.join(imagesDir, uniqueFilename);
 

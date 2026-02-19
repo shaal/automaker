@@ -228,3 +228,35 @@ export interface IdeationAnalysisEvent {
   result?: ProjectAnalysisResult;
   error?: string;
 }
+
+// ============================================================================
+// Context Sources Configuration
+// ============================================================================
+
+/**
+ * Configuration for which context sources to include when generating ideas.
+ * All values default to true for backward compatibility.
+ */
+export interface IdeationContextSources {
+  /** Include .automaker/context/*.md|.txt files */
+  useContextFiles: boolean;
+  /** Include .automaker/memory/*.md files */
+  useMemoryFiles: boolean;
+  /** Include existing features from the board */
+  useExistingFeatures: boolean;
+  /** Include existing ideas from ideation */
+  useExistingIdeas: boolean;
+  /** Include app specification (.automaker/app_spec.txt) */
+  useAppSpec: boolean;
+}
+
+/**
+ * Default context sources configuration - all enabled for backward compatibility
+ */
+export const DEFAULT_IDEATION_CONTEXT_SOURCES: IdeationContextSources = {
+  useContextFiles: true,
+  useMemoryFiles: true,
+  useExistingFeatures: true,
+  useExistingIdeas: true,
+  useAppSpec: true,
+};

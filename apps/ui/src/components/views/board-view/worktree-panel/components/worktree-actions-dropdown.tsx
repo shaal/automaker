@@ -25,20 +25,35 @@ import {
   AlertCircle,
   RefreshCw,
   Copy,
+  Eye,
   ScrollText,
+  CloudOff,
+  Terminal,
+  SquarePlus,
+  SplitSquareHorizontal,
+  Undo2,
+  Zap,
+  FlaskConical,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
-import type { WorktreeInfo, DevServerInfo, PRInfo, GitRepoStatus } from '../types';
+import type { WorktreeInfo, DevServerInfo, PRInfo, GitRepoStatus, TestSessionInfo } from '../types';
 import { TooltipWrapper } from './tooltip-wrapper';
 import { useAvailableEditors, useEffectiveDefaultEditor } from '../hooks/use-available-editors';
+import {
+  useAvailableTerminals,
+  useEffectiveDefaultTerminal,
+} from '../hooks/use-available-terminals';
 import { getEditorIcon } from '@/components/icons/editor-icons';
+import { getTerminalIcon } from '@/components/icons/terminal-icons';
+import { useAppStore } from '@/store/app-store';
 
 interface WorktreeActionsDropdownProps {
   worktree: WorktreeInfo;
   isSelected: boolean;
   aheadCount: number;
   behindCount: number;
+  hasRemoteBranch: boolean;
   isPulling: boolean;
   isPushing: boolean;
   isStartingDevServer: boolean;
@@ -47,21 +62,43 @@ interface WorktreeActionsDropdownProps {
   gitRepoStatus: GitRepoStatus;
   /** When true, renders as a standalone button (not attached to another element) */
   standalone?: boolean;
+  /** Whether auto mode is running for this worktree */
+  isAutoModeRunning?: boolean;
+  /** Whether a test command is configured in project settings */
+  hasTestCommand?: boolean;
+  /** Whether tests are being started for this worktree */
+  isStartingTests?: boolean;
+  /** Whether tests are currently running for this worktree */
+  isTestRunning?: boolean;
+  /** Active test session info for this worktree */
+  testSessionInfo?: TestSessionInfo;
   onOpenChange: (open: boolean) => void;
   onPull: (worktree: WorktreeInfo) => void;
   onPush: (worktree: WorktreeInfo) => void;
+  onPushNewBranch: (worktree: WorktreeInfo) => void;
   onOpenInEditor: (worktree: WorktreeInfo, editorCommand?: string) => void;
+  onOpenInIntegratedTerminal: (worktree: WorktreeInfo, mode?: 'tab' | 'split') => void;
+  onOpenInExternalTerminal: (worktree: WorktreeInfo, terminalId?: string) => void;
+  onViewChanges: (worktree: WorktreeInfo) => void;
+  onDiscardChanges: (worktree: WorktreeInfo) => void;
   onCommit: (worktree: WorktreeInfo) => void;
   onCreatePR: (worktree: WorktreeInfo) => void;
   onAddressPRComments: (worktree: WorktreeInfo, prInfo: PRInfo) => void;
   onResolveConflicts: (worktree: WorktreeInfo) => void;
-  onMerge: (worktree: WorktreeInfo) => void;
   onDeleteWorktree: (worktree: WorktreeInfo) => void;
   onStartDevServer: (worktree: WorktreeInfo) => void;
   onStopDevServer: (worktree: WorktreeInfo) => void;
   onOpenDevServerUrl: (worktree: WorktreeInfo) => void;
   onViewDevServerLogs: (worktree: WorktreeInfo) => void;
   onRunInitScript: (worktree: WorktreeInfo) => void;
+  onToggleAutoMode?: (worktree: WorktreeInfo) => void;
+  onMerge: (worktree: WorktreeInfo) => void;
+  /** Start running tests for this worktree */
+  onStartTests?: (worktree: WorktreeInfo) => void;
+  /** Stop running tests for this worktree */
+  onStopTests?: (worktree: WorktreeInfo) => void;
+  /** View test logs for this worktree */
+  onViewTestLogs?: (worktree: WorktreeInfo) => void;
   hasInitScript: boolean;
 }
 
@@ -70,6 +107,7 @@ export function WorktreeActionsDropdown({
   isSelected,
   aheadCount,
   behindCount,
+  hasRemoteBranch,
   isPulling,
   isPushing,
   isStartingDevServer,
@@ -77,21 +115,35 @@ export function WorktreeActionsDropdown({
   devServerInfo,
   gitRepoStatus,
   standalone = false,
+  isAutoModeRunning = false,
+  hasTestCommand = false,
+  isStartingTests = false,
+  isTestRunning = false,
+  testSessionInfo,
   onOpenChange,
   onPull,
   onPush,
+  onPushNewBranch,
   onOpenInEditor,
+  onOpenInIntegratedTerminal,
+  onOpenInExternalTerminal,
+  onViewChanges,
+  onDiscardChanges,
   onCommit,
   onCreatePR,
   onAddressPRComments,
   onResolveConflicts,
-  onMerge,
   onDeleteWorktree,
   onStartDevServer,
   onStopDevServer,
   onOpenDevServerUrl,
   onViewDevServerLogs,
   onRunInitScript,
+  onToggleAutoMode,
+  onMerge,
+  onStartTests,
+  onStopTests,
+  onViewTestLogs,
   hasInitScript,
 }: WorktreeActionsDropdownProps) {
   // Get available editors for the "Open In" submenu
@@ -107,6 +159,20 @@ export function WorktreeActionsDropdown({
   const DefaultEditorIcon = effectiveDefaultEditor
     ? getEditorIcon(effectiveDefaultEditor.command)
     : null;
+
+  // Get available terminals for the "Open In Terminal" submenu
+  const { terminals } = useAvailableTerminals();
+
+  // Use shared hook for effective default terminal (null = integrated terminal)
+  const effectiveDefaultTerminal = useEffectiveDefaultTerminal(terminals);
+
+  // Get the user's preferred mode for opening terminals (new tab vs split)
+  const openTerminalMode = useAppStore((s) => s.terminalState.openTerminalMode);
+
+  // Get icon component for the effective terminal
+  const DefaultTerminalIcon = effectiveDefaultTerminal
+    ? getTerminalIcon(effectiveDefaultTerminal.id)
+    : Terminal;
 
   // Check if there's a PR associated with this worktree from stored metadata
   const hasPR = !!worktree.pr;
@@ -187,6 +253,85 @@ export function WorktreeActionsDropdown({
             <DropdownMenuSeparator />
           </>
         )}
+        {/* Test Runner section - only show when test command is configured */}
+        {hasTestCommand && onStartTests && (
+          <>
+            {isTestRunning ? (
+              <>
+                <DropdownMenuLabel className="text-xs flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                  Tests Running
+                </DropdownMenuLabel>
+                {onViewTestLogs && (
+                  <DropdownMenuItem onClick={() => onViewTestLogs(worktree)} className="text-xs">
+                    <ScrollText className="w-3.5 h-3.5 mr-2" />
+                    View Test Logs
+                  </DropdownMenuItem>
+                )}
+                {onStopTests && (
+                  <DropdownMenuItem
+                    onClick={() => onStopTests(worktree)}
+                    className="text-xs text-destructive focus:text-destructive"
+                  >
+                    <Square className="w-3.5 h-3.5 mr-2" />
+                    Stop Tests
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuSeparator />
+              </>
+            ) : (
+              <>
+                <DropdownMenuItem
+                  onClick={() => onStartTests(worktree)}
+                  disabled={isStartingTests}
+                  className="text-xs"
+                >
+                  <FlaskConical
+                    className={cn('w-3.5 h-3.5 mr-2', isStartingTests && 'animate-pulse')}
+                  />
+                  {isStartingTests ? 'Starting Tests...' : 'Run Tests'}
+                </DropdownMenuItem>
+                {onViewTestLogs && testSessionInfo && (
+                  <DropdownMenuItem onClick={() => onViewTestLogs(worktree)} className="text-xs">
+                    <ScrollText className="w-3.5 h-3.5 mr-2" />
+                    View Last Test Results
+                    {testSessionInfo.status === 'passed' && (
+                      <span className="ml-auto text-[10px] bg-green-500/20 text-green-600 px-1.5 py-0.5 rounded">
+                        passed
+                      </span>
+                    )}
+                    {testSessionInfo.status === 'failed' && (
+                      <span className="ml-auto text-[10px] bg-red-500/20 text-red-600 px-1.5 py-0.5 rounded">
+                        failed
+                      </span>
+                    )}
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuSeparator />
+              </>
+            )}
+          </>
+        )}
+        {/* Auto Mode toggle */}
+        {onToggleAutoMode && (
+          <>
+            {isAutoModeRunning ? (
+              <DropdownMenuItem onClick={() => onToggleAutoMode(worktree)} className="text-xs">
+                <span className="flex items-center mr-2">
+                  <Zap className="w-3.5 h-3.5 text-yellow-500" />
+                  <span className="ml-1.5 h-2 w-2 rounded-full bg-green-500 animate-pulse" />
+                </span>
+                Stop Auto Mode
+              </DropdownMenuItem>
+            ) : (
+              <DropdownMenuItem onClick={() => onToggleAutoMode(worktree)} className="text-xs">
+                <Zap className="w-3.5 h-3.5 mr-2" />
+                Start Auto Mode
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuSeparator />
+          </>
+        )}
         <TooltipWrapper showTooltip={!!gitOpsDisabledReason} tooltipContent={gitOpsDisabledReason}>
           <DropdownMenuItem
             onClick={() => canPerformGitOps && onPull(worktree)}
@@ -205,14 +350,27 @@ export function WorktreeActionsDropdown({
         </TooltipWrapper>
         <TooltipWrapper showTooltip={!!gitOpsDisabledReason} tooltipContent={gitOpsDisabledReason}>
           <DropdownMenuItem
-            onClick={() => canPerformGitOps && onPush(worktree)}
-            disabled={isPushing || aheadCount === 0 || !canPerformGitOps}
+            onClick={() => {
+              if (!canPerformGitOps) return;
+              if (!hasRemoteBranch) {
+                onPushNewBranch(worktree);
+              } else {
+                onPush(worktree);
+              }
+            }}
+            disabled={isPushing || (hasRemoteBranch && aheadCount === 0) || !canPerformGitOps}
             className={cn('text-xs', !canPerformGitOps && 'opacity-50 cursor-not-allowed')}
           >
             <Upload className={cn('w-3.5 h-3.5 mr-2', isPushing && 'animate-pulse')} />
             {isPushing ? 'Pushing...' : 'Push'}
             {!canPerformGitOps && <AlertCircle className="w-3 h-3 ml-auto text-muted-foreground" />}
-            {canPerformGitOps && aheadCount > 0 && (
+            {canPerformGitOps && !hasRemoteBranch && (
+              <span className="ml-auto inline-flex items-center gap-0.5 text-[10px] bg-amber-500/20 text-amber-600 dark:text-amber-400 px-1.5 py-0.5 rounded">
+                <CloudOff className="w-2.5 h-2.5" />
+                local only
+              </span>
+            )}
+            {canPerformGitOps && hasRemoteBranch && aheadCount > 0 && (
               <span className="ml-auto text-[10px] bg-primary/20 text-primary px-1.5 py-0.5 rounded">
                 {aheadCount} ahead
               </span>
@@ -233,27 +391,6 @@ export function WorktreeActionsDropdown({
             {!canPerformGitOps && <AlertCircle className="w-3 h-3 ml-auto text-muted-foreground" />}
           </DropdownMenuItem>
         </TooltipWrapper>
-        {!worktree.isMain && (
-          <TooltipWrapper
-            showTooltip={!!gitOpsDisabledReason}
-            tooltipContent={gitOpsDisabledReason}
-          >
-            <DropdownMenuItem
-              onClick={() => canPerformGitOps && onMerge(worktree)}
-              disabled={!canPerformGitOps}
-              className={cn(
-                'text-xs text-green-600 focus:text-green-700',
-                !canPerformGitOps && 'opacity-50 cursor-not-allowed'
-              )}
-            >
-              <GitMerge className="w-3.5 h-3.5 mr-2" />
-              Merge to Main
-              {!canPerformGitOps && (
-                <AlertCircle className="w-3 h-3 ml-auto text-muted-foreground" />
-              )}
-            </DropdownMenuItem>
-          </TooltipWrapper>
-        )}
         <DropdownMenuSeparator />
         {/* Open in editor - split button: click main area for default, chevron for other options */}
         {effectiveDefaultEditor && (
@@ -303,6 +440,77 @@ export function WorktreeActionsDropdown({
             </DropdownMenuSubContent>
           </DropdownMenuSub>
         )}
+        {/* Open in terminal - always show with integrated + external options */}
+        <DropdownMenuSub>
+          <div className="flex items-center">
+            {/* Main clickable area - opens in default terminal (integrated or external) */}
+            <DropdownMenuItem
+              onClick={() => {
+                if (effectiveDefaultTerminal) {
+                  // External terminal is the default
+                  onOpenInExternalTerminal(worktree, effectiveDefaultTerminal.id);
+                } else {
+                  // Integrated terminal is the default - use user's preferred mode
+                  const mode = openTerminalMode === 'newTab' ? 'tab' : 'split';
+                  onOpenInIntegratedTerminal(worktree, mode);
+                }
+              }}
+              className="text-xs flex-1 pr-0 rounded-r-none"
+            >
+              <DefaultTerminalIcon className="w-3.5 h-3.5 mr-2" />
+              Open in {effectiveDefaultTerminal?.name ?? 'Terminal'}
+            </DropdownMenuItem>
+            {/* Chevron trigger for submenu with all terminals */}
+            <DropdownMenuSubTrigger className="text-xs px-1 rounded-l-none border-l border-border/30 h-8" />
+          </div>
+          <DropdownMenuSubContent>
+            {/* Automaker Terminal - with submenu for new tab vs split */}
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger className="text-xs">
+                <Terminal className="w-3.5 h-3.5 mr-2" />
+                Terminal
+                {!effectiveDefaultTerminal && (
+                  <span className="ml-auto mr-2 text-[10px] text-muted-foreground">(default)</span>
+                )}
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent>
+                <DropdownMenuItem
+                  onClick={() => onOpenInIntegratedTerminal(worktree, 'tab')}
+                  className="text-xs"
+                >
+                  <SquarePlus className="w-3.5 h-3.5 mr-2" />
+                  New Tab
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => onOpenInIntegratedTerminal(worktree, 'split')}
+                  className="text-xs"
+                >
+                  <SplitSquareHorizontal className="w-3.5 h-3.5 mr-2" />
+                  Split
+                </DropdownMenuItem>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+            {/* External terminals */}
+            {terminals.length > 0 && <DropdownMenuSeparator />}
+            {terminals.map((terminal) => {
+              const TerminalIcon = getTerminalIcon(terminal.id);
+              const isDefault = terminal.id === effectiveDefaultTerminal?.id;
+              return (
+                <DropdownMenuItem
+                  key={terminal.id}
+                  onClick={() => onOpenInExternalTerminal(worktree, terminal.id)}
+                  className="text-xs"
+                >
+                  <TerminalIcon className="w-3.5 h-3.5 mr-2" />
+                  {terminal.name}
+                  {isDefault && (
+                    <span className="ml-auto text-[10px] text-muted-foreground">(default)</span>
+                  )}
+                </DropdownMenuItem>
+              );
+            })}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
         {!worktree.isMain && hasInitScript && (
           <DropdownMenuItem onClick={() => onRunInitScript(worktree)} className="text-xs">
             <RefreshCw className="w-3.5 h-3.5 mr-2" />
@@ -310,6 +518,13 @@ export function WorktreeActionsDropdown({
           </DropdownMenuItem>
         )}
         <DropdownMenuSeparator />
+
+        {worktree.hasChanges && (
+          <DropdownMenuItem onClick={() => onViewChanges(worktree)} className="text-xs">
+            <Eye className="w-3.5 h-3.5 mr-2" />
+            View Changes
+          </DropdownMenuItem>
+        )}
         {worktree.hasChanges && (
           <TooltipWrapper
             showTooltip={!gitRepoStatus.isGitRepo}
@@ -385,8 +600,49 @@ export function WorktreeActionsDropdown({
             </DropdownMenuItem>
           </>
         )}
+        <DropdownMenuSeparator />
+        {worktree.hasChanges && (
+          <TooltipWrapper
+            showTooltip={!gitRepoStatus.isGitRepo}
+            tooltipContent="Not a git repository"
+          >
+            <DropdownMenuItem
+              onClick={() => gitRepoStatus.isGitRepo && onDiscardChanges(worktree)}
+              disabled={!gitRepoStatus.isGitRepo}
+              className={cn(
+                'text-xs text-destructive focus:text-destructive',
+                !gitRepoStatus.isGitRepo && 'opacity-50 cursor-not-allowed'
+              )}
+            >
+              <Undo2 className="w-3.5 h-3.5 mr-2" />
+              Discard Changes
+              {!gitRepoStatus.isGitRepo && (
+                <AlertCircle className="w-3 h-3 ml-auto text-muted-foreground" />
+              )}
+            </DropdownMenuItem>
+          </TooltipWrapper>
+        )}
         {!worktree.isMain && (
           <>
+            <TooltipWrapper
+              showTooltip={!!gitOpsDisabledReason}
+              tooltipContent={gitOpsDisabledReason}
+            >
+              <DropdownMenuItem
+                onClick={() => canPerformGitOps && onMerge(worktree)}
+                disabled={!canPerformGitOps}
+                className={cn(
+                  'text-xs text-green-600 focus:text-green-700',
+                  !canPerformGitOps && 'opacity-50 cursor-not-allowed'
+                )}
+              >
+                <GitMerge className="w-3.5 h-3.5 mr-2" />
+                Merge Branch
+                {!canPerformGitOps && (
+                  <AlertCircle className="w-3 h-3 ml-auto text-muted-foreground" />
+                )}
+              </DropdownMenuItem>
+            </TooltipWrapper>
             <DropdownMenuSeparator />
             <DropdownMenuItem
               onClick={() => onDeleteWorktree(worktree)}

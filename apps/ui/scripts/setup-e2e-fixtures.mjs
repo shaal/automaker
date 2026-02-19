@@ -58,7 +58,7 @@ const E2E_SETTINGS = {
     featureGenerationModel: { model: 'sonnet' },
     backlogPlanningModel: { model: 'sonnet' },
     projectAnalysisModel: { model: 'sonnet' },
-    suggestionsModel: { model: 'sonnet' },
+    ideationModel: { model: 'sonnet' },
   },
   enhancementModel: 'sonnet',
   validationModel: 'opus',

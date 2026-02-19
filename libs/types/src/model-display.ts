@@ -10,20 +10,21 @@ import type { ReasoningEffort } from './provider.js';
 import type { CursorModelId } from './cursor-models.js';
 import type { AgentModel, CodexModelId } from './model.js';
 import { CODEX_MODEL_MAP } from './model.js';
+import { GEMINI_MODEL_MAP, type GeminiModelId } from './gemini-models.js';
 
 /**
  * ModelOption - Display metadata for a model option in the UI
  */
 export interface ModelOption {
-  /** Model identifier (supports both Claude and Cursor models) */
-  id: ModelAlias | CursorModelId;
+  /** Model identifier (supports Claude, Cursor, Gemini models) */
+  id: ModelAlias | CursorModelId | GeminiModelId;
   /** Display name shown to user */
   label: string;
   /** Descriptive text explaining model capabilities */
   description: string;
   /** Optional badge text (e.g., "Speed", "Balanced", "Premium") */
   badge?: string;
-  /** AI provider (supports 'claude' and 'cursor') */
+  /** AI provider */
   provider: ModelProvider;
 }
 
@@ -114,6 +115,22 @@ export const CODEX_MODELS: (ModelOption & { hasReasoning?: boolean })[] = [
 ];
 
 /**
+ * Gemini model options with full metadata for UI display
+ * Based on https://github.com/google-gemini/gemini-cli
+ * Model IDs match the keys in GEMINI_MODEL_MAP (e.g., 'gemini-2.5-flash')
+ */
+export const GEMINI_MODELS: (ModelOption & { hasThinking?: boolean })[] = Object.entries(
+  GEMINI_MODEL_MAP
+).map(([id, config]) => ({
+  id: id as GeminiModelId,
+  label: config.label,
+  description: config.description,
+  badge: config.supportsThinking ? 'Thinking' : 'Speed',
+  provider: 'gemini' as const,
+  hasThinking: config.supportsThinking,
+}));
+
+/**
  * Thinking level options with display labels
  *
  * Ordered from least to most intensive reasoning.
@@ -200,5 +217,16 @@ export function getModelDisplayName(model: ModelAlias | string): string {
     [CODEX_MODEL_MAP.gpt52]: 'GPT-5.2',
     [CODEX_MODEL_MAP.gpt51]: 'GPT-5.1',
   };
-  return displayNames[model] || model;
+
+  // Check direct match first
+  if (model in displayNames) {
+    return displayNames[model];
+  }
+
+  // Check Gemini model map - IDs are like 'gemini-2.5-flash'
+  if (model in GEMINI_MODEL_MAP) {
+    return GEMINI_MODEL_MAP[model as keyof typeof GEMINI_MODEL_MAP].label;
+  }
+
+  return model;
 }

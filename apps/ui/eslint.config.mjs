@@ -14,7 +14,12 @@ const eslintConfig = defineConfig([
         require: 'readonly',
         __dirname: 'readonly',
         __filename: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
       },
+    },
+    rules: {
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }],
     },
   },
   {
@@ -45,6 +50,8 @@ const eslintConfig = defineConfig([
         confirm: 'readonly',
         getComputedStyle: 'readonly',
         requestAnimationFrame: 'readonly',
+        cancelAnimationFrame: 'readonly',
+        alert: 'readonly',
         // DOM Element Types
         HTMLElement: 'readonly',
         HTMLInputElement: 'readonly',
@@ -56,6 +63,8 @@ const eslintConfig = defineConfig([
         HTMLParagraphElement: 'readonly',
         HTMLImageElement: 'readonly',
         Element: 'readonly',
+        SVGElement: 'readonly',
+        SVGSVGElement: 'readonly',
         // Event Types
         Event: 'readonly',
         KeyboardEvent: 'readonly',
@@ -64,14 +73,24 @@ const eslintConfig = defineConfig([
         CustomEvent: 'readonly',
         ClipboardEvent: 'readonly',
         WheelEvent: 'readonly',
+        MouseEvent: 'readonly',
+        UIEvent: 'readonly',
+        MediaQueryListEvent: 'readonly',
         DataTransfer: 'readonly',
         // Web APIs
         ResizeObserver: 'readonly',
         AbortSignal: 'readonly',
+        AbortController: 'readonly',
+        IntersectionObserver: 'readonly',
         Audio: 'readonly',
+        HTMLAudioElement: 'readonly',
         ScrollBehavior: 'readonly',
         URL: 'readonly',
         URLSearchParams: 'readonly',
+        XMLHttpRequest: 'readonly',
+        Response: 'readonly',
+        RequestInit: 'readonly',
+        RequestCache: 'readonly',
         // Timers
         setTimeout: 'readonly',
         setInterval: 'readonly',
@@ -90,6 +109,8 @@ const eslintConfig = defineConfig([
         Electron: 'readonly',
         // Console
         console: 'readonly',
+        // Vite defines
+        __APP_VERSION__: 'readonly',
       },
     },
     plugins: {
@@ -99,6 +120,13 @@ const eslintConfig = defineConfig([
       ...ts.configs.recommended.rules,
       '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'warn',
+      '@typescript-eslint/ban-ts-comment': [
+        'error',
+        {
+          'ts-nocheck': 'allow-with-description',
+          minimumDescriptionLength: 10,
+        },
+      ],
     },
   },
   globalIgnores([

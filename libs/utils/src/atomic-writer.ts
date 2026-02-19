@@ -7,6 +7,7 @@
 
 import { secureFs } from '@automaker/platform';
 import path from 'path';
+import crypto from 'crypto';
 import { createLogger } from './logger.js';
 import { mkdirSafe } from './fs-utils.js';
 
@@ -99,7 +100,9 @@ export async function atomicWriteJson<T>(
 ): Promise<void> {
   const { indent = 2, createDirs = false, backupCount = 0 } = options;
   const resolvedPath = path.resolve(filePath);
-  const tempPath = `${resolvedPath}.tmp.${Date.now()}`;
+  // Use timestamp + random suffix to ensure uniqueness even for concurrent writes
+  const uniqueSuffix = `${Date.now()}.${crypto.randomBytes(4).toString('hex')}`;
+  const tempPath = `${resolvedPath}.tmp.${uniqueSuffix}`;
 
   // Create parent directories if requested
   if (createDirs) {

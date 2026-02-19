@@ -1,4 +1,4 @@
-// @ts-nocheck
+// @ts-nocheck - dialog state typing with feature summary extraction
 import { Feature } from '@/store/app-store';
 import { AgentTaskInfo } from '@/lib/agent-context-parser';
 import {

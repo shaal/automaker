@@ -9,7 +9,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Terminal, Cloud, Cpu, Brain, Github, Loader2, KeyRound, ShieldCheck } from 'lucide-react';
+import { Terminal, Cloud, Cpu, Brain, Github, KeyRound, ShieldCheck } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
 import type {
@@ -22,13 +23,8 @@ import { OPENCODE_MODELS, OPENCODE_MODEL_CONFIG_MAP } from '@automaker/types';
 import type { OpenCodeProviderInfo } from '../cli-status/opencode-cli-status';
 import {
   OpenCodeIcon,
-  DeepSeekIcon,
-  QwenIcon,
-  NovaIcon,
   AnthropicIcon,
   OpenRouterIcon,
-  MistralIcon,
-  MetaIcon,
   GeminiIcon,
   OpenAIIcon,
   GrokIcon,
@@ -225,8 +221,6 @@ export function OpencodeModelConfiguration({
   const selectableStaticModelIds = allStaticModelIds.filter(
     (modelId) => modelId !== opencodeDefaultModel
   );
-  const allDynamicModelIds = dynamicModels.map((model) => model.id);
-  const hasDynamicModels = allDynamicModelIds.length > 0;
   const staticSelectState = getSelectionState(selectableStaticModelIds, enabledOpencodeModels);
 
   // Order: Free tier first, then Claude, then others
@@ -500,7 +494,7 @@ export function OpencodeModelConfiguration({
                   </p>
                   {isLoadingDynamicModels && (
                     <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                      <Loader2 className="w-3 h-3 animate-spin" />
+                      <Spinner size="xs" />
                       <span>Discovering...</span>
                     </div>
                   )}

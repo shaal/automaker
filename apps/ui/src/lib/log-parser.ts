@@ -1198,46 +1198,48 @@ function mergeConsecutiveEntries(entries: LogEntry[]): LogEntry[] {
 
 /**
  * Extracts summary content from raw log output
- * Returns the summary text if found, or null if no summary exists
+ * Returns the LAST summary text if found, or null if no summary exists
+ * This ensures we get the most recent/updated summary when multiple exist
  */
 export function extractSummary(rawOutput: string): string | null {
   if (!rawOutput || !rawOutput.trim()) {
     return null;
   }
 
-  // Try to find <summary> tags first (preferred format)
-  const summaryTagMatch = rawOutput.match(/<summary>([\s\S]*?)<\/summary>/);
-  if (summaryTagMatch) {
-    return summaryTagMatch[1].trim();
-  }
+  // First, clean up any fragmented text from streaming
+  // This handles cases where streaming providers send partial text chunks
+  // that got separated by newlines during accumulation (e.g., "<sum\n\nmary>")
+  const cleanedOutput = cleanFragmentedText(rawOutput);
 
-  // Try to find markdown ## Summary section
-  const summaryHeaderMatch = rawOutput.match(/^##\s+Summary\s*\n([\s\S]*?)(?=\n##\s+|$)/m);
-  if (summaryHeaderMatch) {
-    return summaryHeaderMatch[1].trim();
-  }
+  // Define regex patterns to try in order of priority
+  // Each pattern specifies a processor function to extract the summary from the match
+  const regexesToTry: Array<{
+    regex: RegExp;
+    processor: (m: RegExpMatchArray) => string;
+  }> = [
+    { regex: /<summary>([\s\S]*?)<\/summary>/gi, processor: (m) => m[1] },
+    { regex: /^##\s+Summary[^\n]*\n([\s\S]*?)(?=\n##\s+[^#]|\n🔧|$)/gm, processor: (m) => m[1] },
+    {
+      regex: /^##\s+(Feature|Changes|Implementation)[^\n]*\n([\s\S]*?)(?=\n##\s+[^#]|\n🔧|$)/gm,
+      processor: (m) => `## ${m[1]}\n${m[2]}`,
+    },
+    {
+      regex: /(^|\n)(All tasks completed[\s\S]*?)(?=\n🔧|\n📋|\n⚡|\n❌|$)/g,
+      processor: (m) => m[2],
+    },
+    {
+      regex:
+        /(^|\n)((I've|I have) (successfully |now )?(completed|finished|implemented)[\s\S]*?)(?=\n🔧|\n📋|\n⚡|\n❌|$)/g,
+      processor: (m) => m[2],
+    },
+  ];
 
-  // Try other summary formats (Feature, Changes, Implementation)
-  const otherHeaderMatch = rawOutput.match(
-    /^##\s+(Feature|Changes|Implementation)\s*\n([\s\S]*?)(?=\n##\s+|$)/m
-  );
-  if (otherHeaderMatch) {
-    return `## ${otherHeaderMatch[1]}\n${otherHeaderMatch[2].trim()}`;
-  }
-
-  // Try to find summary introduction lines
-  const introMatch = rawOutput.match(
-    /(^|\n)(All tasks completed[\s\S]*?)(?=\n🔧|\n📋|\n⚡|\n❌|$)/
-  );
-  if (introMatch) {
-    return introMatch[2].trim();
-  }
-
-  const completionMatch = rawOutput.match(
-    /(^|\n)((I've|I have) (successfully |now )?(completed|finished|implemented)[\s\S]*?)(?=\n🔧|\n📋|\n⚡|\n❌|$)/
-  );
-  if (completionMatch) {
-    return completionMatch[2].trim();
+  for (const { regex, processor } of regexesToTry) {
+    const matches = [...cleanedOutput.matchAll(regex)];
+    if (matches.length > 0) {
+      const lastMatch = matches[matches.length - 1];
+      return cleanFragmentedText(processor(lastMatch)).trim();
+    }
   }
 
   return null;
@@ -1326,13 +1328,21 @@ export function getLogTypeColors(type: LogEntryType): {
         icon: 'text-primary',
         badge: 'bg-primary/20 text-primary',
       };
+    case 'info':
+      return {
+        bg: 'bg-zinc-500/10',
+        border: 'border-zinc-500/30',
+        text: 'text-primary',
+        icon: 'text-zinc-400',
+        badge: 'bg-zinc-500/20 text-primary',
+      };
     default:
       return {
         bg: 'bg-zinc-500/10',
         border: 'border-zinc-500/30',
-        text: 'text-zinc-300',
+        text: 'text-black',
         icon: 'text-zinc-400',
-        badge: 'bg-zinc-500/20 text-zinc-300',
+        badge: 'bg-zinc-500/20 text-black',
       };
   }
 }

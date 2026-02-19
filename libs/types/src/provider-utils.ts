@@ -7,34 +7,41 @@
  */
 
 import type { ModelProvider } from './settings.js';
-import { CURSOR_MODEL_MAP } from './cursor-models.js';
+import { LEGACY_CURSOR_MODEL_MAP } from './cursor-models.js';
 import { CLAUDE_MODEL_MAP, CODEX_MODEL_MAP } from './model.js';
-import { OPENCODE_MODEL_CONFIG_MAP } from './opencode-models.js';
+import { OPENCODE_MODEL_CONFIG_MAP, LEGACY_OPENCODE_MODEL_MAP } from './opencode-models.js';
+import { GEMINI_MODEL_MAP } from './gemini-models.js';
+import { COPILOT_MODEL_MAP } from './copilot-models.js';
 
 /** Provider prefix constants */
 export const PROVIDER_PREFIXES = {
   cursor: 'cursor-',
   codex: 'codex-',
   opencode: 'opencode-',
+  gemini: 'gemini-',
+  copilot: 'copilot-',
 } as const;
 
 /**
  * Check if a model string represents a Cursor model
  *
- * @param model - Model string to check (e.g., "cursor-composer-1" or "composer-1")
- * @returns true if the model is a Cursor model (excluding Codex-specific models)
+ * With canonical model IDs, Cursor models always have 'cursor-' prefix.
+ * Legacy IDs without prefix are handled by migration utilities.
+ *
+ * @param model - Model string to check (e.g., "cursor-auto", "cursor-composer-1")
+ * @returns true if the model is a Cursor model
  */
 export function isCursorModel(model: string | undefined | null): boolean {
   if (!model || typeof model !== 'string') return false;
 
-  // Check for explicit cursor- prefix
+  // Canonical format: all Cursor models have cursor- prefix
   if (model.startsWith(PROVIDER_PREFIXES.cursor)) {
     return true;
   }
 
-  // Check if it's a bare Cursor model ID (excluding Codex-specific models)
-  // Codex-specific models should always route to Codex provider, not Cursor
-  if (model in CURSOR_MODEL_MAP) {
+  // Legacy support: check if it's a known legacy bare ID
+  // This handles transition period before migration
+  if (model in LEGACY_CURSOR_MODEL_MAP) {
     return true;
   }
 
@@ -88,14 +95,60 @@ export function isCodexModel(model: string | undefined | null): boolean {
 }
 
 /**
+ * Check if a model string represents a Gemini model
+ *
+ * @param model - Model string to check (e.g., "gemini-2.5-pro", "gemini-3-pro-preview")
+ * @returns true if the model is a Gemini model
+ */
+export function isGeminiModel(model: string | undefined | null): boolean {
+  if (!model || typeof model !== 'string') return false;
+
+  // Canonical format: gemini- prefix (e.g., "gemini-2.5-flash")
+  if (model.startsWith(PROVIDER_PREFIXES.gemini)) {
+    return true;
+  }
+
+  // Check if it's a known Gemini model ID (map keys include gemini- prefix)
+  if (model in GEMINI_MODEL_MAP) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Check if a model string represents a GitHub Copilot model
+ *
+ * @param model - Model string to check (e.g., "copilot-gpt-4o", "copilot-claude-3.5-sonnet")
+ * @returns true if the model is a Copilot model
+ */
+export function isCopilotModel(model: string | undefined | null): boolean {
+  if (!model || typeof model !== 'string') return false;
+
+  // Canonical format: copilot- prefix (e.g., "copilot-gpt-4o")
+  if (model.startsWith(PROVIDER_PREFIXES.copilot)) {
+    return true;
+  }
+
+  // Check if it's a known Copilot model ID (map keys include copilot- prefix)
+  if (model in COPILOT_MODEL_MAP) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Check if a model string represents an OpenCode model
  *
+ * With canonical model IDs, static OpenCode models use 'opencode-' prefix.
+ * Dynamic models from OpenCode CLI still use provider/model format.
+ *
  * OpenCode models can be identified by:
- * - Explicit 'opencode-' prefix (for routing in Automaker)
- * - 'opencode/' prefix (OpenCode free tier models)
+ * - 'opencode-' prefix (canonical format for static models)
+ * - 'opencode/' prefix (legacy format, will be migrated)
  * - 'amazon-bedrock/' prefix (AWS Bedrock models via OpenCode)
- * - Full model ID from OPENCODE_MODEL_CONFIG_MAP
- * - Dynamic models from OpenCode CLI with provider/model format (e.g., "github-copilot/gpt-4o", "google/gemini-2.5-pro")
+ * - Dynamic models with provider/model format (e.g., "github-copilot/gpt-4o")
  *
  * @param model - Model string to check
  * @returns true if the model is an OpenCode model
@@ -103,19 +156,18 @@ export function isCodexModel(model: string | undefined | null): boolean {
 export function isOpencodeModel(model: string | undefined | null): boolean {
   if (!model || typeof model !== 'string') return false;
 
-  // Check for explicit opencode- prefix (Automaker routing prefix)
+  // Canonical format: opencode- prefix for static models
   if (model.startsWith(PROVIDER_PREFIXES.opencode)) {
     return true;
   }
 
-  // Check if it's a known OpenCode model ID
+  // Check if it's a known OpenCode model ID (handles both formats during transition)
   if (model in OPENCODE_MODEL_CONFIG_MAP) {
     return true;
   }
 
-  // Check for OpenCode native model prefixes
-  // - opencode/ = OpenCode free tier models
-  // - amazon-bedrock/ = AWS Bedrock models
+  // Legacy format: opencode/ prefix (will be migrated to opencode-)
+  // Also supports amazon-bedrock/ for AWS Bedrock models
   if (model.startsWith('opencode/') || model.startsWith('amazon-bedrock/')) {
     return true;
   }
@@ -147,7 +199,15 @@ export function isOpencodeModel(model: string | undefined | null): boolean {
  * @returns The provider type, defaults to 'claude' for unknown models
  */
 export function getModelProvider(model: string | undefined | null): ModelProvider {
-  // Check OpenCode first since it uses provider-prefixed formats that could conflict
+  // Check Copilot first since it has a unique prefix
+  if (isCopilotModel(model)) {
+    return 'copilot';
+  }
+  // Check Gemini since it uses gemini- prefix
+  if (isGeminiModel(model)) {
+    return 'gemini';
+  }
+  // Check OpenCode next since it uses provider-prefixed formats that could conflict
   if (isOpencodeModel(model)) {
     return 'opencode';
   }
@@ -195,6 +255,7 @@ export function stripProviderPrefix(model: string): string {
  * addProviderPrefix('cursor-composer-1', 'cursor') // 'cursor-composer-1' (no change)
  * addProviderPrefix('gpt-5.2', 'codex') // 'codex-gpt-5.2'
  * addProviderPrefix('sonnet', 'claude') // 'sonnet' (Claude doesn't use prefix)
+ * addProviderPrefix('2.5-flash', 'gemini') // 'gemini-2.5-flash'
  */
 export function addProviderPrefix(model: string, provider: ModelProvider): string {
   if (!model || typeof model !== 'string') return model;
@@ -210,6 +271,14 @@ export function addProviderPrefix(model: string, provider: ModelProvider): strin
   } else if (provider === 'opencode') {
     if (!model.startsWith(PROVIDER_PREFIXES.opencode)) {
       return `${PROVIDER_PREFIXES.opencode}${model}`;
+    }
+  } else if (provider === 'gemini') {
+    if (!model.startsWith(PROVIDER_PREFIXES.gemini)) {
+      return `${PROVIDER_PREFIXES.gemini}${model}`;
+    }
+  } else if (provider === 'copilot') {
+    if (!model.startsWith(PROVIDER_PREFIXES.copilot)) {
+      return `${PROVIDER_PREFIXES.copilot}${model}`;
     }
   }
   // Claude models don't use prefixes
@@ -228,35 +297,90 @@ export function getBareModelId(model: string): string {
 
 /**
  * Normalize a model string to its canonical form
- * - For Cursor: adds cursor- prefix if missing
- * - For Codex: can add codex- prefix (but bare gpt-* is also valid)
- * - For Claude: returns as-is
+ *
+ * With the new canonical format:
+ * - Cursor models: always have cursor- prefix
+ * - OpenCode models: always have opencode- prefix (static) or provider/model format (dynamic)
+ * - Claude models: can use legacy aliases or claude- prefix
+ * - Codex models: always have codex- prefix
  *
  * @param model - Model string to normalize
  * @returns Normalized model string
  */
 export function normalizeModelString(model: string | undefined | null): string {
-  if (!model || typeof model !== 'string') return 'sonnet'; // Default
+  if (!model || typeof model !== 'string') return 'claude-sonnet'; // Default to canonical
 
-  // If it's a Cursor model without prefix, add the prefix
-  if (model in CURSOR_MODEL_MAP && !model.startsWith(PROVIDER_PREFIXES.cursor)) {
-    return `${PROVIDER_PREFIXES.cursor}${model}`;
+  // Already has a canonical prefix - return as-is
+  if (
+    model.startsWith(PROVIDER_PREFIXES.cursor) ||
+    model.startsWith(PROVIDER_PREFIXES.codex) ||
+    model.startsWith(PROVIDER_PREFIXES.opencode) ||
+    model.startsWith(PROVIDER_PREFIXES.gemini) ||
+    model.startsWith(PROVIDER_PREFIXES.copilot) ||
+    model.startsWith('claude-')
+  ) {
+    return model;
   }
 
-  // For Codex, bare gpt-* and o-series models are valid canonical forms
-  // Check if it's in the CODEX_MODEL_MAP
-  if (model in CODEX_MODEL_MAP) {
-    // If it already starts with gpt- or o, it's canonical
-    if (model.startsWith('gpt-') || /^o\d/.test(model)) {
-      return model;
-    }
-    // Otherwise, it might need a prefix (though this is unlikely)
-    if (!model.startsWith(PROVIDER_PREFIXES.codex)) {
-      return `${PROVIDER_PREFIXES.codex}${model}`;
-    }
+  // Check if it's a legacy Cursor model ID
+  if (model in LEGACY_CURSOR_MODEL_MAP) {
+    return LEGACY_CURSOR_MODEL_MAP[model as keyof typeof LEGACY_CURSOR_MODEL_MAP];
+  }
+
+  // Check if it's a legacy OpenCode model ID
+  if (model in LEGACY_OPENCODE_MODEL_MAP) {
+    return LEGACY_OPENCODE_MODEL_MAP[model as keyof typeof LEGACY_OPENCODE_MODEL_MAP];
+  }
+
+  // Legacy Claude aliases
+  if (model in CLAUDE_MODEL_MAP) {
+    return `claude-${model}`;
+  }
+
+  // For Codex, bare gpt-* and o-series models need codex- prefix
+  if (model.startsWith('gpt-') || /^o\d/.test(model)) {
+    return `${PROVIDER_PREFIXES.codex}${model}`;
   }
 
   return model;
+}
+
+/**
+ * Check if a model supports structured output (JSON schema)
+ *
+ * Structured output is a feature that allows the model to return responses
+ * conforming to a JSON schema. Currently supported by:
+ * - Claude models (native Anthropic API support)
+ * - Codex/OpenAI models (via response_format with json_schema)
+ *
+ * Models that do NOT support structured output:
+ * - Cursor models (uses different API format)
+ * - OpenCode models (various backend providers)
+ * - Gemini models (different API)
+ * - Copilot models (proxy to various backends)
+ *
+ * @param model - Model string to check
+ * @returns true if the model supports structured output
+ *
+ * @example
+ * supportsStructuredOutput('sonnet') // true (Claude)
+ * supportsStructuredOutput('claude-sonnet-4-20250514') // true (Claude)
+ * supportsStructuredOutput('codex-gpt-5.2') // true (Codex/OpenAI)
+ * supportsStructuredOutput('cursor-auto') // false
+ * supportsStructuredOutput('gemini-2.5-pro') // false
+ */
+export function supportsStructuredOutput(model: string | undefined | null): boolean {
+  // Exclude proxy providers first - they may have Claude/Codex in the model name
+  // but route through different APIs that don't support structured output
+  if (
+    isCursorModel(model) ||
+    isGeminiModel(model) ||
+    isOpencodeModel(model) ||
+    isCopilotModel(model)
+  ) {
+    return false;
+  }
+  return isClaudeModel(model) || isCodexModel(model);
 }
 
 /**

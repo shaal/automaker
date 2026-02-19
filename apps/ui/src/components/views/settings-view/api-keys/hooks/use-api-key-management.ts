@@ -1,4 +1,4 @@
-// @ts-nocheck
+// @ts-nocheck - API key management state with validation and persistence
 import { useState, useEffect } from 'react';
 import { createLogger } from '@automaker/utils/logger';
 import { useAppStore } from '@/store/app-store';

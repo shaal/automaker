@@ -8,7 +8,7 @@ import type { PipelineConfig, FeatureStatusWithPipeline } from '@automaker/types
 import { ListHeader } from './list-header';
 import { ListRow, sortFeatures } from './list-row';
 import { createRowActionHandlers, type RowActionHandlers } from './row-actions';
-import { getStatusLabel, getStatusOrder } from './status-badge';
+import { getStatusOrder } from './status-badge';
 import { getColumnsWithPipeline } from '../../constants';
 import type { SortConfig, SortColumn } from '../../hooks/use-list-view-state';
 

@@ -1,15 +1,31 @@
 import { useState, useCallback } from 'react';
 import { toast } from 'sonner';
 import { createLogger } from '@automaker/utils/logger';
+import type { ModelProvider } from '@automaker/types';
+import type { CliStatus } from '@/store/setup-store';
 
 const logger = createLogger('CliInstallation');
 
+interface InstallApiResult {
+  success: boolean;
+  message?: string;
+  error?: string;
+}
+
+interface InstallProgressEvent {
+  cli?: string;
+  data?: string;
+  type?: string;
+}
+
 interface UseCliInstallationOptions {
-  cliType: 'claude';
-  installApi: () => Promise<any>;
-  onProgressEvent?: (callback: (progress: any) => void) => (() => void) | undefined;
+  cliType: ModelProvider;
+  installApi: () => Promise<InstallApiResult>;
+  onProgressEvent?: (
+    callback: (progress: InstallProgressEvent) => void
+  ) => (() => void) | undefined;
   onSuccess?: () => void;
-  getStoreState?: () => any;
+  getStoreState?: () => CliStatus | null;
 }
 
 export function useCliInstallation({
@@ -32,15 +48,13 @@ export function useCliInstallation({
       let unsubscribe: (() => void) | undefined;
 
       if (onProgressEvent) {
-        unsubscribe = onProgressEvent(
-          (progress: { cli?: string; data?: string; type?: string }) => {
-            if (progress.cli === cliType) {
-              setInstallProgress((prev) => ({
-                output: [...prev.output, progress.data || progress.type || ''],
-              }));
-            }
+        unsubscribe = onProgressEvent((progress: InstallProgressEvent) => {
+          if (progress.cli === cliType) {
+            setInstallProgress((prev) => ({
+              output: [...prev.output, progress.data || progress.type || ''],
+            }));
           }
-        );
+        });
       }
 
       const result = await installApi();

@@ -12,7 +12,6 @@ import {
   HeaderActionsPanelTrigger,
 } from '@/components/ui/header-actions-panel';
 import {
-  RefreshCw,
   FileText,
   Image as ImageIcon,
   Trash2,
@@ -24,9 +23,9 @@ import {
   Pencil,
   FilePlus,
   FileUp,
-  Loader2,
   MoreVertical,
 } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 import {
   useKeyboardShortcuts,
   useKeyboardShortcutsConfig,
@@ -103,12 +102,6 @@ export function ContextView() {
 
   // File input ref for import
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // Get images directory path
-  const getImagesPath = useCallback(() => {
-    if (!currentProject) return null;
-    return `${currentProject.path}/.automaker/images`;
-  }, [currentProject]);
 
   // Keyboard shortcuts for this view
   const contextShortcuts: KeyboardShortcut[] = useMemo(
@@ -670,7 +663,7 @@ export function ContextView() {
   if (isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center" data-testid="context-view-loading">
-        <RefreshCw className="w-6 h-6 animate-spin text-muted-foreground" />
+        <Spinner size="lg" />
       </div>
     );
   }
@@ -790,7 +783,7 @@ export function ContextView() {
         {isUploading && (
           <div className="absolute inset-0 bg-background/80 z-50 flex items-center justify-center">
             <div className="flex flex-col items-center">
-              <Loader2 className="w-8 h-8 animate-spin text-primary mb-2" />
+              <Spinner size="xl" className="mb-2" />
               <span className="text-sm font-medium">Uploading {uploadingFileName}...</span>
             </div>
           </div>
@@ -838,7 +831,7 @@ export function ContextView() {
                         <span className="truncate text-sm block">{file.name}</span>
                         {isGenerating ? (
                           <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                            <Loader2 className="w-3 h-3 animate-spin" />
+                            <Spinner size="xs" />
                             Generating description...
                           </span>
                         ) : file.description ? (
@@ -955,7 +948,7 @@ export function ContextView() {
                       </span>
                       {generatingDescriptions.has(selectedFile.name) ? (
                         <div className="flex items-center gap-2 mt-1 text-sm text-muted-foreground">
-                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <Spinner size="sm" />
                           <span>Generating description with AI...</span>
                         </div>
                       ) : selectedFile.description ? (

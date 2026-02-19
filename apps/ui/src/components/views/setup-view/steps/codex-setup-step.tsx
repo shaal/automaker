@@ -1,4 +1,4 @@
-// @ts-nocheck
+// @ts-nocheck - Codex setup wizard with Electron API integration
 import { useMemo, useCallback } from 'react';
 import { useSetupStore } from '@/store/setup-store';
 import { getElectronAPI } from '@/lib/electron';

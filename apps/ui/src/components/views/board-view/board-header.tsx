@@ -1,7 +1,9 @@
 import { useCallback, useState } from 'react';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
-import { Wand2, GitBranch, ClipboardCheck } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Wand2, GitBranch, ClipboardCheck, RefreshCw } from 'lucide-react';
 import { UsagePopover } from '@/components/usage-popover';
 import { useAppStore } from '@/store/app-store';
 import { useSetupStore } from '@/store/setup-store';
@@ -35,6 +37,7 @@ interface BoardHeaderProps {
   creatingSpecProjectPath?: string;
   // Board controls props
   onShowBoardBackground: () => void;
+  onRefreshBoard: () => Promise<void>;
   // View toggle props
   viewMode: ViewMode;
   onViewModeChange: (mode: ViewMode) => void;
@@ -60,6 +63,7 @@ export function BoardHeader({
   isCreatingSpec,
   creatingSpecProjectPath,
   onShowBoardBackground,
+  onRefreshBoard,
   viewMode,
   onViewModeChange,
 }: BoardHeaderProps) {
@@ -110,8 +114,19 @@ export function BoardHeader({
 
   // State for mobile actions panel
   const [showActionsPanel, setShowActionsPanel] = useState(false);
+  const [isRefreshingBoard, setIsRefreshingBoard] = useState(false);
 
   const isTablet = useIsTablet();
+
+  const handleRefreshBoard = useCallback(async () => {
+    if (isRefreshingBoard) return;
+    setIsRefreshingBoard(true);
+    try {
+      await onRefreshBoard();
+    } finally {
+      setIsRefreshingBoard(false);
+    }
+  }, [isRefreshingBoard, onRefreshBoard]);
 
   return (
     <div className="flex items-center justify-between gap-5 p-4 border-b border-border bg-glass backdrop-blur-md">
@@ -127,6 +142,22 @@ export function BoardHeader({
         <BoardControls isMounted={isMounted} onShowBoardBackground={onShowBoardBackground} />
       </div>
       <div className="flex gap-4 items-center">
+        {isMounted && !isTablet && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="secondary"
+                size="icon-sm"
+                onClick={handleRefreshBoard}
+                disabled={isRefreshingBoard}
+                aria-label="Refresh board state from server"
+              >
+                <RefreshCw className={isRefreshingBoard ? 'w-4 h-4 animate-spin' : 'w-4 h-4'} />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Refresh board state from server</TooltipContent>
+          </Tooltip>
+        )}
         {/* Usage Popover - show if either provider is authenticated, only on desktop */}
         {isMounted && !isTablet && (showClaudeUsage || showCodexUsage) && <UsagePopover />}
 
@@ -142,7 +173,8 @@ export function BoardHeader({
             onConcurrencyChange={onConcurrencyChange}
             isAutoModeRunning={isAutoModeRunning}
             onAutoModeToggle={onAutoModeToggle}
-            onOpenAutoModeSettings={() => {}}
+            skipVerificationInAutoMode={skipVerificationInAutoMode}
+            onSkipVerificationChange={setSkipVerificationInAutoMode}
             onOpenPlanDialog={onOpenPlanDialog}
             showClaudeUsage={showClaudeUsage}
             showCodexUsage={showCodexUsage}
@@ -182,6 +214,13 @@ export function BoardHeader({
             >
               Auto Mode
             </Label>
+            <span
+              className="text-[10px] font-medium text-muted-foreground bg-muted/60 px-1.5 py-0.5 rounded"
+              data-testid="auto-mode-max-concurrency"
+              title="Max concurrent agents"
+            >
+              {maxConcurrency}
+            </span>
             <Switch
               id="auto-mode-toggle"
               checked={isAutoModeRunning}

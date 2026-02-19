@@ -10,6 +10,7 @@ import { createElement } from 'react';
 import { SPEC_FILE_WRITE_DELAY, STATUS_CHECK_INTERVAL_MS } from '../constants';
 import type { FeatureCount } from '../types';
 import type { SpecRegenerationEvent } from '@/types/electron';
+import { useCreateSpec, useRegenerateSpec, useGenerateFeatures } from '@/hooks/mutations';
 
 interface UseSpecGenerationOptions {
   loadSpec: () => Promise<void>;
@@ -17,6 +18,11 @@ interface UseSpecGenerationOptions {
 
 export function useSpecGeneration({ loadSpec }: UseSpecGenerationOptions) {
   const { currentProject } = useAppStore();
+
+  // React Query mutations
+  const createSpecMutation = useCreateSpec(currentProject?.path ?? '');
+  const regenerateSpecMutation = useRegenerateSpec(currentProject?.path ?? '');
+  const generateFeaturesMutation = useGenerateFeatures(currentProject?.path ?? '');
 
   // Dialog visibility state
   const [showCreateDialog, setShowCreateDialog] = useState(false);
@@ -427,47 +433,34 @@ export function useSpecGeneration({ loadSpec }: UseSpecGenerationOptions) {
     logsRef.current = '';
     setLogs('');
     logger.debug('[useSpecGeneration] Starting spec creation, generateFeatures:', generateFeatures);
-    try {
-      const api = getElectronAPI();
-      if (!api.specRegeneration) {
-        logger.error('[useSpecGeneration] Spec regeneration not available');
-        setIsCreating(false);
-        return;
-      }
-      const result = await api.specRegeneration.create(
-        currentProject.path,
-        projectOverview.trim(),
-        generateFeatures,
-        analyzeProjectOnCreate,
-        generateFeatures ? featureCountOnCreate : undefined
-      );
 
-      if (!result.success) {
-        const errorMsg = result.error || 'Unknown error';
-        logger.error('[useSpecGeneration] Failed to start spec creation:', errorMsg);
-        setIsCreating(false);
-        setCurrentPhase('error');
-        setErrorMessage(errorMsg);
-        const errorLog = `[Error] Failed to start spec creation: ${errorMsg}\n`;
-        logsRef.current = errorLog;
-        setLogs(errorLog);
+    createSpecMutation.mutate(
+      {
+        projectOverview: projectOverview.trim(),
+        generateFeatures,
+        analyzeProject: analyzeProjectOnCreate,
+        featureCount: generateFeatures ? featureCountOnCreate : undefined,
+      },
+      {
+        onError: (error) => {
+          const errorMsg = error.message;
+          logger.error('[useSpecGeneration] Failed to create spec:', errorMsg);
+          setIsCreating(false);
+          setCurrentPhase('error');
+          setErrorMessage(errorMsg);
+          const errorLog = `[Error] Failed to create spec: ${errorMsg}\n`;
+          logsRef.current = errorLog;
+          setLogs(errorLog);
+        },
       }
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      logger.error('[useSpecGeneration] Failed to create spec:', errorMsg);
-      setIsCreating(false);
-      setCurrentPhase('error');
-      setErrorMessage(errorMsg);
-      const errorLog = `[Error] Failed to create spec: ${errorMsg}\n`;
-      logsRef.current = errorLog;
-      setLogs(errorLog);
-    }
+    );
   }, [
     currentProject,
     projectOverview,
     generateFeatures,
     analyzeProjectOnCreate,
     featureCountOnCreate,
+    createSpecMutation,
   ]);
 
   const handleRegenerate = useCallback(async () => {
@@ -483,47 +476,34 @@ export function useSpecGeneration({ loadSpec }: UseSpecGenerationOptions) {
       '[useSpecGeneration] Starting spec regeneration, generateFeatures:',
       generateFeaturesOnRegenerate
     );
-    try {
-      const api = getElectronAPI();
-      if (!api.specRegeneration) {
-        logger.error('[useSpecGeneration] Spec regeneration not available');
-        setIsRegenerating(false);
-        return;
-      }
-      const result = await api.specRegeneration.generate(
-        currentProject.path,
-        projectDefinition.trim(),
-        generateFeaturesOnRegenerate,
-        analyzeProjectOnRegenerate,
-        generateFeaturesOnRegenerate ? featureCountOnRegenerate : undefined
-      );
 
-      if (!result.success) {
-        const errorMsg = result.error || 'Unknown error';
-        logger.error('[useSpecGeneration] Failed to start regeneration:', errorMsg);
-        setIsRegenerating(false);
-        setCurrentPhase('error');
-        setErrorMessage(errorMsg);
-        const errorLog = `[Error] Failed to start regeneration: ${errorMsg}\n`;
-        logsRef.current = errorLog;
-        setLogs(errorLog);
+    regenerateSpecMutation.mutate(
+      {
+        projectDefinition: projectDefinition.trim(),
+        generateFeatures: generateFeaturesOnRegenerate,
+        analyzeProject: analyzeProjectOnRegenerate,
+        featureCount: generateFeaturesOnRegenerate ? featureCountOnRegenerate : undefined,
+      },
+      {
+        onError: (error) => {
+          const errorMsg = error.message;
+          logger.error('[useSpecGeneration] Failed to regenerate spec:', errorMsg);
+          setIsRegenerating(false);
+          setCurrentPhase('error');
+          setErrorMessage(errorMsg);
+          const errorLog = `[Error] Failed to regenerate spec: ${errorMsg}\n`;
+          logsRef.current = errorLog;
+          setLogs(errorLog);
+        },
       }
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      logger.error('[useSpecGeneration] Failed to regenerate spec:', errorMsg);
-      setIsRegenerating(false);
-      setCurrentPhase('error');
-      setErrorMessage(errorMsg);
-      const errorLog = `[Error] Failed to regenerate spec: ${errorMsg}\n`;
-      logsRef.current = errorLog;
-      setLogs(errorLog);
-    }
+    );
   }, [
     currentProject,
     projectDefinition,
     generateFeaturesOnRegenerate,
     analyzeProjectOnRegenerate,
     featureCountOnRegenerate,
+    regenerateSpecMutation,
   ]);
 
   const handleGenerateFeatures = useCallback(async () => {
@@ -536,36 +516,20 @@ export function useSpecGeneration({ loadSpec }: UseSpecGenerationOptions) {
     logsRef.current = '';
     setLogs('');
     logger.debug('[useSpecGeneration] Starting feature generation from existing spec');
-    try {
-      const api = getElectronAPI();
-      if (!api.specRegeneration) {
-        logger.error('[useSpecGeneration] Spec regeneration not available');
-        setIsGeneratingFeatures(false);
-        return;
-      }
-      const result = await api.specRegeneration.generateFeatures(currentProject.path);
 
-      if (!result.success) {
-        const errorMsg = result.error || 'Unknown error';
-        logger.error('[useSpecGeneration] Failed to start feature generation:', errorMsg);
+    generateFeaturesMutation.mutate(undefined, {
+      onError: (error) => {
+        const errorMsg = error.message;
+        logger.error('[useSpecGeneration] Failed to generate features:', errorMsg);
         setIsGeneratingFeatures(false);
         setCurrentPhase('error');
         setErrorMessage(errorMsg);
-        const errorLog = `[Error] Failed to start feature generation: ${errorMsg}\n`;
+        const errorLog = `[Error] Failed to generate features: ${errorMsg}\n`;
         logsRef.current = errorLog;
         setLogs(errorLog);
-      }
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      logger.error('[useSpecGeneration] Failed to generate features:', errorMsg);
-      setIsGeneratingFeatures(false);
-      setCurrentPhase('error');
-      setErrorMessage(errorMsg);
-      const errorLog = `[Error] Failed to generate features: ${errorMsg}\n`;
-      logsRef.current = errorLog;
-      setLogs(errorLog);
-    }
-  }, [currentProject]);
+      },
+    });
+  }, [currentProject, generateFeaturesMutation]);
 
   const handleSync = useCallback(async () => {
     if (!currentProject) return;

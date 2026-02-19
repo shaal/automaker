@@ -42,7 +42,7 @@ export function AgentView() {
     return () => window.removeEventListener('resize', updateVisibility);
   }, []);
 
-  const [modelSelection, setModelSelection] = useState<PhaseModelEntry>({ model: 'sonnet' });
+  const [modelSelection, setModelSelection] = useState<PhaseModelEntry>({ model: 'claude-sonnet' });
 
   // Input ref for auto-focus
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -63,7 +63,6 @@ export function AgentView() {
     sendMessage,
     clearHistory,
     stopExecution,
-    error: agentError,
     serverQueue,
     addToServerQueue,
     removeFromServerQueue,

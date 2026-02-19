@@ -175,4 +175,48 @@ export {
   findEditorByCommand,
   openInEditor,
   openInFileManager,
+  openInTerminal,
 } from './editor.js';
+
+// External terminal detection and launching
+export {
+  clearTerminalCache,
+  detectAllTerminals,
+  detectDefaultTerminal,
+  findTerminalById,
+  openInExternalTerminal,
+} from './terminal.js';
+
+// RC Generator - Shell configuration file generation
+export {
+  hexToXterm256,
+  getThemeANSIColors,
+  generateBashrc,
+  generateZshrc,
+  generateCommonFunctions,
+  generateThemeColors,
+  getShellName,
+  type TerminalConfig,
+  type TerminalTheme,
+  type ANSIColors,
+} from './rc-generator.js';
+
+// RC File Manager - Shell configuration file I/O
+export {
+  RC_FILE_VERSION,
+  getTerminalDir,
+  getThemesDir,
+  getRcFilePath,
+  ensureTerminalDir,
+  checkRcFileVersion,
+  needsRegeneration,
+  writeAllThemeFiles,
+  writeThemeFile,
+  writeRcFiles,
+  ensureRcFilesUpToDate,
+  deleteTerminalDir,
+  ensureUserCustomFile,
+} from './rc-file-manager.js';
+
+// Terminal Theme Colors - Raw theme color data for all 40 themes
+export { terminalThemeColors, getTerminalThemeColors } from './terminal-theme-colors.js';

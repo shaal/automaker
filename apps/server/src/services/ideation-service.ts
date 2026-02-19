@@ -23,7 +23,9 @@ import type {
   SendMessageOptions,
   PromptCategory,
   IdeationPrompt,
+  IdeationContextSources,
 } from '@automaker/types';
+import { DEFAULT_IDEATION_CONTEXT_SOURCES } from '@automaker/types';
 import {
   getIdeationDir,
   getIdeasDir,
@@ -32,16 +34,22 @@ import {
   getIdeationSessionsDir,
   getIdeationSessionPath,
   getIdeationAnalysisPath,
+  getAppSpecPath,
   ensureIdeationDir,
 } from '@automaker/platform';
+import { extractXmlElements, extractImplementedFeatures } from '../lib/xml-extractor.js';
 import { createLogger, loadContextFiles, isAbortError } from '@automaker/utils';
 import { ProviderFactory } from '../providers/provider-factory.js';
 import type { SettingsService } from './settings-service.js';
 import type { FeatureLoader } from './feature-loader.js';
 import { createChatOptions, validateWorkingDirectory } from '../lib/sdk-options.js';
-import { resolveModelString } from '@automaker/model-resolver';
+import { resolveModelString, resolvePhaseModel } from '@automaker/model-resolver';
 import { stripProviderPrefix } from '@automaker/types';
-import { getPromptCustomization } from '../lib/settings-helpers.js';
+import {
+  getPromptCustomization,
+  getProviderByModelId,
+  getPhaseModelWithOverrides,
+} from '../lib/settings-helpers.js';
 
 const logger = createLogger('IdeationService');
 
@@ -208,7 +216,27 @@ export class IdeationService {
       );
 
       // Resolve model alias to canonical identifier (with prefix)
-      const modelId = resolveModelString(options?.model ?? 'sonnet');
+      let modelId = resolveModelString(options?.model ?? 'sonnet');
+
+      // Try to find a provider for this model (e.g., GLM, MiniMax models)
+      let claudeCompatibleProvider: import('@automaker/types').ClaudeCompatibleProvider | undefined;
+      let credentials = await this.settingsService?.getCredentials();
+
+      if (this.settingsService && options?.model) {
+        const providerResult = await getProviderByModelId(
+          options.model,
+          this.settingsService,
+          '[IdeationService]'
+        );
+        if (providerResult.provider) {
+          claudeCompatibleProvider = providerResult.provider;
+          // Use resolved model from provider if available (maps to Claude model)
+          if (providerResult.resolvedModel) {
+            modelId = providerResult.resolvedModel;
+          }
+          credentials = providerResult.credentials ?? credentials;
+        }
+      }
 
       // Create SDK options
       const sdkOptions = createChatOptions({
@@ -232,6 +260,8 @@ export class IdeationService {
         maxTurns: 1, // Single turn for ideation
         abortController: activeSession.abortController!,
         conversationHistory: conversationHistory.length > 0 ? conversationHistory : undefined,
+        claudeCompatibleProvider, // Pass provider for alternative endpoint configuration
+        credentials, // Pass credentials for resolving 'credentials' apiKeySource
       };
 
       const stream = provider.executeQuery(executeOptions);
@@ -612,8 +642,12 @@ export class IdeationService {
     projectPath: string,
     promptId: string,
     category: IdeaCategory,
-    count: number = 10
+    count: number = 10,
+    contextSources?: IdeationContextSources
   ): Promise<AnalysisSuggestion[]> {
+    const suggestionCount = Math.min(Math.max(Math.floor(count ?? 10), 1), 20);
+    // Merge with defaults for backward compatibility
+    const sources = { ...DEFAULT_IDEATION_CONTEXT_SOURCES, ...contextSources };
     validateWorkingDirectory(projectPath);
 
     // Get the prompt
@@ -630,16 +664,26 @@ export class IdeationService {
     });
 
     try {
-      // Load context files
+      // Load context files (respecting toggle settings)
       const contextResult = await loadContextFiles({
         projectPath,
         fsModule: secureFs as Parameters<typeof loadContextFiles>[0]['fsModule'],
+        includeContextFiles: sources.useContextFiles,
+        includeMemory: sources.useMemoryFiles,
       });
 
       // Build context from multiple sources
       let contextPrompt = contextResult.formattedPrompt;
 
-      // If no context files, try to gather basic project info
+      // Add app spec context if enabled
+      if (sources.useAppSpec) {
+        const appSpecContext = await this.buildAppSpecContext(projectPath);
+        if (appSpecContext) {
+          contextPrompt = contextPrompt ? `${contextPrompt}\n\n${appSpecContext}` : appSpecContext;
+        }
+      }
+
+      // If no context was found, try to gather basic project info
       if (!contextPrompt) {
         const projectInfo = await this.gatherBasicProjectInfo(projectPath);
         if (projectInfo) {
@@ -647,8 +691,11 @@ export class IdeationService {
         }
       }
 
-      // Gather existing features and ideas to prevent duplicates
-      const existingWorkContext = await this.gatherExistingWorkContext(projectPath);
+      // Gather existing features and ideas to prevent duplicates (respecting toggle settings)
+      const existingWorkContext = await this.gatherExistingWorkContext(projectPath, {
+        includeFeatures: sources.useExistingFeatures,
+        includeIdeas: sources.useExistingIdeas,
+      });
 
       // Get customized prompts from settings
       const prompts = await getPromptCustomization(this.settingsService, '[IdeationService]');
@@ -658,12 +705,28 @@ export class IdeationService {
         prompts.ideation.suggestionsSystemPrompt,
         contextPrompt,
         category,
-        count,
+        suggestionCount,
         existingWorkContext
       );
 
-      // Resolve model alias to canonical identifier (with prefix)
-      const modelId = resolveModelString('sonnet');
+      // Get model from phase settings with provider info (ideationModel)
+      const phaseResult = await getPhaseModelWithOverrides(
+        'ideationModel',
+        this.settingsService,
+        projectPath,
+        '[IdeationService]'
+      );
+      const resolved = resolvePhaseModel(phaseResult.phaseModel);
+      // resolvePhaseModel already resolves model aliases internally - no need to call resolveModelString again
+      const modelId = resolved.model;
+      const claudeCompatibleProvider = phaseResult.provider;
+      const credentials = phaseResult.credentials;
+
+      logger.info(
+        'generateSuggestions using model:',
+        modelId,
+        claudeCompatibleProvider ? `via provider: ${claudeCompatibleProvider.name}` : 'direct API'
+      );
 
       // Create SDK options
       const sdkOptions = createChatOptions({
@@ -688,6 +751,9 @@ export class IdeationService {
         // Disable all tools - we just want text generation, not codebase analysis
         allowedTools: [],
         abortController: new AbortController(),
+        readOnly: true, // Suggestions only need to return JSON, never write files
+        claudeCompatibleProvider, // Pass provider for alternative endpoint configuration
+        credentials, // Pass credentials for resolving 'credentials' apiKeySource
       };
 
       const stream = provider.executeQuery(executeOptions);
@@ -706,7 +772,11 @@ export class IdeationService {
       }
 
       // Parse the response into structured suggestions
-      const suggestions = this.parseSuggestionsFromResponse(responseText, category);
+      const suggestions = this.parseSuggestionsFromResponse(
+        responseText,
+        category,
+        suggestionCount
+      );
 
       // Emit complete event
       this.events.emit('ideation:suggestions', {
@@ -769,40 +839,47 @@ ${contextSection}${existingWorkSection}`;
    */
   private parseSuggestionsFromResponse(
     response: string,
-    category: IdeaCategory
+    category: IdeaCategory,
+    count: number
   ): AnalysisSuggestion[] {
     try {
       // Try to extract JSON from the response
       const jsonMatch = response.match(/\[[\s\S]*\]/);
       if (!jsonMatch) {
         logger.warn('No JSON array found in response, falling back to text parsing');
-        return this.parseTextResponse(response, category);
+        return this.parseTextResponse(response, category, count);
       }
 
       const parsed = JSON.parse(jsonMatch[0]);
       if (!Array.isArray(parsed)) {
-        return this.parseTextResponse(response, category);
+        return this.parseTextResponse(response, category, count);
       }
 
-      return parsed.map((item: any, index: number) => ({
-        id: this.generateId('sug'),
-        category,
-        title: item.title || `Suggestion ${index + 1}`,
-        description: item.description || '',
-        rationale: item.rationale || '',
-        priority: item.priority || 'medium',
-        relatedFiles: item.relatedFiles || [],
-      }));
+      return parsed
+        .map((item: any, index: number) => ({
+          id: this.generateId('sug'),
+          category,
+          title: item.title || `Suggestion ${index + 1}`,
+          description: item.description || '',
+          rationale: item.rationale || '',
+          priority: item.priority || 'medium',
+          relatedFiles: item.relatedFiles || [],
+        }))
+        .slice(0, count);
     } catch (error) {
       logger.warn('Failed to parse JSON response:', error);
-      return this.parseTextResponse(response, category);
+      return this.parseTextResponse(response, category, count);
     }
   }
 
   /**
    * Fallback: parse text response into suggestions
    */
-  private parseTextResponse(response: string, category: IdeaCategory): AnalysisSuggestion[] {
+  private parseTextResponse(
+    response: string,
+    category: IdeaCategory,
+    count: number
+  ): AnalysisSuggestion[] {
     const suggestions: AnalysisSuggestion[] = [];
 
     // Try to find numbered items or headers
@@ -862,7 +939,7 @@ ${contextSection}${existingWorkSection}`;
       });
     }
 
-    return suggestions.slice(0, 5); // Max 5 suggestions
+    return suggestions.slice(0, count);
   }
 
   // ============================================================================
@@ -1301,6 +1378,68 @@ ${contextSection}${existingWorkSection}`;
   }
 
   /**
+   * Build context from app_spec.txt for suggestion generation
+   * Extracts project name, overview, capabilities, and implemented features
+   */
+  private async buildAppSpecContext(projectPath: string): Promise<string> {
+    try {
+      const specPath = getAppSpecPath(projectPath);
+      const specContent = (await secureFs.readFile(specPath, 'utf-8')) as string;
+
+      const parts: string[] = [];
+      parts.push('## App Specification');
+
+      // Extract project name
+      const projectNames = extractXmlElements(specContent, 'project_name');
+      if (projectNames.length > 0 && projectNames[0]) {
+        parts.push(`**Project:** ${projectNames[0]}`);
+      }
+
+      // Extract overview
+      const overviews = extractXmlElements(specContent, 'overview');
+      if (overviews.length > 0 && overviews[0]) {
+        parts.push(`**Overview:** ${overviews[0]}`);
+      }
+
+      // Extract core capabilities
+      const capabilities = extractXmlElements(specContent, 'capability');
+      if (capabilities.length > 0) {
+        parts.push('**Core Capabilities:**');
+        for (const cap of capabilities) {
+          parts.push(`- ${cap}`);
+        }
+      }
+
+      // Extract implemented features
+      const implementedFeatures = extractImplementedFeatures(specContent);
+      if (implementedFeatures.length > 0) {
+        parts.push('**Implemented Features:**');
+        for (const feature of implementedFeatures) {
+          if (feature.description) {
+            parts.push(`- ${feature.name}: ${feature.description}`);
+          } else {
+            parts.push(`- ${feature.name}`);
+          }
+        }
+      }
+
+      // Only return content if we extracted something meaningful
+      if (parts.length > 1) {
+        return parts.join('\n');
+      }
+      return '';
+    } catch (error) {
+      // If file doesn't exist, return empty string silently
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return '';
+      }
+      // For other errors, log and return empty string
+      logger.warn('Failed to build app spec context:', error);
+      return '';
+    }
+  }
+
+  /**
    * Gather basic project information for context when no context files exist
    */
   private async gatherBasicProjectInfo(projectPath: string): Promise<string | null> {
@@ -1395,11 +1534,15 @@ ${contextSection}${existingWorkSection}`;
    * Gather existing features and ideas to prevent duplicate suggestions
    * Returns a concise list of titles grouped by status to avoid polluting context
    */
-  private async gatherExistingWorkContext(projectPath: string): Promise<string> {
+  private async gatherExistingWorkContext(
+    projectPath: string,
+    options?: { includeFeatures?: boolean; includeIdeas?: boolean }
+  ): Promise<string> {
+    const { includeFeatures = true, includeIdeas = true } = options ?? {};
     const parts: string[] = [];
 
     // Load existing features from the board
-    if (this.featureLoader) {
+    if (includeFeatures && this.featureLoader) {
       try {
         const features = await this.featureLoader.getAll(projectPath);
         if (features.length > 0) {
@@ -1447,34 +1590,36 @@ ${contextSection}${existingWorkSection}`;
     }
 
     // Load existing ideas
-    try {
-      const ideas = await this.getIdeas(projectPath);
-      // Filter out archived ideas
-      const activeIdeas = ideas.filter((idea) => idea.status !== 'archived');
+    if (includeIdeas) {
+      try {
+        const ideas = await this.getIdeas(projectPath);
+        // Filter out archived ideas
+        const activeIdeas = ideas.filter((idea) => idea.status !== 'archived');
 
-      if (activeIdeas.length > 0) {
-        parts.push('## Existing Ideas (Do NOT regenerate these)');
-        parts.push(
-          'The following ideas have already been captured. Do NOT suggest similar ideas:\n'
-        );
+        if (activeIdeas.length > 0) {
+          parts.push('## Existing Ideas (Do NOT regenerate these)');
+          parts.push(
+            'The following ideas have already been captured. Do NOT suggest similar ideas:\n'
+          );
 
-        // Group by category for organization
-        const byCategory: Record<string, string[]> = {};
-        for (const idea of activeIdeas) {
-          const cat = idea.category || 'feature';
-          if (!byCategory[cat]) {
-            byCategory[cat] = [];
+          // Group by category for organization
+          const byCategory: Record<string, string[]> = {};
+          for (const idea of activeIdeas) {
+            const cat = idea.category || 'feature';
+            if (!byCategory[cat]) {
+              byCategory[cat] = [];
+            }
+            byCategory[cat].push(idea.title);
           }
-          byCategory[cat].push(idea.title);
-        }
 
-        for (const [category, titles] of Object.entries(byCategory)) {
-          parts.push(`**${category}:** ${titles.join(', ')}`);
+          for (const [category, titles] of Object.entries(byCategory)) {
+            parts.push(`**${category}:** ${titles.join(', ')}`);
+          }
+          parts.push('');
         }
-        parts.push('');
+      } catch (error) {
+        logger.warn('Failed to load existing ideas:', error);
       }
-    } catch (error) {
-      logger.warn('Failed to load existing ideas:', error);
     }
 
     return parts.join('\n');

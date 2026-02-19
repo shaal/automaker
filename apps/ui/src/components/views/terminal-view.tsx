@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from '@tanstack/react-router';
 import { createLogger } from '@automaker/utils/logger';
 import {
   Terminal as TerminalIcon,
@@ -7,13 +8,13 @@ import {
   Unlock,
   SplitSquareHorizontal,
   SplitSquareVertical,
-  Loader2,
   AlertCircle,
   RefreshCw,
   X,
   SquarePlus,
   Settings,
 } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 import { getServerUrlSync } from '@/lib/http-api-client';
 import {
   useAppStore,
@@ -57,7 +58,7 @@ import {
   defaultDropAnimationSideEffects,
 } from '@dnd-kit/core';
 import { cn } from '@/lib/utils';
-import { apiFetch, apiGet, apiPost, apiDeleteRaw, getAuthHeaders } from '@/lib/api-fetch';
+import { apiFetch, apiGet, apiPost, apiDeleteRaw } from '@/lib/api-fetch';
 import { getApiKey } from '@/lib/http-api-client';
 
 const logger = createLogger('Terminal');
@@ -216,7 +217,18 @@ function NewTabDropZone({ isDropTarget }: { isDropTarget: boolean }) {
   );
 }
 
-export function TerminalView() {
+interface TerminalViewProps {
+  /** Initial working directory to open a terminal in (e.g., from worktree panel) */
+  initialCwd?: string;
+  /** Branch name for display in toast (optional) */
+  initialBranch?: string;
+  /** Mode for opening terminal: 'tab' for new tab, 'split' for split in current tab */
+  initialMode?: 'tab' | 'split';
+  /** Unique nonce to allow opening the same worktree multiple times */
+  nonce?: number;
+}
+
+export function TerminalView({ initialCwd, initialBranch, initialMode, nonce }: TerminalViewProps) {
   const {
     terminalState,
     setTerminalUnlocked,
@@ -232,7 +244,6 @@ export function TerminalView() {
     reorderTerminalTabs,
     moveTerminalToTab,
     setTerminalPanelFontSize,
-    setTerminalTabLayout,
     toggleTerminalMaximized,
     saveTerminalLayout,
     getPersistedTerminalLayout,
@@ -245,6 +256,8 @@ export function TerminalView() {
     setTerminalScreenReaderMode,
     updateTerminalPanelSizes,
   } = useAppStore();
+
+  const navigate = useNavigate();
 
   const [status, setStatus] = useState<TerminalStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -264,6 +277,7 @@ export function TerminalView() {
     max: number;
   } | null>(null);
   const hasShownHighRamWarningRef = useRef<boolean>(false);
+  const initialCwdHandledRef = useRef<string | null>(null);
 
   // Show warning when 20+ terminals are open
   useEffect(() => {
@@ -296,9 +310,10 @@ export function TerminalView() {
       if (!node) return;
       if (node.type === 'terminal') {
         sessionIds.push(node.sessionId);
-      } else {
+      } else if (node.type === 'split') {
         node.panels.forEach(collectFromLayout);
       }
+      // testRunner type has sessionId but we only collect terminal sessions
     };
     terminalState.tabs.forEach((tab) => collectFromLayout(tab.layout));
     return sessionIds;
@@ -537,6 +552,106 @@ export function TerminalView() {
     }
   }, [terminalState.isUnlocked, fetchServerSettings]);
 
+  // Handle initialCwd prop - auto-create a terminal with the specified working directory
+  // This is triggered when navigating from worktree panel's "Open in Integrated Terminal"
+  useEffect(() => {
+    // Skip if no initialCwd provided
+    if (!initialCwd) return;
+
+    // Skip if we've already handled this exact request (prevents duplicate terminals)
+    // Include mode and nonce in the key to allow opening same cwd multiple times
+    const cwdKey = `${initialCwd}:${initialMode || 'default'}:${nonce || 0}`;
+    if (initialCwdHandledRef.current === cwdKey) return;
+
+    // Skip if terminal is not enabled or not unlocked
+    if (!status?.enabled) return;
+    if (status.passwordRequired && !terminalState.isUnlocked) return;
+
+    // Skip if still loading
+    if (loading) return;
+
+    // Mark this cwd as being handled
+    initialCwdHandledRef.current = cwdKey;
+
+    // Create the terminal with the specified cwd
+    const createTerminalWithCwd = async () => {
+      try {
+        const headers: Record<string, string> = {};
+        if (terminalState.authToken) {
+          headers['X-Terminal-Token'] = terminalState.authToken;
+        }
+
+        const response = await apiFetch('/api/terminal/sessions', 'POST', {
+          headers,
+          body: { cwd: initialCwd, cols: 80, rows: 24 },
+        });
+        const data = await response.json();
+
+        if (data.success) {
+          // Create in new tab or split based on mode
+          if (initialMode === 'tab') {
+            // Create in a new tab (tab name uses default "Terminal N" naming)
+            const newTabId = addTerminalTab();
+            const { addTerminalToTab } = useAppStore.getState();
+            // Pass branch name for display in terminal panel header
+            addTerminalToTab(data.data.id, newTabId, 'horizontal', initialBranch);
+          } else {
+            // Default: add to current tab (split if there's already a terminal)
+            // Pass branch name for display in terminal panel header
+            addTerminalToLayout(data.data.id, undefined, undefined, initialBranch);
+          }
+
+          // Mark this session as new for running initial command
+          if (defaultRunScript) {
+            setNewSessionIds((prev) => new Set(prev).add(data.data.id));
+          }
+
+          // Show success toast with branch name if provided
+          const displayName = initialBranch || initialCwd.split('/').pop() || initialCwd;
+          toast.success(`Terminal opened at ${displayName}`);
+
+          // Refresh session count
+          fetchServerSettings();
+
+          // Clear the cwd from the URL to prevent re-creating on refresh
+          navigate({ to: '/terminal', search: {}, replace: true });
+        } else {
+          logger.error('Failed to create terminal for cwd:', data.error);
+          toast.error('Failed to create terminal', {
+            description: data.error || 'Unknown error',
+          });
+          // Reset the handled ref so the same cwd can be retried
+          initialCwdHandledRef.current = null;
+        }
+      } catch (err) {
+        logger.error('Create terminal with cwd error:', err);
+        toast.error('Failed to create terminal', {
+          description: 'Could not connect to server',
+        });
+        // Reset the handled ref so the same cwd can be retried
+        initialCwdHandledRef.current = null;
+      }
+    };
+
+    createTerminalWithCwd();
+  }, [
+    initialCwd,
+    initialBranch,
+    initialMode,
+    nonce,
+    status?.enabled,
+    status?.passwordRequired,
+    terminalState.isUnlocked,
+    terminalState.authToken,
+    terminalState.tabs.length,
+    loading,
+    defaultRunScript,
+    addTerminalToLayout,
+    addTerminalTab,
+    fetchServerSettings,
+    navigate,
+  ]);
+
   // Handle project switching - save and restore terminal layouts
   // Uses terminalState.lastActiveProjectPath (persisted in store) instead of a local ref
   // This ensures terminals persist when navigating away from terminal route and back
@@ -675,6 +790,11 @@ export function TerminalView() {
               size: persisted.size,
               fontSize: persisted.fontSize,
             };
+          }
+
+          // Handle testRunner type - skip for now as we don't persist test runner sessions
+          if (persisted.type === 'testRunner') {
+            return null;
           }
 
           // It's a split - rebuild all child panels
@@ -828,9 +948,11 @@ export function TerminalView() {
 
   // Create a new terminal session
   // targetSessionId: the terminal to split (if splitting an existing terminal)
+  // customCwd: optional working directory to use instead of the current project path
   const createTerminal = async (
     direction?: 'horizontal' | 'vertical',
-    targetSessionId?: string
+    targetSessionId?: string,
+    customCwd?: string
   ) => {
     if (!canCreateTerminal('[Terminal] Debounced terminal creation')) {
       return;
@@ -844,7 +966,7 @@ export function TerminalView() {
 
       const response = await apiFetch('/api/terminal/sessions', 'POST', {
         headers,
-        body: { cwd: currentProject?.path || undefined, cols: 80, rows: 24 },
+        body: { cwd: customCwd || currentProject?.path || undefined, cols: 80, rows: 24 },
       });
       const data = await response.json();
 
@@ -978,7 +1100,8 @@ export function TerminalView() {
     const collectSessionIds = (node: TerminalPanelContent | null): string[] => {
       if (!node) return [];
       if (node.type === 'terminal') return [node.sessionId];
-      return node.panels.flatMap(collectSessionIds);
+      if (node.type === 'split') return node.panels.flatMap(collectSessionIds);
+      return []; // testRunner type
     };
 
     const sessionIds = collectSessionIds(tab.layout);
@@ -1016,7 +1139,10 @@ export function TerminalView() {
     if (panel.type === 'terminal') {
       return [panel.sessionId];
     }
-    return panel.panels.flatMap(getTerminalIds);
+    if (panel.type === 'split') {
+      return panel.panels.flatMap(getTerminalIds);
+    }
+    return []; // testRunner type
   };
 
   // Get a STABLE key for a panel - uses the stable id for splits
@@ -1025,8 +1151,12 @@ export function TerminalView() {
     if (panel.type === 'terminal') {
       return panel.sessionId;
     }
-    // Use the stable id for split nodes
-    return panel.id;
+    if (panel.type === 'split') {
+      // Use the stable id for split nodes
+      return panel.id;
+    }
+    // testRunner - use sessionId
+    return panel.sessionId;
   };
 
   const findTerminalFontSize = useCallback(
@@ -1038,6 +1168,7 @@ export function TerminalView() {
           }
           return null;
         }
+        if (panel.type !== 'split') return null; // testRunner type
         for (const child of panel.panels) {
           const found = findInPanel(child);
           if (found !== null) return found;
@@ -1092,7 +1223,8 @@ export function TerminalView() {
         // Helper to get all terminal IDs from a layout subtree
         const getAllTerminals = (node: TerminalPanelContent): string[] => {
           if (node.type === 'terminal') return [node.sessionId];
-          return node.panels.flatMap(getAllTerminals);
+          if (node.type === 'split') return node.panels.flatMap(getAllTerminals);
+          return []; // testRunner type
         };
 
         // Helper to find terminal and its path in the tree
@@ -1109,6 +1241,7 @@ export function TerminalView() {
           if (node.type === 'terminal') {
             return node.sessionId === target ? path : null;
           }
+          if (node.type !== 'split') return null; // testRunner type
           for (let i = 0; i < node.panels.length; i++) {
             const result = findPath(node.panels[i], target, [
               ...path,
@@ -1232,9 +1365,15 @@ export function TerminalView() {
             onCommandRan={() => handleCommandRan(content.sessionId)}
             isMaximized={terminalState.maximizedSessionId === content.sessionId}
             onToggleMaximize={() => toggleTerminalMaximized(content.sessionId)}
+            branchName={content.branchName}
           />
         </TerminalErrorBoundary>
       );
+    }
+
+    // Handle testRunner type - return null for now
+    if (content.type === 'testRunner') {
+      return null;
     }
 
     const isHorizontal = content.direction === 'horizontal';
@@ -1248,7 +1387,7 @@ export function TerminalView() {
 
     return (
       <PanelGroup direction={content.direction} onLayout={handleLayoutChange}>
-        {content.panels.map((panel, index) => {
+        {content.panels.map((panel: TerminalPanelContent, index: number) => {
           const panelSize =
             panel.type === 'terminal' && panel.size ? panel.size : defaultSizePerPanel;
 
@@ -1279,7 +1418,7 @@ export function TerminalView() {
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        <Spinner size="xl" />
       </div>
     );
   }
@@ -1342,7 +1481,7 @@ export function TerminalView() {
           {authError && <p className="text-sm text-destructive">{authError}</p>}
           <Button type="submit" className="w-full" disabled={authLoading || !password}>
             {authLoading ? (
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              <Spinner size="sm" className="mr-2" />
             ) : (
               <Unlock className="h-4 w-4 mr-2" />
             )}

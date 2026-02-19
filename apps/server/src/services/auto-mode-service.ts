@@ -20,8 +20,15 @@ import type {
   PipelineConfig,
   ThinkingLevel,
   PlanningMode,
+  ParsedTask,
+  PlanSpec,
 } from '@automaker/types';
-import { DEFAULT_PHASE_MODELS, isClaudeModel, stripProviderPrefix } from '@automaker/types';
+import {
+  DEFAULT_PHASE_MODELS,
+  DEFAULT_MAX_CONCURRENCY,
+  isClaudeModel,
+  stripProviderPrefix,
+} from '@automaker/types';
 import {
   buildPromptWithImages,
   classifyError,
@@ -63,33 +70,29 @@ import {
   filterClaudeMdFromContext,
   getMCPServersFromSettings,
   getPromptCustomization,
+  getProviderByModelId,
+  getPhaseModelWithOverrides,
 } from '../lib/settings-helpers.js';
 import { getNotificationService } from './notification-service.js';
 
 const execAsync = promisify(exec);
 
-// PlanningMode type is imported from @automaker/types
-
-interface ParsedTask {
-  id: string; // e.g., "T001"
-  description: string; // e.g., "Create user model"
-  filePath?: string; // e.g., "src/models/user.ts"
-  phase?: string; // e.g., "Phase 1: Foundation" (for full mode)
-  status: 'pending' | 'in_progress' | 'completed' | 'failed';
+/**
+ * Get the current branch name for a git repository
+ * @param projectPath - Path to the git repository
+ * @returns The current branch name, or null if not in a git repo or on detached HEAD
+ */
+async function getCurrentBranch(projectPath: string): Promise<string | null> {
+  try {
+    const { stdout } = await execAsync('git branch --show-current', { cwd: projectPath });
+    const branch = stdout.trim();
+    return branch || null;
+  } catch {
+    return null;
+  }
 }
 
-interface PlanSpec {
-  status: 'pending' | 'generating' | 'generated' | 'approved' | 'rejected';
-  content?: string;
-  version: number;
-  generatedAt?: string;
-  approvedAt?: string;
-  reviewedByUser: boolean;
-  tasksCompleted?: number;
-  tasksTotal?: number;
-  currentTaskId?: string;
-  tasks?: ParsedTask[];
-}
+// ParsedTask and PlanSpec types are imported from @automaker/types
 
 /**
  * Information about pipeline status when resuming a feature.
@@ -195,6 +198,141 @@ function parseTaskLine(line: string, currentPhase?: string): ParsedTask | null {
   };
 }
 
+/**
+ * Detect [TASK_START] marker in text and extract task ID
+ * Format: [TASK_START] T###: Description
+ */
+function detectTaskStartMarker(text: string): string | null {
+  const match = text.match(/\[TASK_START\]\s*(T\d{3})/);
+  return match ? match[1] : null;
+}
+
+/**
+ * Detect [TASK_COMPLETE] marker in text and extract task ID
+ * Format: [TASK_COMPLETE] T###: Brief summary
+ */
+function detectTaskCompleteMarker(text: string): string | null {
+  const match = text.match(/\[TASK_COMPLETE\]\s*(T\d{3})/);
+  return match ? match[1] : null;
+}
+
+/**
+ * Detect [PHASE_COMPLETE] marker in text and extract phase number
+ * Format: [PHASE_COMPLETE] Phase N complete
+ */
+function detectPhaseCompleteMarker(text: string): number | null {
+  const match = text.match(/\[PHASE_COMPLETE\]\s*Phase\s*(\d+)/i);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+/**
+ * Fallback spec detection when [SPEC_GENERATED] marker is missing
+ * Looks for structural elements that indicate a spec was generated.
+ * This is especially important for non-Claude models that may not output
+ * the explicit [SPEC_GENERATED] marker.
+ *
+ * @param text - The text content to check for spec structure
+ * @returns true if the text appears to be a generated spec
+ */
+function detectSpecFallback(text: string): boolean {
+  // Check for key structural elements of a spec
+  const hasTasksBlock = /```tasks[\s\S]*```/.test(text);
+  const hasTaskLines = /- \[ \] T\d{3}:/.test(text);
+
+  // Check for common spec sections (case-insensitive)
+  const hasAcceptanceCriteria = /acceptance criteria/i.test(text);
+  const hasTechnicalContext = /technical context/i.test(text);
+  const hasProblemStatement = /problem statement/i.test(text);
+  const hasUserStory = /user story/i.test(text);
+  // Additional patterns for different model outputs
+  const hasGoal = /\*\*Goal\*\*:/i.test(text);
+  const hasSolution = /\*\*Solution\*\*:/i.test(text);
+  const hasImplementation = /implementation\s*(plan|steps|approach)/i.test(text);
+  const hasOverview = /##\s*(overview|summary)/i.test(text);
+
+  // Spec is detected if we have task structure AND at least some spec content
+  const hasTaskStructure = hasTasksBlock || hasTaskLines;
+  const hasSpecContent =
+    hasAcceptanceCriteria ||
+    hasTechnicalContext ||
+    hasProblemStatement ||
+    hasUserStory ||
+    hasGoal ||
+    hasSolution ||
+    hasImplementation ||
+    hasOverview;
+
+  return hasTaskStructure && hasSpecContent;
+}
+
+/**
+ * Extract summary from text content
+ * Checks for multiple formats in order of priority:
+ * 1. Explicit <summary> tags
+ * 2. ## Summary section (markdown)
+ * 3. **Goal**: section (lite planning mode)
+ * 4. **Problem**: or **Problem Statement**: section (spec/full modes)
+ * 5. **Solution**: section as fallback
+ *
+ * Note: Uses last match for each pattern to avoid stale summaries
+ * when agent output accumulates across multiple runs.
+ *
+ * @param text - The text content to extract summary from
+ * @returns The extracted summary string, or null if no summary found
+ */
+function extractSummary(text: string): string | null {
+  // Helper to truncate content to first paragraph with max length
+  const truncate = (content: string, maxLength: number): string => {
+    const firstPara = content.split(/\n\n/)[0];
+    return firstPara.length > maxLength ? `${firstPara.substring(0, maxLength)}...` : firstPara;
+  };
+
+  // Helper to get last match from matchAll results
+  const getLastMatch = (matches: IterableIterator<RegExpMatchArray>): RegExpMatchArray | null => {
+    const arr = [...matches];
+    return arr.length > 0 ? arr[arr.length - 1] : null;
+  };
+
+  // Check for explicit <summary> tags first (use last match to avoid stale summaries)
+  const summaryMatches = text.matchAll(/<summary>([\s\S]*?)<\/summary>/g);
+  const summaryMatch = getLastMatch(summaryMatches);
+  if (summaryMatch) {
+    return summaryMatch[1].trim();
+  }
+
+  // Check for ## Summary section (use last match)
+  const sectionMatches = text.matchAll(/##\s*Summary\s*\n+([\s\S]*?)(?=\n##|\n\*\*|$)/gi);
+  const sectionMatch = getLastMatch(sectionMatches);
+  if (sectionMatch) {
+    return truncate(sectionMatch[1].trim(), 500);
+  }
+
+  // Check for **Goal**: section (lite mode, use last match)
+  const goalMatches = text.matchAll(/\*\*Goal\*\*:\s*(.+?)(?:\n|$)/gi);
+  const goalMatch = getLastMatch(goalMatches);
+  if (goalMatch) {
+    return goalMatch[1].trim();
+  }
+
+  // Check for **Problem**: or **Problem Statement**: section (spec/full modes, use last match)
+  const problemMatches = text.matchAll(
+    /\*\*Problem(?:\s*Statement)?\*\*:\s*([\s\S]*?)(?=\n\d+\.|\n\*\*|$)/gi
+  );
+  const problemMatch = getLastMatch(problemMatches);
+  if (problemMatch) {
+    return truncate(problemMatch[1].trim(), 500);
+  }
+
+  // Check for **Solution**: section as fallback (use last match)
+  const solutionMatches = text.matchAll(/\*\*Solution\*\*:\s*([\s\S]*?)(?=\n\d+\.|\n\*\*|$)/gi);
+  const solutionMatch = getLastMatch(solutionMatches);
+  if (solutionMatch) {
+    return truncate(solutionMatch[1].trim(), 300);
+  }
+
+  return null;
+}
+
 // Feature type is imported from feature-loader.js
 // Extended type with planning fields for local use
 interface FeatureWithPlanning extends Feature {
@@ -211,6 +349,7 @@ interface RunningFeature {
   abortController: AbortController;
   isAutoMode: boolean;
   startTime: number;
+  leaseCount: number;
   model?: string;
   provider?: ModelProvider;
 }
@@ -233,6 +372,30 @@ interface AutoModeConfig {
   maxConcurrency: number;
   useWorktrees: boolean;
   projectPath: string;
+  branchName: string | null; // null = main worktree
+}
+
+/**
+ * Generate a unique key for worktree-scoped auto loop state
+ * @param projectPath - The project path
+ * @param branchName - The branch name, or null for main worktree
+ */
+function getWorktreeAutoLoopKey(projectPath: string, branchName: string | null): string {
+  const normalizedBranch = branchName === 'main' ? null : branchName;
+  return `${projectPath}::${normalizedBranch ?? '__main__'}`;
+}
+
+/**
+ * Per-worktree autoloop state for multi-project/worktree support
+ */
+interface ProjectAutoLoopState {
+  abortController: AbortController;
+  config: AutoModeConfig;
+  isRunning: boolean;
+  consecutiveFailures: { timestamp: number; error: string }[];
+  pausedDueToFailures: boolean;
+  hasEmittedIdleEvent: boolean;
+  branchName: string | null; // null = main worktree
 }
 
 /**
@@ -244,6 +407,7 @@ interface ExecutionState {
   autoLoopWasRunning: boolean;
   maxConcurrency: number;
   projectPath: string;
+  branchName: string | null; // null = main worktree
   runningFeatureIds: string[];
   savedAt: string;
 }
@@ -252,8 +416,9 @@ interface ExecutionState {
 const DEFAULT_EXECUTION_STATE: ExecutionState = {
   version: 1,
   autoLoopWasRunning: false,
-  maxConcurrency: 3,
+  maxConcurrency: DEFAULT_MAX_CONCURRENCY,
   projectPath: '',
+  branchName: null,
   runningFeatureIds: [],
   savedAt: '',
 };
@@ -267,14 +432,19 @@ export class AutoModeService {
   private runningFeatures = new Map<string, RunningFeature>();
   private autoLoop: AutoLoopState | null = null;
   private featureLoader = new FeatureLoader();
+  // Per-project autoloop state (supports multiple concurrent projects)
+  private autoLoopsByProject = new Map<string, ProjectAutoLoopState>();
+  // Legacy single-project properties (kept for backward compatibility during transition)
   private autoLoopRunning = false;
   private autoLoopAbortController: AbortController | null = null;
   private config: AutoModeConfig | null = null;
   private pendingApprovals = new Map<string, PendingApproval>();
   private settingsService: SettingsService | null = null;
-  // Track consecutive failures to detect quota/API issues
+  // Track consecutive failures to detect quota/API issues (legacy global, now per-project in autoLoopsByProject)
   private consecutiveFailures: { timestamp: number; error: string }[] = [];
   private pausedDueToFailures = false;
+  // Track if idle event has been emitted (legacy, now per-project in autoLoopsByProject)
+  private hasEmittedIdleEvent = false;
 
   constructor(events: EventEmitter, settingsService?: SettingsService) {
     this.events = events;
@@ -282,8 +452,192 @@ export class AutoModeService {
   }
 
   /**
+   * Acquire a slot in the runningFeatures map for a feature.
+   * Implements reference counting via leaseCount to support nested calls
+   * (e.g., resumeFeature -> executeFeature).
+   *
+   * @param params.featureId - ID of the feature to track
+   * @param params.projectPath - Path to the project
+   * @param params.isAutoMode - Whether this is an auto-mode execution
+   * @param params.allowReuse - If true, allows incrementing leaseCount for already-running features
+   * @param params.abortController - Optional abort controller to use
+   * @returns The RunningFeature entry (existing or newly created)
+   * @throws Error if feature is already running and allowReuse is false
+   */
+  private acquireRunningFeature(params: {
+    featureId: string;
+    projectPath: string;
+    isAutoMode: boolean;
+    allowReuse?: boolean;
+    abortController?: AbortController;
+  }): RunningFeature {
+    const existing = this.runningFeatures.get(params.featureId);
+    if (existing) {
+      if (!params.allowReuse) {
+        throw new Error('already running');
+      }
+      existing.leaseCount += 1;
+      return existing;
+    }
+
+    const abortController = params.abortController ?? new AbortController();
+    const entry: RunningFeature = {
+      featureId: params.featureId,
+      projectPath: params.projectPath,
+      worktreePath: null,
+      branchName: null,
+      abortController,
+      isAutoMode: params.isAutoMode,
+      startTime: Date.now(),
+      leaseCount: 1,
+    };
+    this.runningFeatures.set(params.featureId, entry);
+    return entry;
+  }
+
+  /**
+   * Release a slot in the runningFeatures map for a feature.
+   * Decrements leaseCount and only removes the entry when it reaches zero,
+   * unless force option is used.
+   *
+   * @param featureId - ID of the feature to release
+   * @param options.force - If true, immediately removes the entry regardless of leaseCount
+   */
+  private releaseRunningFeature(featureId: string, options?: { force?: boolean }): void {
+    const entry = this.runningFeatures.get(featureId);
+    if (!entry) {
+      return;
+    }
+
+    if (options?.force) {
+      this.runningFeatures.delete(featureId);
+      return;
+    }
+
+    entry.leaseCount -= 1;
+    if (entry.leaseCount <= 0) {
+      this.runningFeatures.delete(featureId);
+    }
+  }
+
+  /**
+   * Reset features that were stuck in transient states due to server crash
+   * Called when auto mode is enabled to clean up from previous session
+   * @param projectPath - The project path to reset features for
+   */
+  async resetStuckFeatures(projectPath: string): Promise<void> {
+    const featuresDir = getFeaturesDir(projectPath);
+
+    try {
+      const entries = await secureFs.readdir(featuresDir, { withFileTypes: true });
+
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+
+        const featurePath = path.join(featuresDir, entry.name, 'feature.json');
+        const result = await readJsonWithRecovery<Feature | null>(featurePath, null, {
+          maxBackups: DEFAULT_BACKUP_COUNT,
+          autoRestore: true,
+        });
+
+        const feature = result.data;
+        if (!feature) continue;
+
+        let needsUpdate = false;
+
+        // Reset in_progress features back to ready/backlog
+        if (feature.status === 'in_progress') {
+          const hasApprovedPlan = feature.planSpec?.status === 'approved';
+          feature.status = hasApprovedPlan ? 'ready' : 'backlog';
+          needsUpdate = true;
+          logger.info(
+            `[resetStuckFeatures] Reset feature ${feature.id} from in_progress to ${feature.status}`
+          );
+        }
+
+        // Reset generating planSpec status back to pending (spec generation was interrupted)
+        if (feature.planSpec?.status === 'generating') {
+          feature.planSpec.status = 'pending';
+          needsUpdate = true;
+          logger.info(
+            `[resetStuckFeatures] Reset feature ${feature.id} planSpec status from generating to pending`
+          );
+        }
+
+        // Reset any in_progress tasks back to pending (task execution was interrupted)
+        if (feature.planSpec?.tasks) {
+          for (const task of feature.planSpec.tasks) {
+            if (task.status === 'in_progress') {
+              task.status = 'pending';
+              needsUpdate = true;
+              logger.info(
+                `[resetStuckFeatures] Reset task ${task.id} for feature ${feature.id} from in_progress to pending`
+              );
+              // Clear currentTaskId if it points to this reverted task
+              if (feature.planSpec?.currentTaskId === task.id) {
+                feature.planSpec.currentTaskId = undefined;
+                logger.info(
+                  `[resetStuckFeatures] Cleared planSpec.currentTaskId for feature ${feature.id} (was pointing to reverted task ${task.id})`
+                );
+              }
+            }
+          }
+        }
+
+        if (needsUpdate) {
+          feature.updatedAt = new Date().toISOString();
+          await atomicWriteJson(featurePath, feature, { backupCount: DEFAULT_BACKUP_COUNT });
+        }
+      }
+    } catch (error) {
+      // If features directory doesn't exist, that's fine
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        logger.error(`[resetStuckFeatures] Error resetting features for ${projectPath}:`, error);
+      }
+    }
+  }
+
+  /**
    * Track a failure and check if we should pause due to consecutive failures.
    * This handles cases where the SDK doesn't return useful error messages.
+   * @param projectPath - The project to track failure for
+   * @param errorInfo - Error information
+   */
+  private trackFailureAndCheckPauseForProject(
+    projectPath: string,
+    errorInfo: { type: string; message: string }
+  ): boolean {
+    const projectState = this.autoLoopsByProject.get(projectPath);
+    if (!projectState) {
+      // Fall back to legacy global tracking
+      return this.trackFailureAndCheckPause(errorInfo);
+    }
+
+    const now = Date.now();
+
+    // Add this failure
+    projectState.consecutiveFailures.push({ timestamp: now, error: errorInfo.message });
+
+    // Remove old failures outside the window
+    projectState.consecutiveFailures = projectState.consecutiveFailures.filter(
+      (f) => now - f.timestamp < FAILURE_WINDOW_MS
+    );
+
+    // Check if we've hit the threshold
+    if (projectState.consecutiveFailures.length >= CONSECUTIVE_FAILURE_THRESHOLD) {
+      return true; // Should pause
+    }
+
+    // Also immediately pause for known quota/rate limit errors
+    if (errorInfo.type === 'quota_exhausted' || errorInfo.type === 'rate_limit') {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Track a failure and check if we should pause due to consecutive failures (legacy global).
    */
   private trackFailureAndCheckPause(errorInfo: { type: string; message: string }): boolean {
     const now = Date.now();
@@ -311,7 +665,49 @@ export class AutoModeService {
 
   /**
    * Signal that we should pause due to repeated failures or quota exhaustion.
-   * This will pause the auto loop to prevent repeated failures.
+   * This will pause the auto loop for a specific project.
+   * @param projectPath - The project to pause
+   * @param errorInfo - Error information
+   */
+  private signalShouldPauseForProject(
+    projectPath: string,
+    errorInfo: { type: string; message: string }
+  ): void {
+    const projectState = this.autoLoopsByProject.get(projectPath);
+    if (!projectState) {
+      // Fall back to legacy global pause
+      this.signalShouldPause(errorInfo);
+      return;
+    }
+
+    if (projectState.pausedDueToFailures) {
+      return; // Already paused
+    }
+
+    projectState.pausedDueToFailures = true;
+    const failureCount = projectState.consecutiveFailures.length;
+    logger.info(
+      `Pausing auto loop for ${projectPath} after ${failureCount} consecutive failures. Last error: ${errorInfo.type}`
+    );
+
+    // Emit event to notify UI
+    this.emitAutoModeEvent('auto_mode_paused_failures', {
+      message:
+        failureCount >= CONSECUTIVE_FAILURE_THRESHOLD
+          ? `Auto Mode paused: ${failureCount} consecutive failures detected. This may indicate a quota limit or API issue. Please check your usage and try again.`
+          : 'Auto Mode paused: Usage limit or API error detected. Please wait for your quota to reset or check your API configuration.',
+      errorType: errorInfo.type,
+      originalError: errorInfo.message,
+      failureCount,
+      projectPath,
+    });
+
+    // Stop the auto loop for this project
+    this.stopAutoLoopForProject(projectPath);
+  }
+
+  /**
+   * Signal that we should pause due to repeated failures or quota exhaustion (legacy global).
    */
   private signalShouldPause(errorInfo: { type: string; message: string }): void {
     if (this.pausedDueToFailures) {
@@ -341,7 +737,19 @@ export class AutoModeService {
   }
 
   /**
-   * Reset failure tracking (called when user manually restarts auto mode)
+   * Reset failure tracking for a specific project
+   * @param projectPath - The project to reset failure tracking for
+   */
+  private resetFailureTrackingForProject(projectPath: string): void {
+    const projectState = this.autoLoopsByProject.get(projectPath);
+    if (projectState) {
+      projectState.consecutiveFailures = [];
+      projectState.pausedDueToFailures = false;
+    }
+  }
+
+  /**
+   * Reset failure tracking (called when user manually restarts auto mode) - legacy global
    */
   private resetFailureTracking(): void {
     this.consecutiveFailures = [];
@@ -349,16 +757,410 @@ export class AutoModeService {
   }
 
   /**
-   * Record a successful feature completion to reset consecutive failure count
+   * Record a successful feature completion to reset consecutive failure count for a project
+   * @param projectPath - The project to record success for
+   */
+  private recordSuccessForProject(projectPath: string): void {
+    const projectState = this.autoLoopsByProject.get(projectPath);
+    if (projectState) {
+      projectState.consecutiveFailures = [];
+    }
+  }
+
+  /**
+   * Record a successful feature completion to reset consecutive failure count - legacy global
    */
   private recordSuccess(): void {
     this.consecutiveFailures = [];
   }
 
+  private async resolveMaxConcurrency(
+    projectPath: string,
+    branchName: string | null,
+    provided?: number
+  ): Promise<number> {
+    if (typeof provided === 'number' && Number.isFinite(provided)) {
+      return provided;
+    }
+
+    if (!this.settingsService) {
+      return DEFAULT_MAX_CONCURRENCY;
+    }
+
+    try {
+      const settings = await this.settingsService.getGlobalSettings();
+      const globalMax =
+        typeof settings.maxConcurrency === 'number'
+          ? settings.maxConcurrency
+          : DEFAULT_MAX_CONCURRENCY;
+      const projectId = settings.projects?.find((project) => project.path === projectPath)?.id;
+      const autoModeByWorktree = settings.autoModeByWorktree;
+
+      if (projectId && autoModeByWorktree && typeof autoModeByWorktree === 'object') {
+        // Normalize branch name to match UI convention:
+        // - null or "main" -> "__main__" (UI treats "main" as the main worktree)
+        // This ensures consistency with how the UI stores worktree settings
+        const normalizedBranch = branchName === 'main' ? null : branchName;
+        const key = `${projectId}::${normalizedBranch ?? '__main__'}`;
+        const entry = autoModeByWorktree[key];
+        if (entry && typeof entry.maxConcurrency === 'number') {
+          return entry.maxConcurrency;
+        }
+      }
+
+      return globalMax;
+    } catch {
+      return DEFAULT_MAX_CONCURRENCY;
+    }
+  }
+
+  /**
+   * Start the auto mode loop for a specific project/worktree (supports multiple concurrent projects and worktrees)
+   * @param projectPath - The project to start auto mode for
+   * @param branchName - The branch name for worktree scoping, null for main worktree
+   * @param maxConcurrency - Maximum concurrent features (default: DEFAULT_MAX_CONCURRENCY)
+   */
+  async startAutoLoopForProject(
+    projectPath: string,
+    branchName: string | null = null,
+    maxConcurrency?: number
+  ): Promise<number> {
+    const resolvedMaxConcurrency = await this.resolveMaxConcurrency(
+      projectPath,
+      branchName,
+      maxConcurrency
+    );
+
+    // Use worktree-scoped key
+    const worktreeKey = getWorktreeAutoLoopKey(projectPath, branchName);
+
+    // Check if this project/worktree already has an active autoloop
+    const existingState = this.autoLoopsByProject.get(worktreeKey);
+    if (existingState?.isRunning) {
+      const worktreeDesc = branchName ? `worktree ${branchName}` : 'main worktree';
+      throw new Error(
+        `Auto mode is already running for ${worktreeDesc} in project: ${projectPath}`
+      );
+    }
+
+    // Create new project/worktree autoloop state
+    const abortController = new AbortController();
+    const config: AutoModeConfig = {
+      maxConcurrency: resolvedMaxConcurrency,
+      useWorktrees: true,
+      projectPath,
+      branchName,
+    };
+
+    const projectState: ProjectAutoLoopState = {
+      abortController,
+      config,
+      isRunning: true,
+      consecutiveFailures: [],
+      pausedDueToFailures: false,
+      hasEmittedIdleEvent: false,
+      branchName,
+    };
+
+    this.autoLoopsByProject.set(worktreeKey, projectState);
+
+    const worktreeDesc = branchName ? `worktree ${branchName}` : 'main worktree';
+    logger.info(
+      `Starting auto loop for ${worktreeDesc} in project: ${projectPath} with maxConcurrency: ${resolvedMaxConcurrency}`
+    );
+
+    // Reset any features that were stuck in transient states due to previous server crash
+    try {
+      await this.resetStuckFeatures(projectPath);
+    } catch (error) {
+      logger.warn(`[startAutoLoopForProject] Error resetting stuck features:`, error);
+      // Don't fail startup due to reset errors
+    }
+
+    this.emitAutoModeEvent('auto_mode_started', {
+      message: `Auto mode started with max ${resolvedMaxConcurrency} concurrent features`,
+      projectPath,
+      branchName,
+      maxConcurrency: resolvedMaxConcurrency,
+    });
+
+    // Save execution state for recovery after restart
+    await this.saveExecutionStateForProject(projectPath, branchName, resolvedMaxConcurrency);
+
+    // Run the loop in the background
+    this.runAutoLoopForProject(worktreeKey).catch((error) => {
+      const worktreeDescErr = branchName ? `worktree ${branchName}` : 'main worktree';
+      logger.error(`Loop error for ${worktreeDescErr} in ${projectPath}:`, error);
+      const errorInfo = classifyError(error);
+      this.emitAutoModeEvent('auto_mode_error', {
+        error: errorInfo.message,
+        errorType: errorInfo.type,
+        projectPath,
+        branchName,
+      });
+    });
+
+    return resolvedMaxConcurrency;
+  }
+
+  /**
+   * Run the auto loop for a specific project/worktree
+   * @param worktreeKey - The worktree key (projectPath::branchName or projectPath::__main__)
+   */
+  private async runAutoLoopForProject(worktreeKey: string): Promise<void> {
+    const projectState = this.autoLoopsByProject.get(worktreeKey);
+    if (!projectState) {
+      logger.warn(`No project state found for ${worktreeKey}, stopping loop`);
+      return;
+    }
+
+    const { projectPath, branchName } = projectState.config;
+    const worktreeDesc = branchName ? `worktree ${branchName}` : 'main worktree';
+
+    logger.info(
+      `[AutoLoop] Starting loop for ${worktreeDesc} in ${projectPath}, maxConcurrency: ${projectState.config.maxConcurrency}`
+    );
+    let iterationCount = 0;
+
+    while (projectState.isRunning && !projectState.abortController.signal.aborted) {
+      iterationCount++;
+      try {
+        // Count running features for THIS project/worktree only
+        const projectRunningCount = await this.getRunningCountForWorktree(projectPath, branchName);
+
+        // Check if we have capacity for this project/worktree
+        if (projectRunningCount >= projectState.config.maxConcurrency) {
+          logger.debug(
+            `[AutoLoop] At capacity (${projectRunningCount}/${projectState.config.maxConcurrency}), waiting...`
+          );
+          await this.sleep(5000);
+          continue;
+        }
+
+        // Load pending features for this project/worktree
+        const pendingFeatures = await this.loadPendingFeatures(projectPath, branchName);
+
+        logger.info(
+          `[AutoLoop] Iteration ${iterationCount}: Found ${pendingFeatures.length} pending features, ${projectRunningCount}/${projectState.config.maxConcurrency} running for ${worktreeDesc}`
+        );
+
+        if (pendingFeatures.length === 0) {
+          // Emit idle event only once when backlog is empty AND no features are running
+          if (projectRunningCount === 0 && !projectState.hasEmittedIdleEvent) {
+            this.emitAutoModeEvent('auto_mode_idle', {
+              message: 'No pending features - auto mode idle',
+              projectPath,
+              branchName,
+            });
+            projectState.hasEmittedIdleEvent = true;
+            logger.info(`[AutoLoop] Backlog complete, auto mode now idle for ${worktreeDesc}`);
+          } else if (projectRunningCount > 0) {
+            logger.info(
+              `[AutoLoop] No pending features available, ${projectRunningCount} still running, waiting...`
+            );
+          } else {
+            logger.warn(
+              `[AutoLoop] No pending features found for ${worktreeDesc} (branchName: ${branchName === null ? 'null (main)' : branchName}). Check server logs for filtering details.`
+            );
+          }
+          await this.sleep(10000);
+          continue;
+        }
+
+        // Find a feature not currently running and not yet finished
+        const nextFeature = pendingFeatures.find(
+          (f) => !this.runningFeatures.has(f.id) && !this.isFeatureFinished(f)
+        );
+
+        if (nextFeature) {
+          logger.info(`[AutoLoop] Starting feature ${nextFeature.id}: ${nextFeature.title}`);
+          // Reset idle event flag since we're doing work again
+          projectState.hasEmittedIdleEvent = false;
+          // Start feature execution in background
+          this.executeFeature(
+            projectPath,
+            nextFeature.id,
+            projectState.config.useWorktrees,
+            true
+          ).catch((error) => {
+            logger.error(`Feature ${nextFeature.id} error:`, error);
+          });
+        } else {
+          logger.debug(`[AutoLoop] All pending features are already running`);
+        }
+
+        await this.sleep(2000);
+      } catch (error) {
+        logger.error(`[AutoLoop] Loop iteration error for ${projectPath}:`, error);
+        await this.sleep(5000);
+      }
+    }
+
+    // Mark as not running when loop exits
+    projectState.isRunning = false;
+    logger.info(
+      `[AutoLoop] Loop stopped for project: ${projectPath} after ${iterationCount} iterations`
+    );
+  }
+
+  /**
+   * Get count of running features for a specific project
+   */
+  private getRunningCountForProject(projectPath: string): number {
+    let count = 0;
+    for (const [, feature] of this.runningFeatures) {
+      if (feature.projectPath === projectPath) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /**
+   * Get count of running features for a specific worktree
+   * @param projectPath - The project path
+   * @param branchName - The branch name, or null for main worktree (features without branchName or matching primary branch)
+   */
+  private async getRunningCountForWorktree(
+    projectPath: string,
+    branchName: string | null
+  ): Promise<number> {
+    // Get the actual primary branch name for the project
+    const primaryBranch = await getCurrentBranch(projectPath);
+
+    let count = 0;
+    for (const [, feature] of this.runningFeatures) {
+      // Filter by project path AND branchName to get accurate worktree-specific count
+      const featureBranch = feature.branchName ?? null;
+      if (branchName === null) {
+        // Main worktree: match features with branchName === null OR branchName matching primary branch
+        const isPrimaryBranch =
+          featureBranch === null || (primaryBranch && featureBranch === primaryBranch);
+        if (feature.projectPath === projectPath && isPrimaryBranch) {
+          count++;
+        }
+      } else {
+        // Feature worktree: exact match
+        if (feature.projectPath === projectPath && featureBranch === branchName) {
+          count++;
+        }
+      }
+    }
+    return count;
+  }
+
+  /**
+   * Stop the auto mode loop for a specific project/worktree
+   * @param projectPath - The project to stop auto mode for
+   * @param branchName - The branch name, or null for main worktree
+   */
+  async stopAutoLoopForProject(
+    projectPath: string,
+    branchName: string | null = null
+  ): Promise<number> {
+    const worktreeKey = getWorktreeAutoLoopKey(projectPath, branchName);
+    const projectState = this.autoLoopsByProject.get(worktreeKey);
+    if (!projectState) {
+      const worktreeDesc = branchName ? `worktree ${branchName}` : 'main worktree';
+      logger.warn(`No auto loop running for ${worktreeDesc} in project: ${projectPath}`);
+      return 0;
+    }
+
+    const wasRunning = projectState.isRunning;
+    projectState.isRunning = false;
+    projectState.abortController.abort();
+
+    // Clear execution state when auto-loop is explicitly stopped
+    await this.clearExecutionState(projectPath, branchName);
+
+    // Emit stop event
+    if (wasRunning) {
+      this.emitAutoModeEvent('auto_mode_stopped', {
+        message: 'Auto mode stopped',
+        projectPath,
+        branchName,
+      });
+    }
+
+    // Remove from map
+    this.autoLoopsByProject.delete(worktreeKey);
+
+    return await this.getRunningCountForWorktree(projectPath, branchName);
+  }
+
+  /**
+   * Check if auto mode is running for a specific project/worktree
+   * @param projectPath - The project path
+   * @param branchName - The branch name, or null for main worktree
+   */
+  isAutoLoopRunningForProject(projectPath: string, branchName: string | null = null): boolean {
+    const worktreeKey = getWorktreeAutoLoopKey(projectPath, branchName);
+    const projectState = this.autoLoopsByProject.get(worktreeKey);
+    return projectState?.isRunning ?? false;
+  }
+
+  /**
+   * Get auto loop config for a specific project/worktree
+   * @param projectPath - The project path
+   * @param branchName - The branch name, or null for main worktree
+   */
+  getAutoLoopConfigForProject(
+    projectPath: string,
+    branchName: string | null = null
+  ): AutoModeConfig | null {
+    const worktreeKey = getWorktreeAutoLoopKey(projectPath, branchName);
+    const projectState = this.autoLoopsByProject.get(worktreeKey);
+    return projectState?.config ?? null;
+  }
+
+  /**
+   * Save execution state for a specific project/worktree
+   * @param projectPath - The project path
+   * @param branchName - The branch name, or null for main worktree
+   * @param maxConcurrency - Maximum concurrent features
+   */
+  private async saveExecutionStateForProject(
+    projectPath: string,
+    branchName: string | null,
+    maxConcurrency: number
+  ): Promise<void> {
+    try {
+      await ensureAutomakerDir(projectPath);
+      const statePath = getExecutionStatePath(projectPath);
+      const runningFeatureIds = Array.from(this.runningFeatures.entries())
+        .filter(([, f]) => f.projectPath === projectPath)
+        .map(([id]) => id);
+
+      const state: ExecutionState = {
+        version: 1,
+        autoLoopWasRunning: true,
+        maxConcurrency,
+        projectPath,
+        branchName,
+        runningFeatureIds,
+        savedAt: new Date().toISOString(),
+      };
+      await secureFs.writeFile(statePath, JSON.stringify(state, null, 2), 'utf-8');
+      const worktreeDesc = branchName ? `worktree ${branchName}` : 'main worktree';
+      logger.info(
+        `Saved execution state for ${worktreeDesc} in ${projectPath}: ${runningFeatureIds.length} running features`
+      );
+    } catch (error) {
+      const worktreeDesc = branchName ? `worktree ${branchName}` : 'main worktree';
+      logger.error(`Failed to save execution state for ${worktreeDesc} in ${projectPath}:`, error);
+    }
+  }
+
   /**
    * Start the auto mode loop - continuously picks and executes pending features
+   * @deprecated Use startAutoLoopForProject instead for multi-project support
    */
-  async startAutoLoop(projectPath: string, maxConcurrency = 3): Promise<void> {
+  async startAutoLoop(
+    projectPath: string,
+    maxConcurrency = DEFAULT_MAX_CONCURRENCY
+  ): Promise<void> {
+    // For backward compatibility, delegate to the new per-project method
+    // But also maintain legacy state for existing code that might check it
     if (this.autoLoopRunning) {
       throw new Error('Auto mode is already running');
     }
@@ -372,6 +1174,7 @@ export class AutoModeService {
       maxConcurrency,
       useWorktrees: true,
       projectPath,
+      branchName: null,
     };
 
     this.emitAutoModeEvent('auto_mode_started', {
@@ -396,6 +1199,9 @@ export class AutoModeService {
     });
   }
 
+  /**
+   * @deprecated Use runAutoLoopForProject instead
+   */
   private async runAutoLoop(): Promise<void> {
     while (
       this.autoLoopRunning &&
@@ -404,7 +1210,7 @@ export class AutoModeService {
     ) {
       try {
         // Check if we have capacity
-        if (this.runningFeatures.size >= (this.config?.maxConcurrency || 3)) {
+        if (this.runningFeatures.size >= (this.config?.maxConcurrency || DEFAULT_MAX_CONCURRENCY)) {
           await this.sleep(5000);
           continue;
         }
@@ -413,10 +1219,22 @@ export class AutoModeService {
         const pendingFeatures = await this.loadPendingFeatures(this.config!.projectPath);
 
         if (pendingFeatures.length === 0) {
-          this.emitAutoModeEvent('auto_mode_idle', {
-            message: 'No pending features - auto mode idle',
-            projectPath: this.config!.projectPath,
-          });
+          // Emit idle event only once when backlog is empty AND no features are running
+          const runningCount = this.runningFeatures.size;
+          if (runningCount === 0 && !this.hasEmittedIdleEvent) {
+            this.emitAutoModeEvent('auto_mode_idle', {
+              message: 'No pending features - auto mode idle',
+              projectPath: this.config!.projectPath,
+            });
+            this.hasEmittedIdleEvent = true;
+            logger.info(`[AutoLoop] Backlog complete, auto mode now idle`);
+          } else if (runningCount > 0) {
+            logger.debug(
+              `[AutoLoop] No pending features, ${runningCount} still running, waiting...`
+            );
+          } else {
+            logger.debug(`[AutoLoop] No pending features, waiting for new items...`);
+          }
           await this.sleep(10000);
           continue;
         }
@@ -425,6 +1243,8 @@ export class AutoModeService {
         const nextFeature = pendingFeatures.find((f) => !this.runningFeatures.has(f.id));
 
         if (nextFeature) {
+          // Reset idle event flag since we're doing work again
+          this.hasEmittedIdleEvent = false;
           // Start feature execution in background
           this.executeFeature(
             this.config!.projectPath,
@@ -448,6 +1268,7 @@ export class AutoModeService {
 
   /**
    * Stop the auto mode loop
+   * @deprecated Use stopAutoLoopForProject instead for multi-project support
    */
   async stopAutoLoop(): Promise<number> {
     const wasRunning = this.autoLoopRunning;
@@ -475,6 +1296,43 @@ export class AutoModeService {
   }
 
   /**
+   * Check if there's capacity to start a feature on a worktree.
+   * This respects per-worktree agent limits from autoModeByWorktree settings.
+   *
+   * @param projectPath - The main project path
+   * @param featureId - The feature ID to check capacity for
+   * @returns Object with hasCapacity boolean and details about current/max agents
+   */
+  async checkWorktreeCapacity(
+    projectPath: string,
+    featureId: string
+  ): Promise<{
+    hasCapacity: boolean;
+    currentAgents: number;
+    maxAgents: number;
+    branchName: string | null;
+  }> {
+    // Load feature to get branchName
+    const feature = await this.loadFeature(projectPath, featureId);
+    const rawBranchName = feature?.branchName ?? null;
+    // Normalize "main" to null to match UI convention for main worktree
+    const branchName = rawBranchName === 'main' ? null : rawBranchName;
+
+    // Get per-worktree limit
+    const maxAgents = await this.resolveMaxConcurrency(projectPath, branchName);
+
+    // Get current running count for this worktree
+    const currentAgents = await this.getRunningCountForWorktree(projectPath, branchName);
+
+    return {
+      hasCapacity: currentAgents < maxAgents,
+      currentAgents,
+      maxAgents,
+      branchName,
+    };
+  }
+
+  /**
    * Execute a single feature
    * @param projectPath - The main project path
    * @param featureId - The feature ID to execute
@@ -489,62 +1347,75 @@ export class AutoModeService {
     providedWorktreePath?: string,
     options?: {
       continuationPrompt?: string;
+      /** Internal flag: set to true when called from a method that already tracks the feature */
+      _calledInternally?: boolean;
     }
   ): Promise<void> {
-    if (this.runningFeatures.has(featureId)) {
-      throw new Error('already running');
-    }
-
-    // Add to running features immediately to prevent race conditions
-    const abortController = new AbortController();
-    const tempRunningFeature: RunningFeature = {
+    const tempRunningFeature = this.acquireRunningFeature({
       featureId,
       projectPath,
-      worktreePath: null,
-      branchName: null,
-      abortController,
       isAutoMode,
-      startTime: Date.now(),
-    };
-    this.runningFeatures.set(featureId, tempRunningFeature);
+      allowReuse: options?._calledInternally,
+    });
+    const abortController = tempRunningFeature.abortController;
 
     // Save execution state when feature starts
     if (isAutoMode) {
       await this.saveExecutionState(projectPath);
     }
+    // Declare feature outside try block so it's available in catch for error reporting
+    let feature: Awaited<ReturnType<typeof this.loadFeature>> | null = null;
 
     try {
       // Validate that project path is allowed using centralized validation
       validateWorkingDirectory(projectPath);
 
+      // Load feature details FIRST to get status and plan info
+      feature = await this.loadFeature(projectPath, featureId);
+      if (!feature) {
+        throw new Error(`Feature ${featureId} not found`);
+      }
+
       // Check if feature has existing context - if so, resume instead of starting fresh
       // Skip this check if we're already being called with a continuation prompt (from resumeFeature)
       if (!options?.continuationPrompt) {
+        // If feature has an approved plan but we don't have a continuation prompt yet,
+        // we should build one to ensure it proceeds with multi-agent execution
+        if (feature.planSpec?.status === 'approved') {
+          logger.info(`Feature ${featureId} has approved plan, building continuation prompt`);
+
+          // Get customized prompts from settings
+          const prompts = await getPromptCustomization(this.settingsService, '[AutoMode]');
+          const planContent = feature.planSpec.content || '';
+
+          // Build continuation prompt using centralized template
+          let continuationPrompt = prompts.taskExecution.continuationAfterApprovalTemplate;
+          continuationPrompt = continuationPrompt.replace(/\{\{userFeedback\}\}/g, '');
+          continuationPrompt = continuationPrompt.replace(/\{\{approvedPlan\}\}/g, planContent);
+
+          // Recursively call executeFeature with the continuation prompt
+          // Feature is already tracked, the recursive call will reuse the entry
+          return await this.executeFeature(
+            projectPath,
+            featureId,
+            useWorktrees,
+            isAutoMode,
+            providedWorktreePath,
+            {
+              continuationPrompt,
+              _calledInternally: true,
+            }
+          );
+        }
+
         const hasExistingContext = await this.contextExists(projectPath, featureId);
         if (hasExistingContext) {
           logger.info(
             `Feature ${featureId} has existing context, resuming instead of starting fresh`
           );
-          // Remove from running features temporarily, resumeFeature will add it back
-          this.runningFeatures.delete(featureId);
-          return this.resumeFeature(projectPath, featureId, useWorktrees);
+          // Feature is already tracked, resumeFeature will reuse the entry
+          return await this.resumeFeature(projectPath, featureId, useWorktrees, true);
         }
-      }
-
-      // Emit feature start event early
-      this.emitAutoModeEvent('auto_mode_feature_start', {
-        featureId,
-        projectPath,
-        feature: {
-          id: featureId,
-          title: 'Loading...',
-          description: 'Feature is starting',
-        },
-      });
-      // Load feature details FIRST to get branchName
-      const feature = await this.loadFeature(projectPath, featureId);
-      if (!feature) {
-        throw new Error(`Feature ${featureId} not found`);
       }
 
       // Derive workDir from feature.branchName
@@ -575,8 +1446,21 @@ export class AutoModeService {
       tempRunningFeature.worktreePath = worktreePath;
       tempRunningFeature.branchName = branchName ?? null;
 
-      // Update feature status to in_progress
+      // Update feature status to in_progress BEFORE emitting event
+      // This ensures the frontend sees the updated status when it reloads features
       await this.updateFeatureStatus(projectPath, featureId, 'in_progress');
+
+      // Emit feature start event AFTER status update so frontend sees correct status
+      this.emitAutoModeEvent('auto_mode_feature_start', {
+        featureId,
+        projectPath,
+        branchName: feature.branchName ?? null,
+        feature: {
+          id: featureId,
+          title: feature.title || 'Loading...',
+          description: feature.description || 'Feature is starting',
+        },
+      });
 
       // Load autoLoadClaudeMd setting to determine context loading strategy
       const autoLoadClaudeMd = await getAutoLoadClaudeMdSetting(
@@ -660,12 +1544,17 @@ export class AutoModeService {
           systemPrompt: combinedSystemPrompt || undefined,
           autoLoadClaudeMd,
           thinkingLevel: feature.thinkingLevel,
+          branchName: feature.branchName ?? null,
         }
       );
 
       // Check for pipeline steps and execute them
       const pipelineConfig = await pipelineService.getPipelineConfig(projectPath);
-      const sortedSteps = [...(pipelineConfig?.steps || [])].sort((a, b) => a.order - b.order);
+      // Filter out excluded pipeline steps and sort by order
+      const excludedStepIds = new Set(feature.excludedPipelineSteps || []);
+      const sortedSteps = [...(pipelineConfig?.steps || [])]
+        .sort((a, b) => a.order - b.order)
+        .filter((step) => !excludedStepIds.has(step.id));
 
       if (sortedSteps.length > 0) {
         // Execute pipeline steps sequentially
@@ -689,7 +1578,7 @@ export class AutoModeService {
       // Record success to reset consecutive failure tracking
       this.recordSuccess();
 
-      // Record learnings and memory usage after successful feature completion
+      // Record learnings, memory usage, and extract summary after successful feature completion
       try {
         const featureDir = getFeatureDir(projectPath, featureId);
         const outputPath = path.join(featureDir, 'agent-output.md');
@@ -700,6 +1589,15 @@ export class AutoModeService {
             typeof outputContent === 'string' ? outputContent : outputContent.toString();
         } catch {
           // Agent output might not exist yet
+        }
+
+        // Extract and save summary from agent output
+        if (agentOutput) {
+          const summary = extractSummary(agentOutput);
+          if (summary) {
+            logger.info(`Extracted summary for feature ${featureId}`);
+            await this.saveFeatureSummary(projectPath, featureId, summary);
+          }
         }
 
         // Record memory usage if we loaded any memory files
@@ -721,6 +1619,8 @@ export class AutoModeService {
 
       this.emitAutoModeEvent('auto_mode_feature_complete', {
         featureId,
+        featureName: feature.title,
+        branchName: feature.branchName ?? null,
         passes: true,
         message: `Feature completed in ${Math.round(
           (Date.now() - tempRunningFeature.startTime) / 1000
@@ -735,6 +1635,8 @@ export class AutoModeService {
       if (errorInfo.isAbort) {
         this.emitAutoModeEvent('auto_mode_feature_complete', {
           featureId,
+          featureName: feature?.title,
+          branchName: feature?.branchName ?? null,
           passes: false,
           message: 'Feature stopped by user',
           projectPath,
@@ -744,6 +1646,8 @@ export class AutoModeService {
         await this.updateFeatureStatus(projectPath, featureId, 'backlog');
         this.emitAutoModeEvent('auto_mode_error', {
           featureId,
+          featureName: feature?.title,
+          branchName: feature?.branchName ?? null,
           error: errorInfo.message,
           errorType: errorInfo.type,
           projectPath,
@@ -769,7 +1673,7 @@ export class AutoModeService {
       logger.info(
         `Pending approvals at cleanup: ${Array.from(this.pendingApprovals.keys()).join(', ') || 'none'}`
       );
-      this.runningFeatures.delete(featureId);
+      this.releaseRunningFeature(featureId);
 
       // Update execution state after feature completes
       if (this.autoLoopRunning && projectPath) {
@@ -825,6 +1729,7 @@ export class AutoModeService {
 
       this.emitAutoModeEvent('auto_mode_progress', {
         featureId,
+        branchName: feature.branchName ?? null,
         content: `Starting pipeline step ${i + 1}/${steps.length}: ${step.name}`,
         projectPath,
       });
@@ -948,58 +1853,128 @@ Complete the pipeline step instructions above. Review the previous work and appl
 
     // Remove from running features immediately to allow resume
     // The abort signal will still propagate to stop any ongoing execution
-    this.runningFeatures.delete(featureId);
+    this.releaseRunningFeature(featureId, { force: true });
 
     return true;
   }
 
   /**
-   * Resume a feature (continues from saved context)
+   * Resume a feature (continues from saved context or starts fresh if no context)
+   *
+   * This method handles interrupted features regardless of whether they have saved context:
+   * - With context: Continues from where the agent left off using the saved agent-output.md
+   * - Without context: Starts fresh execution (feature was interrupted before any agent output)
+   * - Pipeline features: Delegates to resumePipelineFeature for specialized handling
+   *
+   * @param projectPath - Path to the project
+   * @param featureId - ID of the feature to resume
+   * @param useWorktrees - Whether to use git worktrees for isolation
+   * @param _calledInternally - Internal flag to prevent double-tracking when called from other methods
    */
-  async resumeFeature(projectPath: string, featureId: string, useWorktrees = false): Promise<void> {
-    if (this.runningFeatures.has(featureId)) {
-      throw new Error('already running');
+  async resumeFeature(
+    projectPath: string,
+    featureId: string,
+    useWorktrees = false,
+    /** Internal flag: set to true when called from a method that already tracks the feature */
+    _calledInternally = false
+  ): Promise<void> {
+    // Idempotent check: if feature is already being resumed/running, skip silently
+    // This prevents race conditions when multiple callers try to resume the same feature
+    if (!_calledInternally && this.isFeatureRunning(featureId)) {
+      logger.info(
+        `[AutoMode] Feature ${featureId} is already being resumed/running, skipping duplicate resume request`
+      );
+      return;
     }
 
-    // Load feature to check status
-    const feature = await this.loadFeature(projectPath, featureId);
-    if (!feature) {
-      throw new Error(`Feature ${featureId} not found`);
-    }
-
-    // Check if feature is stuck in a pipeline step
-    const pipelineInfo = await this.detectPipelineStatus(
-      projectPath,
+    this.acquireRunningFeature({
       featureId,
-      (feature.status || '') as FeatureStatusWithPipeline
-    );
+      projectPath,
+      isAutoMode: false,
+      allowReuse: _calledInternally,
+    });
 
-    if (pipelineInfo.isPipeline) {
-      // Feature stuck in pipeline - use pipeline resume
-      return this.resumePipelineFeature(projectPath, feature, useWorktrees, pipelineInfo);
-    }
-
-    // Normal resume flow for non-pipeline features
-    // Check if context exists in .automaker directory
-    const featureDir = getFeatureDir(projectPath, featureId);
-    const contextPath = path.join(featureDir, 'agent-output.md');
-
-    let hasContext = false;
     try {
-      await secureFs.access(contextPath);
-      hasContext = true;
-    } catch {
-      // No context
-    }
+      // Load feature to check status
+      const feature = await this.loadFeature(projectPath, featureId);
+      if (!feature) {
+        throw new Error(`Feature ${featureId} not found`);
+      }
 
-    if (hasContext) {
-      // Load previous context and continue
-      const context = (await secureFs.readFile(contextPath, 'utf-8')) as string;
-      return this.executeFeatureWithContext(projectPath, featureId, context, useWorktrees);
-    }
+      logger.info(
+        `[AutoMode] Resuming feature ${featureId} (${feature.title}) - current status: ${feature.status}`
+      );
 
-    // No context, start fresh - executeFeature will handle adding to runningFeatures
-    return this.executeFeature(projectPath, featureId, useWorktrees, false);
+      // Check if feature is stuck in a pipeline step
+      const pipelineInfo = await this.detectPipelineStatus(
+        projectPath,
+        featureId,
+        (feature.status || '') as FeatureStatusWithPipeline
+      );
+
+      if (pipelineInfo.isPipeline) {
+        // Feature stuck in pipeline - use pipeline resume
+        // Pass _alreadyTracked to prevent double-tracking
+        logger.info(
+          `[AutoMode] Feature ${featureId} is in pipeline step ${pipelineInfo.stepId}, using pipeline resume`
+        );
+        return await this.resumePipelineFeature(projectPath, feature, useWorktrees, pipelineInfo);
+      }
+
+      // Normal resume flow for non-pipeline features
+      // Check if context exists in .automaker directory
+      const featureDir = getFeatureDir(projectPath, featureId);
+      const contextPath = path.join(featureDir, 'agent-output.md');
+
+      let hasContext = false;
+      try {
+        await secureFs.access(contextPath);
+        hasContext = true;
+      } catch {
+        // No context - feature was interrupted before any agent output was saved
+      }
+
+      if (hasContext) {
+        // Load previous context and continue
+        // executeFeatureWithContext -> executeFeature will see feature is already tracked
+        const context = (await secureFs.readFile(contextPath, 'utf-8')) as string;
+        logger.info(
+          `[AutoMode] Resuming feature ${featureId} with saved context (${context.length} chars)`
+        );
+
+        // Emit event for UI notification
+        this.emitAutoModeEvent('auto_mode_feature_resuming', {
+          featureId,
+          featureName: feature.title,
+          projectPath,
+          hasContext: true,
+          message: `Resuming feature "${feature.title}" from saved context`,
+        });
+
+        return await this.executeFeatureWithContext(projectPath, featureId, context, useWorktrees);
+      }
+
+      // No context - feature was interrupted before any agent output was saved
+      // Start fresh execution instead of leaving the feature stuck
+      logger.info(
+        `[AutoMode] Feature ${featureId} has no saved context - starting fresh execution`
+      );
+
+      // Emit event for UI notification
+      this.emitAutoModeEvent('auto_mode_feature_resuming', {
+        featureId,
+        featureName: feature.title,
+        projectPath,
+        hasContext: false,
+        message: `Starting fresh execution for interrupted feature "${feature.title}" (no previous context found)`,
+      });
+
+      return await this.executeFeature(projectPath, featureId, useWorktrees, false, undefined, {
+        _calledInternally: true,
+      });
+    } finally {
+      this.releaseRunningFeature(featureId);
+    }
   }
 
   /**
@@ -1049,7 +2024,9 @@ Complete the pipeline step instructions above. Review the previous work and appl
       // Reset status to in_progress and start fresh
       await this.updateFeatureStatus(projectPath, featureId, 'in_progress');
 
-      return this.executeFeature(projectPath, featureId, useWorktrees, false);
+      return this.executeFeature(projectPath, featureId, useWorktrees, false, undefined, {
+        _calledInternally: true,
+      });
     }
 
     // Edge Case 2: Step no longer exists in pipeline config
@@ -1064,6 +2041,8 @@ Complete the pipeline step instructions above. Review the previous work and appl
 
       this.emitAutoModeEvent('auto_mode_feature_complete', {
         featureId,
+        featureName: feature.title,
+        branchName: feature.branchName ?? null,
         passes: true,
         message:
           'Pipeline step no longer exists - feature completed without remaining pipeline steps',
@@ -1118,31 +2097,89 @@ Complete the pipeline step instructions above. Review the previous work and appl
   ): Promise<void> {
     const featureId = feature.id;
 
-    const sortedSteps = [...pipelineConfig.steps].sort((a, b) => a.order - b.order);
+    // Sort all steps first
+    const allSortedSteps = [...pipelineConfig.steps].sort((a, b) => a.order - b.order);
 
-    // Validate step index
-    if (startFromStepIndex < 0 || startFromStepIndex >= sortedSteps.length) {
+    // Get the current step we're resuming from (using the index from unfiltered list)
+    if (startFromStepIndex < 0 || startFromStepIndex >= allSortedSteps.length) {
       throw new Error(`Invalid step index: ${startFromStepIndex}`);
     }
+    const currentStep = allSortedSteps[startFromStepIndex];
 
-    // Get steps to execute (from startFromStepIndex onwards)
-    const stepsToExecute = sortedSteps.slice(startFromStepIndex);
+    // Filter out excluded pipeline steps
+    const excludedStepIds = new Set(feature.excludedPipelineSteps || []);
 
-    console.log(
-      `[AutoMode] Resuming pipeline for feature ${featureId} from step ${startFromStepIndex + 1}/${sortedSteps.length}`
+    // Check if the current step is excluded
+    // If so, use getNextStatus to find the appropriate next step
+    if (excludedStepIds.has(currentStep.id)) {
+      logger.info(
+        `Current step ${currentStep.id} is excluded for feature ${featureId}, finding next valid step`
+      );
+      const nextStatus = pipelineService.getNextStatus(
+        `pipeline_${currentStep.id}`,
+        pipelineConfig,
+        feature.skipTests ?? false,
+        feature.excludedPipelineSteps
+      );
+
+      // If next status is not a pipeline step, feature is done
+      if (!pipelineService.isPipelineStatus(nextStatus)) {
+        await this.updateFeatureStatus(projectPath, featureId, nextStatus);
+        this.emitAutoModeEvent('auto_mode_feature_complete', {
+          featureId,
+          featureName: feature.title,
+          branchName: feature.branchName ?? null,
+          passes: true,
+          message: 'Pipeline completed (remaining steps excluded)',
+          projectPath,
+        });
+        return;
+      }
+
+      // Find the next step and update the start index
+      const nextStepId = pipelineService.getStepIdFromStatus(nextStatus);
+      const nextStepIndex = allSortedSteps.findIndex((s) => s.id === nextStepId);
+      if (nextStepIndex === -1) {
+        throw new Error(`Next step ${nextStepId} not found in pipeline config`);
+      }
+      startFromStepIndex = nextStepIndex;
+    }
+
+    // Get steps to execute (from startFromStepIndex onwards, excluding excluded steps)
+    const stepsToExecute = allSortedSteps
+      .slice(startFromStepIndex)
+      .filter((step) => !excludedStepIds.has(step.id));
+
+    // If no steps left to execute, complete the feature
+    if (stepsToExecute.length === 0) {
+      const finalStatus = feature.skipTests ? 'waiting_approval' : 'verified';
+      await this.updateFeatureStatus(projectPath, featureId, finalStatus);
+      this.emitAutoModeEvent('auto_mode_feature_complete', {
+        featureId,
+        featureName: feature.title,
+        branchName: feature.branchName ?? null,
+        passes: true,
+        message: 'Pipeline completed (all remaining steps excluded)',
+        projectPath,
+      });
+      return;
+    }
+
+    // Use the filtered steps for counting
+    const sortedSteps = allSortedSteps.filter((step) => !excludedStepIds.has(step.id));
+
+    logger.info(
+      `Resuming pipeline for feature ${featureId} from step ${startFromStepIndex + 1}/${sortedSteps.length}`
     );
 
-    // Add to running features immediately
-    const abortController = new AbortController();
-    this.runningFeatures.set(featureId, {
+    const runningEntry = this.acquireRunningFeature({
       featureId,
       projectPath,
-      worktreePath: null, // Will be set below
-      branchName: feature.branchName ?? null,
-      abortController,
       isAutoMode: false,
-      startTime: Date.now(),
+      allowReuse: true,
     });
+    const abortController = runningEntry.abortController;
+    runningEntry.branchName = feature.branchName ?? null;
 
     try {
       // Validate project path
@@ -1155,11 +2192,9 @@ Complete the pipeline step instructions above. Review the previous work and appl
       if (useWorktrees && branchName) {
         worktreePath = await this.findExistingWorktreeForBranch(projectPath, branchName);
         if (worktreePath) {
-          console.log(`[AutoMode] Using worktree for branch "${branchName}": ${worktreePath}`);
+          logger.info(`Using worktree for branch "${branchName}": ${worktreePath}`);
         } else {
-          console.warn(
-            `[AutoMode] Worktree for branch "${branchName}" not found, using project path`
-          );
+          logger.warn(`Worktree for branch "${branchName}" not found, using project path`);
         }
       }
 
@@ -1167,16 +2202,14 @@ Complete the pipeline step instructions above. Review the previous work and appl
       validateWorkingDirectory(workDir);
 
       // Update running feature with worktree info
-      const runningFeature = this.runningFeatures.get(featureId);
-      if (runningFeature) {
-        runningFeature.worktreePath = worktreePath;
-        runningFeature.branchName = branchName ?? null;
-      }
+      runningEntry.worktreePath = worktreePath;
+      runningEntry.branchName = branchName ?? null;
 
       // Emit resume event
       this.emitAutoModeEvent('auto_mode_feature_start', {
         featureId,
         projectPath,
+        branchName: branchName ?? null,
         feature: {
           id: featureId,
           title: feature.title || 'Resuming Pipeline',
@@ -1186,8 +2219,9 @@ Complete the pipeline step instructions above. Review the previous work and appl
 
       this.emitAutoModeEvent('auto_mode_progress', {
         featureId,
-        content: `Resuming from pipeline step ${startFromStepIndex + 1}/${sortedSteps.length}`,
         projectPath,
+        branchName: branchName ?? null,
+        content: `Resuming from pipeline step ${startFromStepIndex + 1}/${sortedSteps.length}`,
       });
 
       // Load autoLoadClaudeMd setting
@@ -1212,10 +2246,12 @@ Complete the pipeline step instructions above. Review the previous work and appl
       const finalStatus = feature.skipTests ? 'waiting_approval' : 'verified';
       await this.updateFeatureStatus(projectPath, featureId, finalStatus);
 
-      console.log('[AutoMode] Pipeline resume completed successfully');
+      logger.info(`Pipeline resume completed successfully for feature ${featureId}`);
 
       this.emitAutoModeEvent('auto_mode_feature_complete', {
         featureId,
+        featureName: feature.title,
+        branchName: feature.branchName ?? null,
         passes: true,
         message: 'Pipeline resumed and completed successfully',
         projectPath,
@@ -1226,22 +2262,26 @@ Complete the pipeline step instructions above. Review the previous work and appl
       if (errorInfo.isAbort) {
         this.emitAutoModeEvent('auto_mode_feature_complete', {
           featureId,
+          featureName: feature.title,
+          branchName: feature.branchName ?? null,
           passes: false,
           message: 'Pipeline resume stopped by user',
           projectPath,
         });
       } else {
-        console.error(`[AutoMode] Pipeline resume failed for feature ${featureId}:`, error);
+        logger.error(`Pipeline resume failed for feature ${featureId}:`, error);
         await this.updateFeatureStatus(projectPath, featureId, 'backlog');
         this.emitAutoModeEvent('auto_mode_error', {
           featureId,
+          featureName: feature.title,
+          branchName: feature.branchName ?? null,
           error: errorInfo.message,
           errorType: errorInfo.type,
           projectPath,
         });
       }
     } finally {
-      this.runningFeatures.delete(featureId);
+      this.releaseRunningFeature(featureId);
     }
   }
 
@@ -1258,11 +2298,12 @@ Complete the pipeline step instructions above. Review the previous work and appl
     // Validate project path early for fast failure
     validateWorkingDirectory(projectPath);
 
-    if (this.runningFeatures.has(featureId)) {
-      throw new Error(`Feature ${featureId} is already running`);
-    }
-
-    const abortController = new AbortController();
+    const runningEntry = this.acquireRunningFeature({
+      featureId,
+      projectPath,
+      isAutoMode: false,
+    });
+    const abortController = runningEntry.abortController;
 
     // Load feature info for context FIRST to get branchName
     const feature = await this.loadFeature(projectPath, featureId);
@@ -1344,33 +2385,29 @@ Address the follow-up instructions above. Review the previous work and make the 
     const provider = ProviderFactory.getProviderNameForModel(model);
     logger.info(`Follow-up for feature ${featureId} using model: ${model}, provider: ${provider}`);
 
-    this.runningFeatures.set(featureId, {
-      featureId,
-      projectPath,
-      worktreePath,
-      branchName,
-      abortController,
-      isAutoMode: false,
-      startTime: Date.now(),
-      model,
-      provider,
-    });
-
-    this.emitAutoModeEvent('auto_mode_feature_start', {
-      featureId,
-      projectPath,
-      feature: feature || {
-        id: featureId,
-        title: 'Follow-up',
-        description: prompt.substring(0, 100),
-      },
-      model,
-      provider,
-    });
+    runningEntry.worktreePath = worktreePath;
+    runningEntry.branchName = branchName;
+    runningEntry.model = model;
+    runningEntry.provider = provider;
 
     try {
-      // Update feature status to in_progress
+      // Update feature status to in_progress BEFORE emitting event
+      // This ensures the frontend sees the updated status when it reloads features
       await this.updateFeatureStatus(projectPath, featureId, 'in_progress');
+
+      // Emit feature start event AFTER status update so frontend sees correct status
+      this.emitAutoModeEvent('auto_mode_feature_start', {
+        featureId,
+        projectPath,
+        branchName,
+        feature: feature || {
+          id: featureId,
+          title: 'Follow-up',
+          description: prompt.substring(0, 100),
+        },
+        model,
+        provider,
+      });
 
       // Copy follow-up images to feature folder
       const copiedImagePaths: string[] = [];
@@ -1465,6 +2502,8 @@ Address the follow-up instructions above. Review the previous work and make the 
 
       this.emitAutoModeEvent('auto_mode_feature_complete', {
         featureId,
+        featureName: feature?.title,
+        branchName: branchName ?? null,
         passes: true,
         message: `Follow-up completed successfully${finalStatus === 'verified' ? ' - auto-verified' : ''}`,
         projectPath,
@@ -1476,6 +2515,8 @@ Address the follow-up instructions above. Review the previous work and make the 
       if (!errorInfo.isCancellation) {
         this.emitAutoModeEvent('auto_mode_error', {
           featureId,
+          featureName: feature?.title,
+          branchName: branchName ?? null,
           error: errorInfo.message,
           errorType: errorInfo.type,
           projectPath,
@@ -1495,7 +2536,7 @@ Address the follow-up instructions above. Review the previous work and make the 
         }
       }
     } finally {
-      this.runningFeatures.delete(featureId);
+      this.releaseRunningFeature(featureId);
     }
   }
 
@@ -1503,8 +2544,13 @@ Address the follow-up instructions above. Review the previous work and make the 
    * Verify a feature's implementation
    */
   async verifyFeature(projectPath: string, featureId: string): Promise<boolean> {
+    // Load feature to get the name for event reporting
+    const feature = await this.loadFeature(projectPath, featureId);
+
     // Worktrees are in project dir
-    const worktreePath = path.join(projectPath, '.worktrees', featureId);
+    // Sanitize featureId the same way it's sanitized when creating worktrees
+    const sanitizedFeatureId = featureId.replace(/[^a-zA-Z0-9_-]/g, '-');
+    const worktreePath = path.join(projectPath, '.worktrees', sanitizedFeatureId);
     let workDir = projectPath;
 
     try {
@@ -1549,6 +2595,8 @@ Address the follow-up instructions above. Review the previous work and make the 
 
     this.emitAutoModeEvent('auto_mode_feature_complete', {
       featureId,
+      featureName: feature?.title,
+      branchName: feature?.branchName ?? null,
       passes: allPassed,
       message: allPassed
         ? 'All verification checks passed'
@@ -1585,7 +2633,9 @@ Address the follow-up instructions above. Review the previous work and make the 
       }
     } else {
       // Fallback: try to find worktree at legacy location
-      const legacyWorktreePath = path.join(projectPath, '.worktrees', featureId);
+      // Sanitize featureId the same way it's sanitized when creating worktrees
+      const sanitizedFeatureId = featureId.replace(/[^a-zA-Z0-9_-]/g, '-');
+      const legacyWorktreePath = path.join(projectPath, '.worktrees', sanitizedFeatureId);
       try {
         await secureFs.access(legacyWorktreePath);
         workDir = legacyWorktreePath;
@@ -1607,13 +2657,67 @@ Address the follow-up instructions above. Review the previous work and make the 
       // Load feature for commit message
       const feature = await this.loadFeature(projectPath, featureId);
       const commitMessage = feature
-        ? `feat: ${this.extractTitleFromDescription(
-            feature.description
-          )}\n\nImplemented by Automaker auto-mode`
-        : `feat: Feature ${featureId}`;
+        ? await this.generateCommitMessage(feature, workDir)
+        : `feat: Feature ${featureId}\n\nImplemented by Automaker auto-mode`;
 
-      // Stage and commit
-      await execAsync('git add -A', { cwd: workDir });
+      // Determine which files to stage
+      // For feature branches, only stage files changed on this branch to avoid committing unrelated changes
+      let filesToStage: string[] = [];
+
+      try {
+        // Get the current branch
+        const { stdout: currentBranch } = await execAsync('git rev-parse --abbrev-ref HEAD', {
+          cwd: workDir,
+        });
+        const branch = currentBranch.trim();
+
+        // Get the base branch (usually main/master)
+        const { stdout: baseBranchOutput } = await execAsync(
+          'git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || echo "refs/remotes/origin/main"',
+          { cwd: workDir }
+        );
+        const baseBranch = baseBranchOutput.trim().replace('refs/remotes/origin/', '');
+
+        // If we're on a feature branch (not the base branch), only stage files changed on this branch
+        if (branch !== baseBranch && feature?.branchName) {
+          try {
+            // Get files changed on this branch compared to base
+            const { stdout: branchFiles } = await execAsync(
+              `git diff --name-only ${baseBranch}...HEAD`,
+              { cwd: workDir }
+            );
+
+            if (branchFiles.trim()) {
+              filesToStage = branchFiles.trim().split('\n').filter(Boolean);
+              logger.info(`Staging ${filesToStage.length} files changed on branch ${branch}`);
+            }
+          } catch (diffError) {
+            // If diff fails (e.g., base branch doesn't exist), fall back to staging all changes
+            logger.warn(`Could not diff against base branch, staging all changes: ${diffError}`);
+            filesToStage = [];
+          }
+        }
+      } catch (error) {
+        logger.warn(`Could not determine branch-specific files: ${error}`);
+      }
+
+      // Stage files
+      if (filesToStage.length > 0) {
+        // Stage only the specific files changed on this branch
+        for (const file of filesToStage) {
+          try {
+            await execAsync(`git add "${file.replace(/"/g, '\\"')}"`, { cwd: workDir });
+          } catch (error) {
+            logger.warn(`Failed to stage file ${file}: ${error}`);
+          }
+        }
+      } else {
+        // Fallback: stage all changes (original behavior)
+        // This happens for main branch features or when branch detection fails
+        await execAsync('git add -A', { cwd: workDir });
+      }
+
+      // Commit
       await execAsync(`git commit -m "${commitMessage.replace(/"/g, '\\"')}"`, {
         cwd: workDir,
       });
@@ -1625,6 +2729,8 @@ Address the follow-up instructions above. Review the previous work and make the 
 
       this.emitAutoModeEvent('auto_mode_feature_complete', {
         featureId,
+        featureName: feature?.title,
+        branchName: feature?.branchName ?? null,
         passes: true,
         message: `Changes committed: ${hash.trim().substring(0, 8)}`,
         projectPath,
@@ -1663,6 +2769,7 @@ Address the follow-up instructions above. Review the previous work and make the 
     this.emitAutoModeEvent('auto_mode_feature_start', {
       featureId: analysisFeatureId,
       projectPath,
+      branchName: null, // Project analysis is not worktree-specific
       feature: {
         id: analysisFeatureId,
         title: 'Project Analysis',
@@ -1680,13 +2787,24 @@ Address the follow-up instructions above. Review the previous work and make the 
 Format your response as a structured markdown document.`;
 
     try {
-      // Get model from phase settings
-      const settings = await this.settingsService?.getGlobalSettings();
-      const phaseModelEntry =
-        settings?.phaseModels?.projectAnalysisModel || DEFAULT_PHASE_MODELS.projectAnalysisModel;
+      // Get model from phase settings with provider info
+      const {
+        phaseModel: phaseModelEntry,
+        provider: analysisClaudeProvider,
+        credentials,
+      } = await getPhaseModelWithOverrides(
+        'projectAnalysisModel',
+        this.settingsService,
+        projectPath,
+        '[AutoMode]'
+      );
       const { model: analysisModel, thinkingLevel: analysisThinkingLevel } =
         resolvePhaseModel(phaseModelEntry);
-      logger.info('Using model for project analysis:', analysisModel);
+      logger.info(
+        'Using model for project analysis:',
+        analysisModel,
+        analysisClaudeProvider ? `via provider: ${analysisClaudeProvider.name}` : 'direct API'
+      );
 
       const provider = ProviderFactory.getProviderForModel(analysisModel);
 
@@ -1717,6 +2835,8 @@ Format your response as a structured markdown document.`;
         abortController,
         settingSources: sdkOptions.settingSources,
         thinkingLevel: analysisThinkingLevel, // Pass thinking level
+        credentials, // Pass credentials for resolving 'credentials' apiKeySource
+        claudeCompatibleProvider: analysisClaudeProvider, // Pass provider for alternative endpoint configuration
       };
 
       const stream = provider.executeQuery(options);
@@ -1747,6 +2867,8 @@ Format your response as a structured markdown document.`;
 
       this.emitAutoModeEvent('auto_mode_feature_complete', {
         featureId: analysisFeatureId,
+        featureName: 'Project Analysis',
+        branchName: null, // Project analysis is not worktree-specific
         passes: true,
         message: 'Project analysis completed',
         projectPath,
@@ -1755,6 +2877,8 @@ Format your response as a structured markdown document.`;
       const errorInfo = classifyError(error);
       this.emitAutoModeEvent('auto_mode_error', {
         featureId: analysisFeatureId,
+        featureName: 'Project Analysis',
+        branchName: null, // Project analysis is not worktree-specific
         error: errorInfo.message,
         errorType: errorInfo.type,
         projectPath,
@@ -1778,6 +2902,71 @@ Format your response as a structured markdown document.`;
   }
 
   /**
+   * Get status for a specific project/worktree
+   * @param projectPath - The project path
+   * @param branchName - The branch name, or null for main worktree
+   */
+  getStatusForProject(
+    projectPath: string,
+    branchName: string | null = null
+  ): {
+    isAutoLoopRunning: boolean;
+    runningFeatures: string[];
+    runningCount: number;
+    maxConcurrency: number;
+    branchName: string | null;
+  } {
+    const worktreeKey = getWorktreeAutoLoopKey(projectPath, branchName);
+    const projectState = this.autoLoopsByProject.get(worktreeKey);
+    const runningFeatures: string[] = [];
+
+    for (const [featureId, feature] of this.runningFeatures) {
+      // Filter by project path AND branchName to get worktree-specific features
+      if (feature.projectPath === projectPath && feature.branchName === branchName) {
+        runningFeatures.push(featureId);
+      }
+    }
+
+    return {
+      isAutoLoopRunning: projectState?.isRunning ?? false,
+      runningFeatures,
+      runningCount: runningFeatures.length,
+      maxConcurrency: projectState?.config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY,
+      branchName,
+    };
+  }
+
+  /**
+   * Get all active auto loop worktrees with their project paths and branch names
+   */
+  getActiveAutoLoopWorktrees(): Array<{ projectPath: string; branchName: string | null }> {
+    const activeWorktrees: Array<{ projectPath: string; branchName: string | null }> = [];
+    for (const [, state] of this.autoLoopsByProject) {
+      if (state.isRunning) {
+        activeWorktrees.push({
+          projectPath: state.config.projectPath,
+          branchName: state.branchName,
+        });
+      }
+    }
+    return activeWorktrees;
+  }
+
+  /**
+   * Get all projects that have auto mode running (legacy, returns unique project paths)
+   * @deprecated Use getActiveAutoLoopWorktrees instead for full worktree information
+   */
+  getActiveAutoLoopProjects(): string[] {
+    const activeProjects = new Set<string>();
+    for (const [, state] of this.autoLoopsByProject) {
+      if (state.isRunning) {
+        activeProjects.add(state.config.projectPath);
+      }
+    }
+    return Array.from(activeProjects);
+  }
+
+  /**
    * Get detailed info about all running agents
    */
   async getRunningAgents(): Promise<
@@ -1790,22 +2979,25 @@ Format your response as a structured markdown document.`;
       provider?: ModelProvider;
       title?: string;
       description?: string;
+      branchName?: string;
     }>
   > {
     const agents = await Promise.all(
       Array.from(this.runningFeatures.values()).map(async (rf) => {
-        // Try to fetch feature data to get title and description
+        // Try to fetch feature data to get title, description, and branchName
         let title: string | undefined;
         let description: string | undefined;
+        let branchName: string | undefined;
 
         try {
           const feature = await this.featureLoader.get(rf.projectPath, rf.featureId);
           if (feature) {
             title = feature.title;
             description = feature.description;
+            branchName = feature.branchName;
           }
         } catch (error) {
-          // Silently ignore errors - title/description are optional
+          // Silently ignore errors - title/description/branchName are optional
         }
 
         return {
@@ -1817,6 +3009,7 @@ Format your response as a structured markdown document.`;
           provider: rf.provider,
           title,
           description,
+          branchName,
         };
       })
     );
@@ -2159,6 +3352,113 @@ Format your response as a structured markdown document.`;
   }
 
   /**
+   * Mark a feature as interrupted due to server restart or other interruption.
+   *
+   * This is a convenience helper that updates the feature status to 'interrupted',
+   * indicating the feature was in progress but execution was disrupted (e.g., server
+   * restart, process crash, or manual stop). Features with this status can be
+   * resumed later using the resume functionality.
+   *
+   * Note: Features with pipeline_* statuses are preserved rather than overwritten
+   * to 'interrupted'. This ensures that resumePipelineFeature() can pick up from
+   * the correct pipeline step after a restart.
+   *
+   * @param projectPath - Path to the project
+   * @param featureId - ID of the feature to mark as interrupted
+   * @param reason - Optional reason for the interruption (logged for debugging)
+   */
+  async markFeatureInterrupted(
+    projectPath: string,
+    featureId: string,
+    reason?: string
+  ): Promise<void> {
+    // Load the feature to check its current status
+    const feature = await this.loadFeature(projectPath, featureId);
+    const currentStatus = feature?.status;
+
+    // Preserve pipeline_* statuses so resumePipelineFeature can resume from the correct step
+    if (currentStatus && currentStatus.startsWith('pipeline_')) {
+      logger.info(
+        `Feature ${featureId} was in ${currentStatus}; preserving pipeline status for resume`
+      );
+      return;
+    }
+
+    if (reason) {
+      logger.info(`Marking feature ${featureId} as interrupted: ${reason}`);
+    } else {
+      logger.info(`Marking feature ${featureId} as interrupted`);
+    }
+
+    await this.updateFeatureStatus(projectPath, featureId, 'interrupted');
+  }
+
+  /**
+   * Mark all currently running features as interrupted.
+   *
+   * This method is called during graceful server shutdown to ensure that all
+   * features currently being executed are properly marked as 'interrupted'.
+   * This allows them to be detected and resumed when the server restarts.
+   *
+   * @param reason - Optional reason for the interruption (logged for debugging)
+   * @returns Promise that resolves when all features have been marked as interrupted
+   */
+  async markAllRunningFeaturesInterrupted(reason?: string): Promise<void> {
+    const runningCount = this.runningFeatures.size;
+
+    if (runningCount === 0) {
+      logger.info('No running features to mark as interrupted');
+      return;
+    }
+
+    const logReason = reason || 'server shutdown';
+    logger.info(`Marking ${runningCount} running feature(s) as interrupted due to: ${logReason}`);
+
+    const markPromises: Promise<void>[] = [];
+
+    for (const [featureId, runningFeature] of this.runningFeatures) {
+      markPromises.push(
+        this.markFeatureInterrupted(runningFeature.projectPath, featureId, logReason).catch(
+          (error) => {
+            logger.error(`Failed to mark feature ${featureId} as interrupted:`, error);
+          }
+        )
+      );
+    }
+
+    await Promise.all(markPromises);
+
+    logger.info(`Finished marking ${runningCount} feature(s) as interrupted`);
+  }
+
+  private isFeatureFinished(feature: Feature): boolean {
+    const isCompleted = feature.status === 'completed' || feature.status === 'verified';
+
+    // Even if marked as completed, if it has an approved plan with pending tasks, it's not finished
+    if (feature.planSpec?.status === 'approved') {
+      const tasksCompleted = feature.planSpec.tasksCompleted ?? 0;
+      const tasksTotal = feature.planSpec.tasksTotal ?? 0;
+      if (tasksCompleted < tasksTotal) {
+        return false;
+      }
+    }
+
+    return isCompleted;
+  }
+
+  /**
+   * Check if a feature is currently running (being executed or resumed).
+   * This is used for idempotent checks to prevent race conditions when
+   * multiple callers try to resume the same feature simultaneously.
+   *
+   * @param featureId - The ID of the feature to check
+   * @returns true if the feature is currently running, false otherwise
+   */
+  isFeatureRunning(featureId: string): boolean {
+    return this.runningFeatures.has(featureId);
+  }
+
+  /**
    * Update the planSpec of a feature
    */
   private async updateFeaturePlanSpec(
@@ -2211,9 +3511,177 @@ Format your response as a structured markdown document.`;
     }
   }
 
-  private async loadPendingFeatures(projectPath: string): Promise<Feature[]> {
+  /**
+   * Save the extracted summary to a feature's summary field.
+   * This is called after agent execution completes to save a summary
+   * extracted from the agent's output using <summary> tags.
+   *
+   * Note: This is different from updateFeatureSummary which updates
+   * the description field during plan generation.
+   *
+   * @param projectPath - The project path
+   * @param featureId - The feature ID
+   * @param summary - The summary text to save
+   */
+  private async saveFeatureSummary(
+    projectPath: string,
+    featureId: string,
+    summary: string
+  ): Promise<void> {
+    const featureDir = getFeatureDir(projectPath, featureId);
+    const featurePath = path.join(featureDir, 'feature.json');
+
+    try {
+      const result = await readJsonWithRecovery<Feature | null>(featurePath, null, {
+        maxBackups: DEFAULT_BACKUP_COUNT,
+        autoRestore: true,
+      });
+
+      logRecoveryWarning(result, `Feature ${featureId}`, logger);
+
+      const feature = result.data;
+      if (!feature) {
+        logger.warn(`Feature ${featureId} not found or could not be recovered`);
+        return;
+      }
+
+      feature.summary = summary;
+      feature.updatedAt = new Date().toISOString();
+
+      await atomicWriteJson(featurePath, feature, { backupCount: DEFAULT_BACKUP_COUNT });
+
+      this.emitAutoModeEvent('auto_mode_summary', {
+        featureId,
+        projectPath,
+        summary,
+      });
+    } catch (error) {
+      logger.error(`Failed to save summary for ${featureId}:`, error);
+    }
+  }
+
+  /**
+   * Update the status of a specific task within planSpec.tasks
+   */
+  private async updateTaskStatus(
+    projectPath: string,
+    featureId: string,
+    taskId: string,
+    status: ParsedTask['status']
+  ): Promise<void> {
+    // Use getFeatureDir helper for consistent path resolution
+    const featureDir = getFeatureDir(projectPath, featureId);
+    const featurePath = path.join(featureDir, 'feature.json');
+
+    try {
+      // Use recovery-enabled read for corrupted file handling
+      const result = await readJsonWithRecovery<Feature | null>(featurePath, null, {
+        maxBackups: DEFAULT_BACKUP_COUNT,
+        autoRestore: true,
+      });
+
+      logRecoveryWarning(result, `Feature ${featureId}`, logger);
+
+      const feature = result.data;
+      if (!feature || !feature.planSpec?.tasks) {
+        logger.warn(`Feature ${featureId} not found or has no tasks`);
+        return;
+      }
+
+      // Find and update the task
+      const task = feature.planSpec.tasks.find((t) => t.id === taskId);
+      if (task) {
+        task.status = status;
+        feature.updatedAt = new Date().toISOString();
+
+        // Use atomic write with backup support
+        await atomicWriteJson(featurePath, feature, { backupCount: DEFAULT_BACKUP_COUNT });
+
+        // Emit event for UI update
+        this.emitAutoModeEvent('auto_mode_task_status', {
+          featureId,
+          projectPath,
+          taskId,
+          status,
+          tasks: feature.planSpec.tasks,
+        });
+      }
+    } catch (error) {
+      logger.error(`Failed to update task ${taskId} status for ${featureId}:`, error);
+    }
+  }
+
+  /**
+   * Update the description of a feature based on extracted summary from plan content.
+   * This is called when a plan is generated during spec/full planning modes.
+   *
+   * Only updates the description if it's short (<50 chars), same as title,
+   * or starts with generic verbs like "implement/add/create/fix/update".
+   *
+   * Note: This is different from saveFeatureSummary which saves to the
+   * separate summary field after agent execution.
+   *
+   * @param projectPath - The project path
+   * @param featureId - The feature ID
+   * @param summary - The summary text extracted from the plan
+   */
+  private async updateFeatureSummary(
+    projectPath: string,
+    featureId: string,
+    summary: string
+  ): Promise<void> {
+    const featureDir = getFeatureDir(projectPath, featureId);
+    const featurePath = path.join(featureDir, 'feature.json');
+
+    try {
+      const result = await readJsonWithRecovery<Feature | null>(featurePath, null, {
+        maxBackups: DEFAULT_BACKUP_COUNT,
+        autoRestore: true,
+      });
+
+      logRecoveryWarning(result, `Feature ${featureId}`, logger);
+
+      const feature = result.data;
+      if (!feature) {
+        logger.warn(`Feature ${featureId} not found`);
+        return;
+      }
+
+      // Only update if the feature doesn't already have a detailed description
+      // (Don't overwrite user-provided descriptions with extracted summaries)
+      const currentDesc = feature.description || '';
+      const isShortOrGeneric =
+        currentDesc.length < 50 ||
+        currentDesc === feature.title ||
+        /^(implement|add|create|fix|update)\s/i.test(currentDesc);
+
+      if (isShortOrGeneric) {
+        feature.description = summary;
+        feature.updatedAt = new Date().toISOString();
+
+        await atomicWriteJson(featurePath, feature, { backupCount: DEFAULT_BACKUP_COUNT });
+        logger.info(`Updated feature ${featureId} description with extracted summary`);
+      }
+    } catch (error) {
+      logger.error(`Failed to update summary for ${featureId}:`, error);
+    }
+  }
+
+  /**
+   * Load pending features for a specific project/worktree
+   * @param projectPath - The project path
+   * @param branchName - The branch name to filter by, or null for main worktree (features without branchName)
+   */
+  private async loadPendingFeatures(
+    projectPath: string,
+    branchName: string | null = null
+  ): Promise<Feature[]> {
     // Features are stored in .automaker directory
     const featuresDir = getFeaturesDir(projectPath);
+
+    // Get the actual primary branch name for the project (e.g., "main", "master", "develop")
+    // This is needed to correctly match features when branchName is null (main worktree)
+    const primaryBranch = await getCurrentBranch(projectPath);
 
     try {
       const entries = await secureFs.readdir(featuresDir, {
@@ -2243,31 +3711,168 @@ Format your response as a structured markdown document.`;
 
           allFeatures.push(feature);
 
-          // Track pending features separately
-          if (
+          // Track pending features separately, filtered by worktree/branch
+          // Note: waiting_approval is NOT included - those features have completed execution
+          // and are waiting for user review, they should not be picked up again
+          //
+          // Recovery cases:
+          // 1. Standard pending/ready/backlog statuses
+          // 2. Features with approved plans that have incomplete tasks (crash recovery)
+          // 3. Features stuck in 'in_progress' or 'interrupted' status (crash recovery)
+          // 4. Features with 'generating' planSpec status (spec generation was interrupted)
+          const needsRecovery =
             feature.status === 'pending' ||
             feature.status === 'ready' ||
-            feature.status === 'backlog'
-          ) {
-            pendingFeatures.push(feature);
+            feature.status === 'backlog' ||
+            feature.status === 'in_progress' || // Recover features that were in progress when server crashed
+            feature.status === 'interrupted' || // Recover features explicitly marked interrupted on shutdown
+            (feature.planSpec?.status === 'approved' &&
+              (feature.planSpec.tasksCompleted ?? 0) < (feature.planSpec.tasksTotal ?? 0)) ||
+            feature.planSpec?.status === 'generating'; // Recover interrupted spec generation
+
+          if (needsRecovery) {
+            // Filter by branchName:
+            // - If branchName is null (main worktree), include features with:
+            //   - branchName === null, OR
+            //   - branchName === primaryBranch (e.g., "main", "master", "develop")
+            // - If branchName is set, only include features with matching branchName
+            const featureBranch = feature.branchName ?? null;
+            if (branchName === null) {
+              // Main worktree: include features without branchName OR with branchName matching primary branch
+              // This handles repos where the primary branch is named something other than "main"
+              const isPrimaryBranch =
+                featureBranch === null || (primaryBranch && featureBranch === primaryBranch);
+              if (isPrimaryBranch) {
+                pendingFeatures.push(feature);
+              } else {
+                logger.debug(
+                  `[loadPendingFeatures] Filtering out feature ${feature.id} (branchName: ${featureBranch}, primaryBranch: ${primaryBranch}) for main worktree`
+                );
+              }
+            } else {
+              // Feature worktree: include features with matching branchName
+              if (featureBranch === branchName) {
+                pendingFeatures.push(feature);
+              } else {
+                logger.debug(
+                  `[loadPendingFeatures] Filtering out feature ${feature.id} (branchName: ${featureBranch}, expected: ${branchName}) for worktree ${branchName}`
+                );
+              }
+            }
           }
         }
       }
 
+      const worktreeDesc = branchName ? `worktree ${branchName}` : 'main worktree';
+      logger.info(
+        `[loadPendingFeatures] Found ${allFeatures.length} total features, ${pendingFeatures.length} candidates (pending/ready/backlog/in_progress/interrupted/approved_with_pending_tasks/generating) for ${worktreeDesc}`
+      );
+
+      if (pendingFeatures.length === 0) {
+        logger.warn(
+          `[loadPendingFeatures] No pending features found for ${worktreeDesc}. Check branchName matching - looking for branchName: ${branchName === null ? 'null (main)' : branchName}`
+        );
+        // Log all backlog features to help debug branchName matching
+        const allBacklogFeatures = allFeatures.filter(
+          (f) =>
+            f.status === 'backlog' ||
+            f.status === 'pending' ||
+            f.status === 'ready' ||
+            (f.planSpec?.status === 'approved' &&
+              (f.planSpec.tasksCompleted ?? 0) < (f.planSpec.tasksTotal ?? 0))
+        );
+        if (allBacklogFeatures.length > 0) {
+          logger.info(
+            `[loadPendingFeatures] Found ${allBacklogFeatures.length} backlog features with branchNames: ${allBacklogFeatures.map((f) => `${f.id}(${f.branchName ?? 'null'})`).join(', ')}`
+          );
+        }
+      }
+
       // Apply dependency-aware ordering
-      const { orderedFeatures } = resolveDependencies(pendingFeatures);
+      const { orderedFeatures, missingDependencies } = resolveDependencies(pendingFeatures);
+
+      // Remove missing dependencies from features and save them
+      // This allows features to proceed when their dependencies have been deleted or don't exist
+      if (missingDependencies.size > 0) {
+        for (const [featureId, missingDepIds] of missingDependencies) {
+          const feature = pendingFeatures.find((f) => f.id === featureId);
+          if (feature && feature.dependencies) {
+            // Filter out the missing dependency IDs
+            const validDependencies = feature.dependencies.filter(
+              (depId) => !missingDepIds.includes(depId)
+            );
+
+            logger.warn(
+              `[loadPendingFeatures] Feature ${featureId} has missing dependencies: ${missingDepIds.join(', ')}. Removing them automatically.`
+            );
+
+            // Update the feature in memory
+            feature.dependencies = validDependencies.length > 0 ? validDependencies : undefined;
+
+            // Save the updated feature to disk
+            try {
+              await this.featureLoader.update(projectPath, featureId, {
+                dependencies: feature.dependencies,
+              });
+              logger.info(
+                `[loadPendingFeatures] Updated feature ${featureId} - removed missing dependencies`
+              );
+            } catch (error) {
+              logger.error(
+                `[loadPendingFeatures] Failed to save feature ${featureId} after removing missing dependencies:`,
+                error
+              );
+            }
+          }
+        }
+      }
 
       // Get skipVerificationInAutoMode setting
       const settings = await this.settingsService?.getGlobalSettings();
       const skipVerification = settings?.skipVerificationInAutoMode ?? false;
 
       // Filter to only features with satisfied dependencies
-      const readyFeatures = orderedFeatures.filter((feature: Feature) =>
-        areDependenciesSatisfied(feature, allFeatures, { skipVerification })
+      const readyFeatures: Feature[] = [];
+      const blockedFeatures: Array<{ feature: Feature; reason: string }> = [];
+
+      for (const feature of orderedFeatures) {
+        const isSatisfied = areDependenciesSatisfied(feature, allFeatures, { skipVerification });
+        if (isSatisfied) {
+          readyFeatures.push(feature);
+        } else {
+          // Find which dependencies are blocking
+          const blockingDeps =
+            feature.dependencies?.filter((depId) => {
+              const dep = allFeatures.find((f) => f.id === depId);
+              if (!dep) return true; // Missing dependency
+              if (skipVerification) {
+                return dep.status === 'running';
+              }
+              return dep.status !== 'completed' && dep.status !== 'verified';
+            }) || [];
+          blockedFeatures.push({
+            feature,
+            reason:
+              blockingDeps.length > 0
+                ? `Blocked by dependencies: ${blockingDeps.join(', ')}`
+                : 'Unknown dependency issue',
+          });
+        }
+      }
+
+      if (blockedFeatures.length > 0) {
+        logger.info(
+          `[loadPendingFeatures] ${blockedFeatures.length} features blocked by dependencies: ${blockedFeatures.map((b) => `${b.feature.id} (${b.reason})`).join('; ')}`
+        );
+      }
+
+      logger.info(
+        `[loadPendingFeatures] After dependency filtering: ${readyFeatures.length} ready features (skipVerification=${skipVerification})`
       );
 
       return readyFeatures;
-    } catch {
+    } catch (error) {
+      logger.error(`[loadPendingFeatures] Error loading features:`, error);
       return [];
     }
   }
@@ -2288,6 +3893,58 @@ Format your response as a structured markdown document.`;
 
     // Truncate to 60 characters and add ellipsis
     return firstLine.substring(0, 57) + '...';
+  }
+
+  /**
+   * Generate a comprehensive commit message for a feature
+   * Includes title, description summary, and file statistics
+   */
+  private async generateCommitMessage(feature: Feature, workDir: string): Promise<string> {
+    const title = this.extractTitleFromDescription(feature.description);
+
+    // Extract description summary (first 3-5 lines, up to 300 chars)
+    let descriptionSummary = '';
+    if (feature.description && feature.description.trim()) {
+      const lines = feature.description.split('\n').filter((l) => l.trim());
+      const summaryLines = lines.slice(0, 5); // First 5 non-empty lines
+      descriptionSummary = summaryLines.join('\n');
+
+      // Limit to 300 characters
+      if (descriptionSummary.length > 300) {
+        descriptionSummary = descriptionSummary.substring(0, 297) + '...';
+      }
+    }
+
+    // Get file statistics to add context
+    let fileStats = '';
+    try {
+      const { stdout: diffStat } = await execAsync('git diff --cached --stat', { cwd: workDir });
+      if (diffStat.trim()) {
+        // Extract just the summary line (last line with file count)
+        const statLines = diffStat.trim().split('\n');
+        const summaryLine = statLines[statLines.length - 1];
+        if (summaryLine && summaryLine.includes('file')) {
+          fileStats = `\n${summaryLine.trim()}`;
+        }
+      }
+    } catch {
+      // Ignore errors getting stats
+    }
+
+    // Build commit message
+    let message = `feat: ${title}`;
+
+    if (descriptionSummary && descriptionSummary !== title) {
+      message += `\n\n${descriptionSummary}`;
+    }
+
+    if (fileStats) {
+      message += fileStats;
+    }
+
+    message += '\n\nImplemented by Automaker auto-mode';
+
+    return message;
   }
 
   /**
@@ -2396,9 +4053,11 @@ You can use the Read tool to view these images at any time during implementation
       systemPrompt?: string;
       autoLoadClaudeMd?: boolean;
       thinkingLevel?: ThinkingLevel;
+      branchName?: string | null;
     }
   ): Promise<void> {
     const finalProjectPath = options?.projectPath || projectPath;
+    const branchName = options?.branchName ?? null;
     const planningMode = options?.planningMode || 'skip';
     const previousContent = options?.previousContent;
 
@@ -2422,6 +4081,21 @@ You can use the Read tool to view these images at any time during implementation
       planningMode === 'full' ||
       (planningMode === 'lite' && options?.requirePlanApproval === true);
     const requiresApproval = planningModeRequiresApproval && options?.requirePlanApproval === true;
+
+    // Check if feature already has an approved plan with tasks (recovery scenario)
+    // If so, we should skip spec detection and use persisted task status
+    let existingApprovedPlan: Feature['planSpec'] | undefined;
+    let persistedTasks: ParsedTask[] | undefined;
+    if (planningModeRequiresApproval) {
+      const feature = await this.loadFeature(projectPath, featureId);
+      if (feature?.planSpec?.status === 'approved' && feature.planSpec.tasks) {
+        existingApprovedPlan = feature.planSpec;
+        persistedTasks = feature.planSpec.tasks;
+        logger.info(
+          `Recovery: Using persisted tasks for feature ${featureId} (${persistedTasks.length} tasks, ${persistedTasks.filter((t) => t.status === 'completed').length} completed)`
+        );
+      }
+    }
 
     // CI/CD Mock Mode: Return early with mock response when AUTOMAKER_MOCK_AGENT is set
     // This prevents actual API calls during automated testing
@@ -2536,9 +4210,37 @@ This mock response was generated because AUTOMAKER_MOCK_AGENT=true was set.
       );
     }
 
+    // Get credentials for API calls (model comes from request, no phase model)
+    const credentials = await this.settingsService?.getCredentials();
+
+    // Try to find a provider for the model (if it's a provider model like "GLM-4.7")
+    // This allows users to select provider models in the Auto Mode / Feature execution
+    let claudeCompatibleProvider: import('@automaker/types').ClaudeCompatibleProvider | undefined;
+    let providerResolvedModel: string | undefined;
+    if (finalModel && this.settingsService) {
+      const providerResult = await getProviderByModelId(
+        finalModel,
+        this.settingsService,
+        '[AutoMode]'
+      );
+      if (providerResult.provider) {
+        claudeCompatibleProvider = providerResult.provider;
+        providerResolvedModel = providerResult.resolvedModel;
+        logger.info(
+          `[AutoMode] Using provider "${providerResult.provider.name}" for model "${finalModel}"` +
+            (providerResolvedModel ? ` -> resolved to "${providerResolvedModel}"` : '')
+        );
+      }
+    }
+
+    // Use the resolved model if available (from mapsToClaudeModel), otherwise use bareModel
+    const effectiveBareModel = providerResolvedModel
+      ? stripProviderPrefix(providerResolvedModel)
+      : bareModel;
+
     const executeOptions: ExecuteOptions = {
       prompt: promptContent,
-      model: bareModel,
+      model: effectiveBareModel,
       maxTurns: maxTurns,
       cwd: workDir,
       allowedTools: allowedTools,
@@ -2547,6 +4249,8 @@ This mock response was generated because AUTOMAKER_MOCK_AGENT=true was set.
       settingSources: sdkOptions.settingSources,
       mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined, // Pass MCP servers configuration
       thinkingLevel: options?.thinkingLevel, // Pass thinking level for extended thinking
+      credentials, // Pass credentials for resolving 'credentials' apiKeySource
+      claudeCompatibleProvider, // Pass provider for alternative endpoint configuration (GLM, MiniMax, etc.)
     };
 
     // Execute via provider
@@ -2557,7 +4261,8 @@ This mock response was generated because AUTOMAKER_MOCK_AGENT=true was set.
     let responseText = previousContent
       ? `${previousContent}\n\n---\n\n## Follow-up Session\n\n`
       : '';
-    let specDetected = false;
+    // Skip spec detection if we already have an approved plan (recovery scenario)
+    let specDetected = !!existingApprovedPlan;
 
     // Agent output goes to .automaker directory
     // Note: We use projectPath here, not workDir, because workDir might be a worktree path
@@ -2640,6 +4345,164 @@ This mock response was generated because AUTOMAKER_MOCK_AGENT=true was set.
       );
     }, STREAM_HEARTBEAT_MS);
 
+    // RECOVERY PATH: If we have an approved plan with persisted tasks, skip spec generation
+    // and directly execute the remaining tasks
+    if (existingApprovedPlan && persistedTasks && persistedTasks.length > 0) {
+      logger.info(
+        `Recovery: Resuming task execution for feature ${featureId} with ${persistedTasks.length} tasks`
+      );
+
+      // Get customized prompts for task execution
+      const taskPrompts = await getPromptCustomization(this.settingsService, '[AutoMode]');
+      const approvedPlanContent = existingApprovedPlan.content || '';
+
+      // Execute each task with a separate agent
+      for (let taskIndex = 0; taskIndex < persistedTasks.length; taskIndex++) {
+        const task = persistedTasks[taskIndex];
+
+        // Skip tasks that are already completed
+        if (task.status === 'completed') {
+          logger.info(`Skipping already completed task ${task.id}`);
+          continue;
+        }
+
+        // Check for abort
+        if (abortController.signal.aborted) {
+          throw new Error('Feature execution aborted');
+        }
+
+        // Mark task as in_progress immediately (even without TASK_START marker)
+        await this.updateTaskStatus(projectPath, featureId, task.id, 'in_progress');
+
+        // Emit task started
+        logger.info(`Starting task ${task.id}: ${task.description}`);
+        this.emitAutoModeEvent('auto_mode_task_started', {
+          featureId,
+          projectPath,
+          branchName,
+          taskId: task.id,
+          taskDescription: task.description,
+          taskIndex,
+          tasksTotal: persistedTasks.length,
+        });
+
+        // Update planSpec with current task
+        await this.updateFeaturePlanSpec(projectPath, featureId, {
+          currentTaskId: task.id,
+        });
+
+        // Build focused prompt for this specific task
+        const taskPrompt = this.buildTaskPrompt(
+          task,
+          persistedTasks,
+          taskIndex,
+          approvedPlanContent,
+          taskPrompts.taskExecution.taskPromptTemplate,
+          undefined
+        );
+
+        // Execute task with dedicated agent
+        const taskStream = provider.executeQuery({
+          prompt: taskPrompt,
+          model: effectiveBareModel,
+          maxTurns: Math.min(maxTurns || 100, 50),
+          cwd: workDir,
+          allowedTools: allowedTools,
+          abortController,
+          mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
+          credentials,
+          claudeCompatibleProvider,
+        });
+
+        let taskOutput = '';
+        let taskCompleteDetected = false;
+
+        // Process task stream
+        for await (const msg of taskStream) {
+          if (msg.type === 'assistant' && msg.message?.content) {
+            for (const block of msg.message.content) {
+              if (block.type === 'text') {
+                const text = block.text || '';
+                taskOutput += text;
+                responseText += text;
+                this.emitAutoModeEvent('auto_mode_progress', {
+                  featureId,
+                  branchName,
+                  content: text,
+                });
+                scheduleWrite();
+
+                // Detect [TASK_COMPLETE] marker
+                if (!taskCompleteDetected) {
+                  const completeTaskId = detectTaskCompleteMarker(taskOutput);
+                  if (completeTaskId) {
+                    taskCompleteDetected = true;
+                    logger.info(`[TASK_COMPLETE] detected for ${completeTaskId}`);
+                    await this.updateTaskStatus(
+                      projectPath,
+                      featureId,
+                      completeTaskId,
+                      'completed'
+                    );
+                  }
+                }
+              } else if (block.type === 'tool_use') {
+                this.emitAutoModeEvent('auto_mode_tool', {
+                  featureId,
+                  branchName,
+                  tool: block.name,
+                  input: block.input,
+                });
+              }
+            }
+          } else if (msg.type === 'error') {
+            throw new Error(msg.error || `Error during task ${task.id}`);
+          } else if (msg.type === 'result' && msg.subtype === 'success') {
+            taskOutput += msg.result || '';
+            responseText += msg.result || '';
+          }
+        }
+
+        // If no [TASK_COMPLETE] marker was detected, still mark as completed
+        if (!taskCompleteDetected) {
+          await this.updateTaskStatus(projectPath, featureId, task.id, 'completed');
+        }
+
+        // Emit task completed
+        logger.info(`Task ${task.id} completed for feature ${featureId}`);
+        this.emitAutoModeEvent('auto_mode_task_complete', {
+          featureId,
+          projectPath,
+          branchName,
+          taskId: task.id,
+          tasksCompleted: taskIndex + 1,
+          tasksTotal: persistedTasks.length,
+        });
+
+        // Update planSpec with progress
+        await this.updateFeaturePlanSpec(projectPath, featureId, {
+          tasksCompleted: taskIndex + 1,
+        });
+      }
+
+      logger.info(`Recovery: All tasks completed for feature ${featureId}`);
+
+      // Extract and save final summary
+      // Note: saveFeatureSummary already emits auto_mode_summary event
+      const summary = extractSummary(responseText);
+      if (summary) {
+        await this.saveFeatureSummary(projectPath, featureId, summary);
+      }
+
+      // Final write and cleanup
+      clearInterval(streamHeartbeat);
+      if (writeTimeout) {
+        clearTimeout(writeTimeout);
+      }
+      await writeToFile();
+      return;
+    }
+
     // Wrap stream processing in try/finally to ensure timeout cleanup on any error/abort
     try {
       streamLoop: for await (const msg of stream) {
@@ -2696,16 +4559,28 @@ This mock response was generated because AUTOMAKER_MOCK_AGENT=true was set.
               scheduleWrite();
 
               // Check for [SPEC_GENERATED] marker in planning modes (spec or full)
+              // Also support fallback detection for non-Claude models that may not output the marker
+              const hasExplicitMarker = responseText.includes('[SPEC_GENERATED]');
+              const hasFallbackSpec = !hasExplicitMarker && detectSpecFallback(responseText);
               if (
                 planningModeRequiresApproval &&
                 !specDetected &&
-                responseText.includes('[SPEC_GENERATED]')
+                (hasExplicitMarker || hasFallbackSpec)
               ) {
                 specDetected = true;
 
-                // Extract plan content (everything before the marker)
-                const markerIndex = responseText.indexOf('[SPEC_GENERATED]');
-                const planContent = responseText.substring(0, markerIndex).trim();
+                // Extract plan content (everything before the marker, or full content for fallback)
+                let planContent: string;
+                if (hasExplicitMarker) {
+                  const markerIndex = responseText.indexOf('[SPEC_GENERATED]');
+                  planContent = responseText.substring(0, markerIndex).trim();
+                } else {
+                  // Fallback: use all accumulated content as the plan
+                  planContent = responseText.trim();
+                  logger.info(
+                    `Using fallback spec detection for feature ${featureId} (no [SPEC_GENERATED] marker)`
+                  );
+                }
 
                 // Parse tasks from the generated spec (for spec and full modes)
                 // Use let since we may need to update this after plan revision
@@ -2728,6 +4603,14 @@ This mock response was generated because AUTOMAKER_MOCK_AGENT=true was set.
                   tasksTotal,
                   tasksCompleted: 0,
                 });
+
+                // Extract and save summary from the plan content
+                const planSummary = extractSummary(planContent);
+                if (planSummary) {
+                  logger.info(`Extracted summary from plan: ${planSummary.substring(0, 100)}...`);
+                  // Update the feature with the extracted summary
+                  await this.updateFeatureSummary(projectPath, featureId, planSummary);
+                }
 
                 let approvedPlanContent = planContent;
                 let userFeedback: string | undefined;
@@ -2754,6 +4637,7 @@ This mock response was generated because AUTOMAKER_MOCK_AGENT=true was set.
                     this.emitAutoModeEvent('plan_approval_required', {
                       featureId,
                       projectPath,
+                      branchName,
                       planContent: currentPlanContent,
                       planningMode,
                       planVersion,
@@ -2785,6 +4669,7 @@ This mock response was generated because AUTOMAKER_MOCK_AGENT=true was set.
                         this.emitAutoModeEvent('plan_approved', {
                           featureId,
                           projectPath,
+                          branchName,
                           hasEdits: !!approvalResult.editedPlan,
                           planVersion,
                         });
@@ -2813,26 +4698,60 @@ This mock response was generated because AUTOMAKER_MOCK_AGENT=true was set.
                         this.emitAutoModeEvent('plan_revision_requested', {
                           featureId,
                           projectPath,
+                          branchName,
                           feedback: approvalResult.feedback,
                           hasEdits: !!hasEdits,
                           planVersion,
                         });
 
-                        // Build revision prompt
-                        let revisionPrompt = `The user has requested revisions to the plan/specification.
+                        // Build revision prompt using customizable template
+                        const revisionPrompts = await getPromptCustomization(
+                          this.settingsService,
+                          '[AutoMode]'
+                        );
 
-## Previous Plan (v${planVersion - 1})
-${hasEdits ? approvalResult.editedPlan : currentPlanContent}
+                        // Get task format example based on planning mode
+                        const taskFormatExample =
+                          planningMode === 'full'
+                            ? `\`\`\`tasks
+## Phase 1: Foundation
+- [ ] T001: [Description] | File: [path/to/file]
+- [ ] T002: [Description] | File: [path/to/file]
 
-## User Feedback
-${approvalResult.feedback || 'Please revise the plan based on the edits above.'}
+## Phase 2: Core Implementation
+- [ ] T003: [Description] | File: [path/to/file]
+- [ ] T004: [Description] | File: [path/to/file]
+\`\`\``
+                            : `\`\`\`tasks
+- [ ] T001: [Description] | File: [path/to/file]
+- [ ] T002: [Description] | File: [path/to/file]
+- [ ] T003: [Description] | File: [path/to/file]
+\`\`\``;
 
-## Instructions
-Please regenerate the specification incorporating the user's feedback.
-Keep the same format with the \`\`\`tasks block for task definitions.
-After generating the revised spec, output:
-"[SPEC_GENERATED] Please review the revised specification above."
-`;
+                        let revisionPrompt = revisionPrompts.taskExecution.planRevisionTemplate;
+                        revisionPrompt = revisionPrompt.replace(
+                          /\{\{planVersion\}\}/g,
+                          String(planVersion - 1)
+                        );
+                        revisionPrompt = revisionPrompt.replace(
+                          /\{\{previousPlan\}\}/g,
+                          hasEdits
+                            ? approvalResult.editedPlan || currentPlanContent
+                            : currentPlanContent
+                        );
+                        revisionPrompt = revisionPrompt.replace(
+                          /\{\{userFeedback\}\}/g,
+                          approvalResult.feedback ||
+                            'Please revise the plan based on the edits above.'
+                        );
+                        revisionPrompt = revisionPrompt.replace(
+                          /\{\{planningMode\}\}/g,
+                          planningMode
+                        );
+                        revisionPrompt = revisionPrompt.replace(
+                          /\{\{taskFormatExample\}\}/g,
+                          taskFormatExample
+                        );
 
                         // Update status to regenerating
                         await this.updateFeaturePlanSpec(projectPath, featureId, {
@@ -2843,12 +4762,14 @@ After generating the revised spec, output:
                         // Make revision call
                         const revisionStream = provider.executeQuery({
                           prompt: revisionPrompt,
-                          model: bareModel,
+                          model: effectiveBareModel,
                           maxTurns: maxTurns || 100,
                           cwd: workDir,
                           allowedTools: allowedTools,
                           abortController,
                           mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
+                          credentials, // Pass credentials for resolving 'credentials' apiKeySource
+                          claudeCompatibleProvider, // Pass provider for alternative endpoint configuration
                         });
 
                         let revisionText = '';
@@ -2882,6 +4803,26 @@ After generating the revised spec, output:
                         const revisedTasks = parseTasksFromSpec(currentPlanContent);
                         logger.info(`Revised plan has ${revisedTasks.length} tasks`);
 
+                        // Warn if no tasks found in spec/full mode - this may cause fallback to single-agent
+                        if (
+                          revisedTasks.length === 0 &&
+                          (planningMode === 'spec' || planningMode === 'full')
+                        ) {
+                          logger.warn(
+                            `WARNING: Revised plan in ${planningMode} mode has no tasks! ` +
+                              `This will cause fallback to single-agent execution. ` +
+                              `The AI may have omitted the required \`\`\`tasks block.`
+                          );
+                          this.emitAutoModeEvent('plan_revision_warning', {
+                            featureId,
+                            projectPath,
+                            branchName,
+                            planningMode,
+                            warning:
+                              'Revised plan missing tasks block - will use single-agent execution',
+                          });
+                        }
+
                         // Update planSpec with revised content
                         await this.updateFeaturePlanSpec(projectPath, featureId, {
                           status: 'generated',
@@ -2914,6 +4855,7 @@ After generating the revised spec, output:
                   this.emitAutoModeEvent('plan_auto_approved', {
                     featureId,
                     projectPath,
+                    branchName,
                     planContent,
                     planningMode,
                   });
@@ -2954,16 +4896,26 @@ After generating the revised spec, output:
                   for (let taskIndex = 0; taskIndex < parsedTasks.length; taskIndex++) {
                     const task = parsedTasks[taskIndex];
 
+                    // Skip tasks that are already completed (for recovery after restart)
+                    if (task.status === 'completed') {
+                      logger.info(`Skipping already completed task ${task.id}`);
+                      continue;
+                    }
+
                     // Check for abort
                     if (abortController.signal.aborted) {
                       throw new Error('Feature execution aborted');
                     }
+
+                    // Mark task as in_progress immediately (even without TASK_START marker)
+                    await this.updateTaskStatus(projectPath, featureId, task.id, 'in_progress');
 
                     // Emit task started
                     logger.info(`Starting task ${task.id}: ${task.description}`);
                     this.emitAutoModeEvent('auto_mode_task_started', {
                       featureId,
                       projectPath,
+                      branchName,
                       taskId: task.id,
                       taskDescription: task.description,
                       taskIndex,
@@ -2988,30 +4940,90 @@ After generating the revised spec, output:
                     // Execute task with dedicated agent
                     const taskStream = provider.executeQuery({
                       prompt: taskPrompt,
-                      model: bareModel,
+                      model: effectiveBareModel,
                       maxTurns: Math.min(maxTurns || 100, 50), // Limit turns per task
                       cwd: workDir,
                       allowedTools: allowedTools,
                       abortController,
                       mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
+                      credentials, // Pass credentials for resolving 'credentials' apiKeySource
+                      claudeCompatibleProvider, // Pass provider for alternative endpoint configuration
                     });
 
                     let taskOutput = '';
+                    let taskStartDetected = false;
+                    let taskCompleteDetected = false;
 
                     // Process task stream
                     for await (const msg of taskStream) {
                       if (msg.type === 'assistant' && msg.message?.content) {
                         for (const block of msg.message.content) {
                           if (block.type === 'text') {
-                            taskOutput += block.text || '';
-                            responseText += block.text || '';
+                            const text = block.text || '';
+                            taskOutput += text;
+                            responseText += text;
                             this.emitAutoModeEvent('auto_mode_progress', {
                               featureId,
-                              content: block.text,
+                              branchName,
+                              content: text,
                             });
+
+                            // Detect [TASK_START] marker
+                            if (!taskStartDetected) {
+                              const startTaskId = detectTaskStartMarker(taskOutput);
+                              if (startTaskId) {
+                                taskStartDetected = true;
+                                logger.info(`[TASK_START] detected for ${startTaskId}`);
+                                // Update task status to in_progress in planSpec.tasks
+                                await this.updateTaskStatus(
+                                  projectPath,
+                                  featureId,
+                                  startTaskId,
+                                  'in_progress'
+                                );
+                                this.emitAutoModeEvent('auto_mode_task_started', {
+                                  featureId,
+                                  projectPath,
+                                  branchName,
+                                  taskId: startTaskId,
+                                  taskDescription: task.description,
+                                  taskIndex,
+                                  tasksTotal: parsedTasks.length,
+                                });
+                              }
+                            }
+
+                            // Detect [TASK_COMPLETE] marker
+                            if (!taskCompleteDetected) {
+                              const completeTaskId = detectTaskCompleteMarker(taskOutput);
+                              if (completeTaskId) {
+                                taskCompleteDetected = true;
+                                logger.info(`[TASK_COMPLETE] detected for ${completeTaskId}`);
+                                // Update task status to completed in planSpec.tasks
+                                await this.updateTaskStatus(
+                                  projectPath,
+                                  featureId,
+                                  completeTaskId,
+                                  'completed'
+                                );
+                              }
+                            }
+
+                            // Detect [PHASE_COMPLETE] marker
+                            const phaseNumber = detectPhaseCompleteMarker(text);
+                            if (phaseNumber !== null) {
+                              logger.info(`[PHASE_COMPLETE] detected for Phase ${phaseNumber}`);
+                              this.emitAutoModeEvent('auto_mode_phase_complete', {
+                                featureId,
+                                projectPath,
+                                branchName,
+                                phaseNumber,
+                              });
+                            }
                           } else if (block.type === 'tool_use') {
                             this.emitAutoModeEvent('auto_mode_tool', {
                               featureId,
+                              branchName,
                               tool: block.name,
                               input: block.input,
                             });
@@ -3025,11 +5037,18 @@ After generating the revised spec, output:
                       }
                     }
 
+                    // If no [TASK_COMPLETE] marker was detected, still mark as completed
+                    // (for models that don't output markers)
+                    if (!taskCompleteDetected) {
+                      await this.updateTaskStatus(projectPath, featureId, task.id, 'completed');
+                    }
+
                     // Emit task completed
                     logger.info(`Task ${task.id} completed for feature ${featureId}`);
                     this.emitAutoModeEvent('auto_mode_task_complete', {
                       featureId,
                       projectPath,
+                      branchName,
                       taskId: task.id,
                       tasksCompleted: taskIndex + 1,
                       tasksTotal: parsedTasks.length,
@@ -3050,6 +5069,7 @@ After generating the revised spec, output:
                           this.emitAutoModeEvent('auto_mode_phase_complete', {
                             featureId,
                             projectPath,
+                            branchName,
                             phaseNumber: parseInt(phaseMatch[1], 10),
                           });
                         }
@@ -3082,12 +5102,14 @@ After generating the revised spec, output:
 
                   const continuationStream = provider.executeQuery({
                     prompt: continuationPrompt,
-                    model: bareModel,
+                    model: effectiveBareModel,
                     maxTurns: maxTurns,
                     cwd: workDir,
                     allowedTools: allowedTools,
                     abortController,
                     mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
+                    credentials, // Pass credentials for resolving 'credentials' apiKeySource
+                    claudeCompatibleProvider, // Pass provider for alternative endpoint configuration
                   });
 
                   for await (const msg of continuationStream) {
@@ -3097,11 +5119,13 @@ After generating the revised spec, output:
                           responseText += block.text || '';
                           this.emitAutoModeEvent('auto_mode_progress', {
                             featureId,
+                            branchName,
                             content: block.text,
                           });
                         } else if (block.type === 'tool_use') {
                           this.emitAutoModeEvent('auto_mode_tool', {
                             featureId,
+                            branchName,
                             tool: block.name,
                             input: block.input,
                           });
@@ -3113,6 +5137,13 @@ After generating the revised spec, output:
                       responseText += msg.result || '';
                     }
                   }
+                }
+
+                // Extract and save final summary from multi-task or single-agent execution
+                // Note: saveFeatureSummary already emits auto_mode_summary event
+                const summary = extractSummary(responseText);
+                if (summary) {
+                  await this.saveFeatureSummary(projectPath, featureId, summary);
                 }
 
                 logger.info(`Implementation completed for feature ${featureId}`);
@@ -3127,6 +5158,7 @@ After generating the revised spec, output:
                 );
                 this.emitAutoModeEvent('auto_mode_progress', {
                   featureId,
+                  branchName,
                   content: block.text,
                 });
               }
@@ -3134,6 +5166,7 @@ After generating the revised spec, output:
               // Emit event for real-time UI
               this.emitAutoModeEvent('auto_mode_tool', {
                 featureId,
+                branchName,
                 tool: block.name,
                 input: block.input,
               });
@@ -3211,6 +5244,7 @@ After generating the revised spec, output:
 
     return this.executeFeature(projectPath, featureId, useWorktrees, false, undefined, {
       continuationPrompt: prompt,
+      _calledInternally: true,
     });
   }
 
@@ -3420,8 +5454,9 @@ After generating the revised spec, output:
       const state: ExecutionState = {
         version: 1,
         autoLoopWasRunning: this.autoLoopRunning,
-        maxConcurrency: this.config?.maxConcurrency ?? 3,
+        maxConcurrency: this.config?.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY,
         projectPath,
+        branchName: null, // Legacy global auto mode uses main worktree
         runningFeatureIds: Array.from(this.runningFeatures.keys()),
         savedAt: new Date().toISOString(),
       };
@@ -3452,11 +5487,15 @@ After generating the revised spec, output:
   /**
    * Clear execution state (called on successful shutdown or when auto-loop stops)
    */
-  private async clearExecutionState(projectPath: string): Promise<void> {
+  private async clearExecutionState(
+    projectPath: string,
+    branchName: string | null = null
+  ): Promise<void> {
     try {
       const statePath = getExecutionStatePath(projectPath);
       await secureFs.unlink(statePath);
-      logger.info('Cleared execution state');
+      const worktreeDesc = branchName ? `worktree ${branchName}` : 'main worktree';
+      logger.info(`Cleared execution state for ${worktreeDesc}`);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
         logger.error('Failed to clear execution state:', error);
@@ -3476,7 +5515,9 @@ After generating the revised spec, output:
 
     try {
       const entries = await secureFs.readdir(featuresDir, { withFileTypes: true });
-      const interruptedFeatures: Feature[] = [];
+      // Track features with and without context separately for better logging
+      const featuresWithContext: Feature[] = [];
+      const featuresWithoutContext: Feature[] = [];
 
       for (const entry of entries) {
         if (entry.isDirectory()) {
@@ -3496,52 +5537,77 @@ After generating the revised spec, output:
             continue;
           }
 
-          // Check if feature was interrupted (in_progress or pipeline_*)
+          // Check if feature was interrupted (in_progress/interrupted or pipeline_*)
           if (
             feature.status === 'in_progress' ||
+            feature.status === 'interrupted' ||
             (feature.status && feature.status.startsWith('pipeline_'))
           ) {
-            // Verify it has existing context (agent-output.md)
+            // Check if context (agent-output.md) exists
             const featureDir = getFeatureDir(projectPath, feature.id);
             const contextPath = path.join(featureDir, 'agent-output.md');
             try {
               await secureFs.access(contextPath);
-              interruptedFeatures.push(feature);
+              featuresWithContext.push(feature);
               logger.info(
-                `Found interrupted feature: ${feature.id} (${feature.title}) - status: ${feature.status}`
+                `Found interrupted feature with context: ${feature.id} (${feature.title}) - status: ${feature.status}`
               );
             } catch {
-              // No context file, skip this feature - it will be restarted fresh
-              logger.info(`Interrupted feature ${feature.id} has no context, will restart fresh`);
+              // No context file - feature was interrupted before any agent output
+              // Still include it for resumption (will start fresh)
+              featuresWithoutContext.push(feature);
+              logger.info(
+                `Found interrupted feature without context: ${feature.id} (${feature.title}) - status: ${feature.status} (will restart fresh)`
+              );
             }
           }
         }
       }
 
-      if (interruptedFeatures.length === 0) {
+      // Combine all interrupted features (with and without context)
+      const allInterruptedFeatures = [...featuresWithContext, ...featuresWithoutContext];
+
+      if (allInterruptedFeatures.length === 0) {
         logger.info('No interrupted features found');
         return;
       }
 
-      logger.info(`Found ${interruptedFeatures.length} interrupted feature(s) to resume`);
+      logger.info(
+        `Found ${allInterruptedFeatures.length} interrupted feature(s) to resume ` +
+          `(${featuresWithContext.length} with context, ${featuresWithoutContext.length} without context)`
+      );
 
-      // Emit event to notify UI
+      // Emit event to notify UI with context information
       this.emitAutoModeEvent('auto_mode_resuming_features', {
-        message: `Resuming ${interruptedFeatures.length} interrupted feature(s) after server restart`,
+        message: `Resuming ${allInterruptedFeatures.length} interrupted feature(s) after server restart`,
         projectPath,
-        featureIds: interruptedFeatures.map((f) => f.id),
-        features: interruptedFeatures.map((f) => ({
+        featureIds: allInterruptedFeatures.map((f) => f.id),
+        features: allInterruptedFeatures.map((f) => ({
           id: f.id,
           title: f.title,
           status: f.status,
+          branchName: f.branchName ?? null,
+          hasContext: featuresWithContext.some((fc) => fc.id === f.id),
         })),
       });
 
       // Resume each interrupted feature
-      for (const feature of interruptedFeatures) {
+      for (const feature of allInterruptedFeatures) {
         try {
-          logger.info(`Resuming feature: ${feature.id} (${feature.title})`);
-          // Use resumeFeature which will detect the existing context and continue
+          // Idempotent check: skip if feature is already being resumed (prevents race conditions)
+          if (this.isFeatureRunning(feature.id)) {
+            logger.info(
+              `Feature ${feature.id} (${feature.title}) is already being resumed, skipping`
+            );
+            continue;
+          }
+
+          const hasContext = featuresWithContext.some((fc) => fc.id === feature.id);
+          logger.info(
+            `Resuming feature: ${feature.id} (${feature.title}) - ${hasContext ? 'continuing from context' : 'starting fresh'}`
+          );
+          // Use resumeFeature which will detect the existing context and continue,
+          // or start fresh if no context exists
           await this.resumeFeature(projectPath, feature.id, true);
         } catch (error) {
           logger.error(`Failed to resume feature ${feature.id}:`, error);
@@ -3740,5 +5806,108 @@ After generating the revised spec, output:
     } catch (error) {
       console.warn(`[AutoMode] Failed to extract learnings from feature ${feature.id}:`, error);
     }
+  }
+
+  /**
+   * Detect orphaned features - features whose branchName points to a branch that no longer exists.
+   *
+   * Orphaned features can occur when:
+   * - A feature branch is deleted after merge
+   * - A worktree is manually removed
+   * - A branch is force-deleted
+   *
+   * @param projectPath - Path to the project
+   * @returns Array of orphaned features with their missing branch names
+   */
+  async detectOrphanedFeatures(
+    projectPath: string
+  ): Promise<Array<{ feature: Feature; missingBranch: string }>> {
+    const orphanedFeatures: Array<{ feature: Feature; missingBranch: string }> = [];
+
+    try {
+      // Get all features for this project
+      const allFeatures = await this.featureLoader.getAll(projectPath);
+
+      // Get features that have a branchName set (excludes main branch features)
+      const featuresWithBranches = allFeatures.filter(
+        (f) => f.branchName && f.branchName.trim() !== ''
+      );
+
+      if (featuresWithBranches.length === 0) {
+        logger.debug('[detectOrphanedFeatures] No features with branch names found');
+        return orphanedFeatures;
+      }
+
+      // Get all existing branches (local)
+      const existingBranches = await this.getExistingBranches(projectPath);
+
+      // Get current/primary branch (features with null branchName are implicitly on this)
+      const primaryBranch = await getCurrentBranch(projectPath);
+
+      // Check each feature with a branchName
+      for (const feature of featuresWithBranches) {
+        const branchName = feature.branchName!;
+
+        // Skip if the branchName matches the primary branch (implicitly valid)
+        if (primaryBranch && branchName === primaryBranch) {
+          continue;
+        }
+
+        // Check if the branch exists
+        if (!existingBranches.has(branchName)) {
+          orphanedFeatures.push({
+            feature,
+            missingBranch: branchName,
+          });
+          logger.info(
+            `[detectOrphanedFeatures] Found orphaned feature: ${feature.id} (${feature.title}) - branch "${branchName}" no longer exists`
+          );
+        }
+      }
+
+      if (orphanedFeatures.length > 0) {
+        logger.info(
+          `[detectOrphanedFeatures] Found ${orphanedFeatures.length} orphaned feature(s) in ${projectPath}`
+        );
+      } else {
+        logger.debug('[detectOrphanedFeatures] No orphaned features found');
+      }
+
+      return orphanedFeatures;
+    } catch (error) {
+      logger.error('[detectOrphanedFeatures] Error detecting orphaned features:', error);
+      return orphanedFeatures;
+    }
+  }
+
+  /**
+   * Get all existing local branches for a project
+   * @param projectPath - Path to the git repository
+   * @returns Set of branch names
+   */
+  private async getExistingBranches(projectPath: string): Promise<Set<string>> {
+    const branches = new Set<string>();
+
+    try {
+      // Use git for-each-ref to get all local branches
+      const { stdout } = await execAsync(
+        'git for-each-ref --format="%(refname:short)" refs/heads/',
+        { cwd: projectPath }
+      );
+
+      const branchLines = stdout.trim().split('\n');
+      for (const branch of branchLines) {
+        const trimmed = branch.trim();
+        if (trimmed) {
+          branches.add(trimmed);
+        }
+      }
+
+      logger.debug(`[getExistingBranches] Found ${branches.size} local branches`);
+    } catch (error) {
+      logger.error('[getExistingBranches] Failed to get branches:', error);
+    }
+
+    return branches;
   }
 }

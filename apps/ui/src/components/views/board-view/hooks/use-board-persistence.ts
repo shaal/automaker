@@ -1,8 +1,11 @@
 import { useCallback } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import type { Feature as ApiFeature } from '@automaker/types';
 import { Feature } from '@/store/app-store';
 import { getElectronAPI } from '@/lib/electron';
 import { useAppStore } from '@/store/app-store';
 import { createLogger } from '@automaker/utils/logger';
+import { queryKeys } from '@/lib/query-keys';
 
 const logger = createLogger('BoardPersistence');
 
@@ -12,6 +15,7 @@ interface UseBoardPersistenceProps {
 
 export function useBoardPersistence({ currentProject }: UseBoardPersistenceProps) {
   const { updateFeature } = useAppStore();
+  const queryClient = useQueryClient();
 
   // Persist feature update to API (replaces saveFeatures)
   const persistFeatureUpdate = useCallback(
@@ -45,7 +49,21 @@ export function useBoardPersistence({ currentProject }: UseBoardPersistenceProps
           feature: result.feature,
         });
         if (result.success && result.feature) {
-          updateFeature(result.feature.id, result.feature);
+          const updatedFeature = result.feature as Feature;
+          updateFeature(updatedFeature.id, updatedFeature as Partial<Feature>);
+          queryClient.setQueryData<Feature[]>(
+            queryKeys.features.all(currentProject.path),
+            (features) => {
+              if (!features) return features;
+              return features.map((feature) =>
+                feature.id === updatedFeature.id ? { ...feature, ...updatedFeature } : feature
+              );
+            }
+          );
+          // Invalidate React Query cache to sync UI
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.features.all(currentProject.path),
+          });
         } else if (!result.success) {
           logger.error('API features.update failed', result);
         }
@@ -53,7 +71,7 @@ export function useBoardPersistence({ currentProject }: UseBoardPersistenceProps
         logger.error('Failed to persist feature update:', error);
       }
     },
-    [currentProject, updateFeature]
+    [currentProject, updateFeature, queryClient]
   );
 
   // Persist feature creation to API
@@ -68,15 +86,19 @@ export function useBoardPersistence({ currentProject }: UseBoardPersistenceProps
           return;
         }
 
-        const result = await api.features.create(currentProject.path, feature);
+        const result = await api.features.create(currentProject.path, feature as ApiFeature);
         if (result.success && result.feature) {
-          updateFeature(result.feature.id, result.feature);
+          updateFeature(result.feature.id, result.feature as Partial<Feature>);
+          // Invalidate React Query cache to sync UI
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.features.all(currentProject.path),
+          });
         }
       } catch (error) {
         logger.error('Failed to persist feature creation:', error);
       }
     },
-    [currentProject, updateFeature]
+    [currentProject, updateFeature, queryClient]
   );
 
   // Persist feature deletion to API
@@ -92,11 +114,15 @@ export function useBoardPersistence({ currentProject }: UseBoardPersistenceProps
         }
 
         await api.features.delete(currentProject.path, featureId);
+        // Invalidate React Query cache to sync UI
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.features.all(currentProject.path),
+        });
       } catch (error) {
         logger.error('Failed to persist feature deletion:', error);
       }
     },
-    [currentProject]
+    [currentProject, queryClient]
   );
 
   return {
