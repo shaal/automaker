@@ -600,7 +600,14 @@ When an issue has linked PRs (especially open ones), you MUST analyze them:
   - complex: Significant refactoring or new feature implementation
   - very_complex: Major architectural changes or cross-cutting concerns
 
-Be thorough in your analysis but focus on files that are directly relevant to the issue.`;
+Be thorough in your analysis but focus on files that are directly relevant to the issue.
+
+## IMPORTANT: Do NOT Read Binary Files
+
+Never attempt to read binary or image files. This includes files with extensions like:
+.ico, .svg, .png, .jpg, .jpeg, .gif, .webp, .bmp, .tiff, .pdf, .woff, .woff2, .ttf, .eot, .mp3, .mp4, .zip, .tar, .gz, .bin, .exe, .dll, .so, .dylib
+
+Reading these files will cause API errors. Only read text-based source code files (.ts, .tsx, .js, .jsx, .json, .html, .css, .md, .yml, .yaml, .toml, .env, .sh, etc.).`;
 
 /**
  * Default Issue Validation prompts (for GitHub issue validation)
